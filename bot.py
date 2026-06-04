@@ -105,6 +105,8 @@ COIN_PACKAGES = [
 ]
 
 
+NUMBER_EMOJI = ["①","②","③","④","⑤","⑥","⑦","⑧","⑨","⑩"]
+
 def get_faceit_level(elo: int) -> int:
     if   elo < 801:  return 1
     elif elo < 951:  return 2
@@ -116,6 +118,16 @@ def get_faceit_level(elo: int) -> int:
     elif elo < 1851: return 8
     elif elo < 2001: return 9
     else:            return 10
+
+def elo_bar(elo: int, lvl: int) -> str:
+    thresholds = [0, 801, 951, 1101, 1251, 1401, 1551, 1701, 1851, 2001, 3000]
+    lo = thresholds[max(0, lvl - 1)]
+    hi = thresholds[min(lvl, len(thresholds) - 1)]
+    pct = (elo - lo) / (hi - lo) if hi > lo else 1.0
+    pct = max(0.0, min(1.0, pct))
+    filled = round(pct * 12)
+    bar = "█" * filled + "░" * (12 - filled)
+    return f"[{bar}] {round(pct * 100)}%"
 
 
 # ==================== ПОДКЛЮЧЕНИЕ К БД ====================
@@ -712,12 +724,35 @@ def get_party_max_size(party):
     return 2
 
 
-# ==================== КАПИТАН (premium +7%) ====================
+# ==================== КАПИТАН (лидер пати 60%, не лидер пати — не может, premium +7%) ====================
 def pick_captain(team):
     if not team:
         return None
-    weights = [1.07 if has_active_premium(u) else 1.0 for u in team]
-    return random.choices(team, weights=weights, k=1)[0]
+    party_leaders_in_team = []
+    party_members_non_leader = set()
+    for u in team:
+        party = get_party_of(u)
+        if party and len(party["members"]) > 1:
+            team_members_in_party = [m for m in party["members"] if m in team]
+            if len(team_members_in_party) > 1:
+                if u == party["leader"]:
+                    party_leaders_in_team.append(u)
+                else:
+                    party_members_non_leader.add(u)
+    eligible = [u for u in team if u not in party_members_non_leader]
+    if not eligible:
+        eligible = team
+    if party_leaders_in_team:
+        leader = party_leaders_in_team[0]
+        if random.random() < 0.60:
+            return leader
+        rest = [u for u in eligible if u != leader]
+        if not rest:
+            return leader
+        weights = [1.07 if has_active_premium(u) else 1.0 for u in rest]
+        return random.choices(rest, weights=weights, k=1)[0]
+    weights = [1.07 if has_active_premium(u) else 1.0 for u in eligible]
+    return random.choices(eligible, weights=weights, k=1)[0]
 
 
 # ==================== ТЕХРАБОТЫ (MIDDLEWARE) ====================
@@ -735,7 +770,8 @@ def maintenance_middleware(bot_instance, update):
     p = get_player(uid)
     if p and p[11] == 1:
         return
-    if hasattr(update, "message"):
+    # CallbackQuery имеет атрибут .id и .message; Message — только .chat, .text и т.д.
+    if hasattr(update, "data"):  # это CallbackQuery
         try:
             bot_instance.answer_callback_query(
                 update.id,
@@ -744,7 +780,7 @@ def maintenance_middleware(bot_instance, update):
             )
         except Exception:
             pass
-    else:
+    else:  # это Message
         try:
             bot_instance.send_message(
                 update.chat.id,
@@ -752,7 +788,7 @@ def maintenance_middleware(bot_instance, update):
             )
         except Exception:
             pass
-    return CancelUpdate()
+    raise CancelUpdate()
 
 
 # ==================== ПРОВЕРКА БЛОКИРОВОК ====================
@@ -1039,6 +1075,7 @@ def cb_profile(c):
     premium = has_active_premium(uid)
     crown = " 👑 Premium" if premium else ""
     lvl = get_faceit_level(p[4])
+    bar = elo_bar(p[4], lvl)
     muted = is_muted_check(uid)
     mute_text = ""
     if muted:
@@ -1049,13 +1086,13 @@ def cb_profile(c):
         f"🆔 Telegram ID: <code>{p[0]}</code>\n"
         f"🎮 Game ID: <code>{p[2]}</code>\n"
         f"📱 Device: {p[3]}\n"
-        f"📊 ELO: {p[4]} | 🎯 Lvl {lvl}\n"
+        f"📊 ELO: {p[4]} · Lvl {lvl}\n"
+        f"{bar}\n"
         f"💰 Баланс: {p[5]} AC\n"
         f"⭐ Quals: {quals}\n"
         f"⚠️ Варны: {warns}/3{mute_text}\n\n"
-        f"🏆 Побед: {p[6]}\n❌ Поражений: {p[7]}\n"
-        f"🔫 K/D/A: {p[8]}/{p[9]}/{p[10]}\n"
-        f"📊 K/D: {kd} | Винрейт: {winrate}%"
+        f"🏆 {p[6]}W · ❌ {p[7]}L · 📈 {winrate}%\n"
+        f"🔫 K: {p[8]} · 💀 D: {p[9]} · 🤝 A: {p[10]} · K/D: {kd}"
     )
     kb = types.InlineKeyboardMarkup(row_width=2)
     kb.add(
@@ -1228,18 +1265,64 @@ def cb_join(c):
         if uid in lobby["players"]:
             bot.answer_callback_query(c.id, "✅ Вы уже в этом лобби!")
             return
+        # Собираем всех кто будет заходить: лидер + участники пати
+        party_obj = get_party_of(uid)
+        party_leader = party_obj["leader"] if party_obj else None
+        if party_obj and party_leader == uid:
+            members_to_join = [m for m in party_obj["members"] if m != uid]
+        else:
+            members_to_join = []
+
+        # Проверяем место
+        free_slots = 10 - len(lobby["players"])
+        needed = 1 + len(members_to_join)
+        if free_slots < needed:
+            bot.answer_callback_query(
+                c.id,
+                f"❌ В лобби недостаточно мест для пати ({needed} нужно, {free_slots} свободно)!",
+                show_alert=True,
+            )
+            return
+
+        # Добавляем лидера
         lobby["players"].append(uid)
         user_lobby[uid] = lobby_id
+        if lobby_player_messages.get(lobby_id) is None:
+            lobby_player_messages[lobby_id] = {}
+
+        # Обновляем сообщение лидера
         text = build_lobby_text(lobby_id)
         kb = build_lobby_kb(lobby_id, uid)
         try:
             bot.edit_message_text(text, c.message.chat.id, c.message.message_id, reply_markup=kb)
-            if lobby_player_messages.get(lobby_id) is None:
-                lobby_player_messages[lobby_id] = {}
             lobby_player_messages[lobby_id][uid] = (c.message.chat.id, c.message.message_id)
         except Exception:
             pass
         bot.answer_callback_query(c.id, f"✅ Вы вошли в лобби #{slot}!")
+
+        # Добавляем участников пати
+        for m in members_to_join:
+            if m in lobby["players"]:
+                continue
+            # Убираем из старого лобби если был
+            old_m = user_lobby.get(m)
+            if old_m and old_m in active_lobbies and m in active_lobbies[old_m].get("players", []):
+                active_lobbies[old_m]["players"].remove(m)
+                lobby_player_messages.get(old_m, {}).pop(m, None)
+                broadcast_lobby_update(old_m)
+            lobby["players"].append(m)
+            user_lobby[m] = lobby_id
+            # Отправляем участнику пати лобби-сообщение
+            try:
+                p_data = get_player(m)
+                p_name = p_data[1] if p_data else str(m)
+                m_text = build_lobby_text(lobby_id)
+                m_kb = build_lobby_kb(lobby_id, m)
+                sent = bot.send_message(m, m_text, reply_markup=m_kb)
+                lobby_player_messages[lobby_id][m] = (sent.chat.id, sent.message_id)
+            except Exception:
+                pass
+
         broadcast_lobby_update(lobby_id, exclude_uid=uid)
         if len(lobby["players"]) >= 10:
             start_accept_phase(lobby_id)
@@ -1365,35 +1448,59 @@ def start_accept_phase(lobby_id):
         lobby2 = active_lobbies.get(lobby_id)
         if not lobby2 or lobby2["status"] != "accepting":
             return
-        not_accepted = [u for u in lobby2["players"] if u not in lobby2.get("accepted", [])]
+        not_accepted = [u for u in lobby2["players"] if u not in lobby2.get("accepted", []) and not is_bot_player(u)]
         delete_accept_status(lobby_id)
-        if not_accepted:
-            for uid in not_accepted:
-                if is_bot_player(uid):
-                    continue
-                warns = add_warn_to_player(uid)
-                try:
-                    if warns >= 3:
-                        until = apply_mute(uid, hours=2)
-                        dt = datetime.datetime.fromtimestamp(until).strftime("%H:%M")
-                        bot.send_message(uid, f"⚠️ Варн {warns}/3 за непринятие.\n🔇 Замучен на 2 часа (до {dt}).")
-                    else:
-                        bot.send_message(uid, f"⚠️ Варн {warns}/3 за непринятие матча.")
-                except Exception:
-                    pass
-            for uid in lobby2["players"]:
-                if is_bot_player(uid):
-                    continue
-                try:
-                    bot.send_message(uid, "❌ Матч отменён: не все приняли приглашение.")
-                    user_lobby.pop(uid, None)
-                except Exception:
-                    pass
+        delete_match_found(lobby_id)
+        if not not_accepted:
+            lobby2["status"] = "pre_mapban"
+            threading.Thread(target=start_map_ban_phase, args=(lobby_id,), daemon=True).start()
+            return
+        for uid in not_accepted:
+            warns = add_warn_to_player(uid)
+            lobby2["players"].remove(uid)
+            user_lobby.pop(uid, None)
+            lobby_player_messages.get(lobby_id, {}).pop(uid, None)
+            accept_status_messages.get(lobby_id, {}).pop(uid, None)
+            try:
+                if warns >= 3:
+                    until = apply_mute(uid, hours=2)
+                    dt = datetime.datetime.fromtimestamp(until).strftime("%H:%M")
+                    bot.send_message(uid, f"⚠️ Варн {warns}/3 за непринятие.\n🔇 Замучен на 2 часа (до {dt}).\n❌ Вы исключены из лобби.")
+                else:
+                    bot.send_message(uid, f"⚠️ Варн {warns}/3 за непринятие матча.\n❌ Вы исключены из лобби.")
+            except Exception:
+                pass
+        if len(lobby2["players"]) >= 10:
+            lobby2["status"] = "pre_mapban"
+            threading.Thread(target=start_map_ban_phase, args=(lobby_id,), daemon=True).start()
+        elif not lobby2["players"]:
             lobby_player_messages.pop(lobby_id, None)
             ban_status_messages.pop(lobby_id, None)
             del active_lobbies[lobby_id]
         else:
-            start_map_ban_phase(lobby_id)
+            lobby2["status"] = "waiting"
+            lobby2.pop("accepted", None)
+            if lobby_player_messages.get(lobby_id) is None:
+                lobby_player_messages[lobby_id] = {}
+            lobby_text = build_lobby_text(lobby_id)
+            cnt = len(lobby2["players"])
+            for uid in lobby2["players"]:
+                if is_bot_player(uid):
+                    continue
+                try:
+                    bot.send_message(
+                        uid,
+                        f"⚠️ Игрок не принял матч и исключён.\n"
+                        f"Вы остаётесь в очереди ({cnt}/10).",
+                    )
+                except Exception:
+                    pass
+                try:
+                    kb = build_lobby_kb(lobby_id, uid)
+                    sent = bot.send_message(uid, lobby_text, reply_markup=kb)
+                    lobby_player_messages[lobby_id][uid] = (sent.chat.id, sent.message_id)
+                except Exception:
+                    pass
 
     threading.Thread(target=check_accept, daemon=True).start()
 
@@ -1409,10 +1516,14 @@ def cb_accept(c):
     if uid not in lobby.get("accepted", []):
         lobby["accepted"].append(uid)
     bot.answer_callback_query(c.id, "✅ Принято!")
+    # Удаляем сообщение "матч найден" у принявшего
     try:
-        bot.edit_message_reply_markup(c.message.chat.id, c.message.message_id, reply_markup=None)
+        bot.delete_message(c.message.chat.id, c.message.message_id)
     except Exception:
-        pass
+        try:
+            bot.edit_message_reply_markup(c.message.chat.id, c.message.message_id, reply_markup=None)
+        except Exception:
+            pass
     update_accept_status(lobby_id)
     if len(lobby["accepted"]) >= len(lobby["players"]) and lobby["status"] == "accepting":
         lobby["status"] = "pre_mapban"
@@ -1473,6 +1584,14 @@ def send_ban_status_to_all(lobby_id):
         except Exception:
             pass
 
+def delete_lobby_messages(lobby_id):
+    msgs = lobby_player_messages.pop(lobby_id, {})
+    for uid, (cid, mid) in msgs.items():
+        try:
+            bot.delete_message(cid, mid)
+        except Exception:
+            pass
+
 def start_map_ban_phase(lobby_id):
     lobby = active_lobbies.get(lobby_id)
     if not lobby:
@@ -1486,6 +1605,8 @@ def start_map_ban_phase(lobby_id):
     lobby["ban_count"] = 0
     players = lobby["players"]
     delete_match_found(lobby_id)
+    delete_accept_status(lobby_id)
+    delete_lobby_messages(lobby_id)
     lobby["ct_captain"] = pick_captain(players[:5] if len(players) >= 5 else players)
     lobby["t_captain"]  = pick_captain(players[5:] if len(players) > 5 else players[-1:])
     send_ban_status_to_all(lobby_id)
@@ -1596,7 +1717,13 @@ def launch_match(lobby_id):
     lobby["reg_taken_by"] = None
 
     players = list(lobby["players"])
-    placed, team_ct, team_t, party_groups, solo_players = set(), [], [], [], []
+
+    # Сохраняем капитанов из фазы бана карт
+    ct_cap = lobby.get("ct_captain")
+    t_cap  = lobby.get("t_captain")
+
+    # Группируем пати и соло
+    placed, party_groups, solo_players = set(), [], []
     for uid2 in players:
         if uid2 in placed:
             continue
@@ -1613,11 +1740,53 @@ def launch_match(lobby_id):
 
     random.shuffle(party_groups)
     random.shuffle(solo_players)
-    all_ordered = []
+
+    team_ct, team_t = [], []
+
+    # Сначала фиксируем капитанов в нужных командах
+    if ct_cap and ct_cap in players:
+        team_ct.append(ct_cap)
+        for grp in party_groups:
+            if ct_cap in grp:
+                for m in grp:
+                    if m != ct_cap and m not in team_ct:
+                        team_ct.append(m)
+                break
+    if t_cap and t_cap in players:
+        team_t.append(t_cap)
+        for grp in party_groups:
+            if t_cap in grp:
+                for m in grp:
+                    if m != t_cap and m not in team_t:
+                        team_t.append(m)
+                break
+
+    already_placed = set(team_ct + team_t)
+
+    # Размещаем оставшиеся пати-группы целиком в одну команду
     for grp in party_groups:
-        all_ordered.extend(grp)
-    all_ordered.extend(solo_players)
-    for uid2 in all_ordered:
+        if all(m in already_placed for m in grp):
+            continue
+        remaining_grp = [m for m in grp if m not in already_placed]
+        if not remaining_grp:
+            continue
+        if len(team_ct) + len(remaining_grp) <= 5:
+            team_ct.extend(remaining_grp)
+        elif len(team_t) + len(remaining_grp) <= 5:
+            team_t.extend(remaining_grp)
+        else:
+            for m in remaining_grp:
+                if len(team_ct) < 5:
+                    team_ct.append(m)
+                else:
+                    team_t.append(m)
+        for m in remaining_grp:
+            already_placed.add(m)
+
+    # Соло игроки
+    for uid2 in solo_players:
+        if uid2 in already_placed:
+            continue
         if len(team_ct) < 5:
             team_ct.append(uid2)
         else:
@@ -1626,22 +1795,36 @@ def launch_match(lobby_id):
     lobby["team_ct"] = team_ct
     lobby["team_t"]  = team_t
 
-    host_uid  = next((u for u in team_ct if not is_bot_player(u)), None)
+    ct_captain_uid = lobby.get("ct_captain")
+    if ct_captain_uid and not is_bot_player(ct_captain_uid) and ct_captain_uid in team_ct:
+        host_uid = ct_captain_uid
+    else:
+        host_uid = next((u for u in team_ct if not is_bot_player(u)), None)
     host_p    = get_player(host_uid) if host_uid else None
     host_game_id = host_p[2] if host_p else "—"
     host_name    = host_p[1] if host_p else "—"
     lobby["host_uid"]     = host_uid
     lobby["host_game_id"] = host_game_id
 
+    # Формат карточки для админа с ①②③ и ELO
+    def admin_pline(idx, u):
+        p = get_player(u)
+        num = NUMBER_EMOJI[idx] if idx < len(NUMBER_EMOJI) else f"{idx+1}."
+        if p:
+            icon = "🤖" if p[13] else ""
+            prem = " 👑" if (not p[13] and has_active_premium(u)) else ""
+            return f"{num} {icon}{p[1]}{prem} | ID: <code>{u}</code> | ELO: {p[4]}"
+        return f"{num} <code>{u}</code>"
+
+    ct_lines = "\n".join([admin_pline(i, u) for i, u in enumerate(team_ct)])
+    t_lines  = "\n".join([admin_pline(i, u) for i, u in enumerate(team_t)])
     match_text = (
         f"🎮 <b>МАТЧ #{match_id} НАЧАЛСЯ</b>\n\n"
         f"🏷 Лига: {lobby['league'].upper()}\n📱 Устройство: {lobby['device'].upper()}\n"
         f"🗺 Карта: <b>{lobby['map_name']}</b>\n"
         f"👑 Хост: <b>{host_name}</b> | Game ID: <code>{host_game_id}</code>\n\n"
-        f"💙 <b>Команда CT</b>\n"
-        + "\n".join([f"  {i+1}. {pline(u)}" for i, u in enumerate(team_ct)])
-        + f"\n\n🧡 <b>Команда T</b>\n"
-        + "\n".join([f"  {i+1}. {pline(u)}" for i, u in enumerate(team_t)])
+        f"💙 <b>Команда CT</b>\n{ct_lines}\n\n"
+        f"🧡 <b>Команда T</b>\n{t_lines}"
     )
 
     if ADMIN_CHAT_ID:
@@ -1652,11 +1835,19 @@ def launch_match(lobby_id):
             lobby["admin_thread_id"] = thread_id
             sent = bot.send_message(ADMIN_CHAT_ID, match_text, reply_markup=kb_admin, message_thread_id=thread_id)
             lobby["admin_msg_id"] = sent.message_id
+            try:
+                bot.pin_chat_message(ADMIN_CHAT_ID, sent.message_id, disable_notification=True)
+            except Exception:
+                pass
         except Exception:
             try:
                 sent = bot.send_message(ADMIN_CHAT_ID, match_text, reply_markup=kb_admin)
                 lobby["admin_msg_id"] = sent.message_id
                 lobby["admin_thread_id"] = None
+                try:
+                    bot.pin_chat_message(ADMIN_CHAT_ID, sent.message_id, disable_notification=True)
+                except Exception:
+                    pass
             except Exception as e:
                 print(f"Admin chat error: {e}")
 
@@ -1674,11 +1865,13 @@ def launch_match(lobby_id):
             + "\n".join([f"  {i+1}. {pline(u)}" for i, u in enumerate(team_ct)])
             + f"\n\n🧡 <b>Команда T</b>\n"
             + "\n".join([f"  {i+1}. {pline(u)}" for i, u in enumerate(team_t)])
+            + f"\n\n📸 После матча нажми кнопку и отправь скриншот результатов."
         )
         kb_player = types.InlineKeyboardMarkup()
-        kb_player.add(types.InlineKeyboardButton("📸 Отправить скриншот", callback_data=f"send_result_{lobby_id}"))
+        kb_player.add(types.InlineKeyboardButton("📸 Отправить результаты", callback_data=f"send_result_{lobby_id}"))
         try:
             bot.send_message(uid, player_text, reply_markup=kb_player)
+            awaiting_screenshot[uid] = lobby_id
         except Exception:
             pass
 
@@ -1706,7 +1899,7 @@ def _build_admin_match_kb(lobby_id, match_id, screenshots_count, taken_by=None):
             types.InlineKeyboardButton("🔓 Освободить регистрацию", callback_data=f"reg_release|{lobby_id}"),
         )
     else:
-        kb.add(types.InlineKeyboardButton(f"📝 Зарегистрировать ({screenshots_count}📸)", callback_data=f"reg_match|{lobby_id}"))
+        kb.add(types.InlineKeyboardButton(f"✅ Зарегистрировать матч ({screenshots_count}📸)", callback_data=f"reg_match|{lobby_id}"))
     kb.add(
         types.InlineKeyboardButton("❌ Отменить матч",  callback_data=f"cancel_match|{lobby_id}"),
         types.InlineKeyboardButton("🔄 Перерегать",     callback_data=f"reregister_match|{lobby_id}"),
@@ -1729,7 +1922,7 @@ def cb_send_result(c):
         bot.edit_message_reply_markup(c.message.chat.id, c.message.message_id, reply_markup=None)
     except Exception:
         pass
-    bot.send_message(uid, "📸 <b>Отправьте скриншот результатов</b>\n\nПрикрепите фото:")
+    bot.send_message(uid, "📸 <b>Отправь скриншот прямо в этот чат</b>\n\nПрикрепи фото или документ:")
 
 
 @bot.message_handler(content_types=["photo", "document"])
@@ -1752,7 +1945,7 @@ def handle_player_screenshot(msg):
     sc = lobby["screenshots_count"]
     if ADMIN_CHAT_ID:
         try:
-            caption = f"📸 От <b>{name}</b> (<code>{uid}</code>) | Match #{match_id}"
+            caption = f"📸 {name} ({uid}) — Match #{match_id}"
             thread_id = lobby.get("admin_thread_id")
             kw = {"caption": caption}
             if thread_id:
@@ -1831,7 +2024,9 @@ def cb_reg_match(c):
     instructions = (
         f"📋 <b>Регистрация матча #{match_id}</b>\n\n"
         f"💙 <b>CT</b>\n{ct_list}\n\n🧡 <b>T</b>\n{t_list}\n\n"
-        f"━━━━━━━━━━━━━━━━\n\n<b>Шаг 1/3</b> — Введи счёт:\nФормат: <code>13:11</code>"
+        f"━━━━━━━━━━━━━━━━\n\n"
+        f"<b>Шаг 1/3</b> — Введи счёт матча:\n"
+        f"Формат: <code>13:11</code>"
     )
     match_registration[uid] = {
         "lobby_id": lobby_id,
@@ -1922,51 +2117,87 @@ def reg_winner(c):
     winner = parts[0]
     lobby_id = parts[1] if len(parts) > 1 else match_registration[uid]["lobby_id"]
     match_registration[uid]["winner"] = winner
-    match_registration[uid]["step"] = "kills"
+    match_registration[uid]["step"] = "all_kills"
     bot.answer_callback_query(c.id)
     try:
         bot.edit_message_reply_markup(c.message.chat.id, c.message.message_id, reply_markup=None)
     except Exception:
         pass
     lobby = running_matches.get(lobby_id)
-    all_players = (lobby.get("team_ct", []) + lobby.get("team_t", [])) if lobby else []
-    real_players = [u for u in all_players if not is_bot_player(u)]
-    match_registration[uid]["real_players"] = real_players
-    match_registration[uid]["kill_index"]   = 0
-    match_registration[uid]["kills_data"]   = {}
-    if real_players:
-        p0 = get_player(real_players[0])
-        name0 = p0[1] if p0 else str(real_players[0])
-        reg_send(uid, f"<b>Шаг 3/3</b> — Введи K/D/A для <b>{name0}</b>:\nФормат: <code>20/5/3</code>", parse_mode="HTML")
-    else:
-        _finalize_match(uid, lobby_id)
+    ct_players = [u for u in (lobby.get("team_ct", []) if lobby else []) if not is_bot_player(u)]
+    t_players  = [u for u in (lobby.get("team_t",  []) if lobby else []) if not is_bot_player(u)]
+    match_registration[uid]["ct_players"] = ct_players
+    match_registration[uid]["t_players"]  = t_players
+    match_registration[uid]["kills_data"] = {}
+    _ask_all_kda(uid, ct_players, t_players)
 
 
-@bot.message_handler(func=lambda m: m.from_user.id in match_registration and match_registration[m.from_user.id].get("step") == "kills")
-def reg_step_kills(msg):
+def _ask_all_kda(reg_uid, ct_players, t_players):
+    all_players = ct_players + t_players
+    lines = []
+    for u in all_players:
+        p = get_player(u)
+        name = p[1] if p else str(u)
+        team = "💙 CT" if u in ct_players else "🧡 T"
+        lines.append(f"  {team} {name} — <code>{u}</code>")
+    player_list = "\n".join(lines)
+    all_count = len(all_players)
+    example_parts = [f"{u} 20 5 3" for u in all_players[:3]]
+    example = ", ".join(example_parts)
+    reg_send(
+        reg_uid,
+        f"<b>Шаг 3/3 — Статистика игроков</b>\n\n"
+        f"Список игроков:\n{player_list}\n\n"
+        f"💡 Скопируй ID рядом с ником и введи <b>всех одной строкой</b>:\n"
+        f"<code>ID K A D, ID K A D, ...</code>\n\n"
+        f"🔫 K — киллы  🤝 A — помощи  💀 D — смерти\n\n"
+        f"Пример:\n<code>{example}</code>\n\n"
+        f"⚠️ Между цифрами — пробел, после каждого игрока — запятая\n"
+        f"Нужно ввести всех {all_count} игроков.",
+        parse_mode="HTML",
+    )
+
+
+def _parse_all_kda(text, all_players):
+    known_ids = set(all_players)
+    entries = [e.strip() for e in text.split(",") if e.strip()]
+    if len(entries) != len(all_players):
+        return None, f"❌ Нужно {len(all_players)} записей через запятую, ты ввёл {len(entries)}."
+    result = {}
+    seen_ids = set()
+    for i, entry in enumerate(entries):
+        parts = entry.split()
+        if len(parts) != 4:
+            return None, f"❌ Запись #{i+1}: нужно 4 значения через пробел — <code>ID K A D</code>."
+        try:
+            pid = int(parts[0])
+            k, a, d = int(parts[1]), int(parts[2]), int(parts[3])
+        except ValueError:
+            return None, f"❌ Запись #{i+1}: только цифры."
+        if pid not in known_ids:
+            return None, f"❌ Запись #{i+1}: ID <code>{pid}</code> не найден в этом матче."
+        if pid in seen_ids:
+            return None, f"❌ Запись #{i+1}: ID <code>{pid}</code> уже введён."
+        seen_ids.add(pid)
+        result[pid] = {"kills": k, "assists": a, "deaths": d}
+    return result, None
+
+
+@bot.message_handler(func=lambda m: m.from_user.id in match_registration and match_registration[m.from_user.id].get("step") == "all_kills")
+def reg_step_all_kills(msg):
     uid = msg.from_user.id
     if not is_game_reg_check(uid):
         return
-    text = msg.text.strip() if msg.text else ""
-    m = re.match(r'^(\d+)\s*/\s*(\d+)\s*/\s*(\d+)$', text)
-    if not m:
-        reg_send(uid, "❌ Формат: <code>20/5/3</code>  (kills/deaths/assists)", parse_mode="HTML")
-        return
-    k, d, a = int(m.group(1)), int(m.group(2)), int(m.group(3))
     data = match_registration[uid]
-    idx = data["kill_index"]
-    real_players = data["real_players"]
-    cur_uid = real_players[idx]
-    data["kills_data"][cur_uid] = {"kills": k, "deaths": d, "assists": a}
-    data["kill_index"] += 1
-    if data["kill_index"] < len(real_players):
-        next_uid = real_players[data["kill_index"]]
-        p = get_player(next_uid)
-        name = p[1] if p else str(next_uid)
-        reg_send(uid, f"Введи K/D/A для <b>{name}</b>:\nФормат: <code>20/5/3</code>", parse_mode="HTML")
-    else:
-        lobby_id = data["lobby_id"]
-        _finalize_match(uid, lobby_id)
+    ct_players = data.get("ct_players", [])
+    t_players  = data.get("t_players",  [])
+    all_players = ct_players + t_players
+    parsed, err = _parse_all_kda(msg.text.strip() if msg.text else "", all_players)
+    if err:
+        reg_send(uid, err, parse_mode="HTML")
+        return
+    data["kills_data"].update(parsed)
+    _finalize_match(uid, data["lobby_id"])
 
 
 def _finalize_match(reg_uid, lobby_id):
@@ -1991,44 +2222,68 @@ def _finalize_match(reg_uid, lobby_id):
             continue
         won = uid in winner_team
         kda = kills_data.get(uid, {"kills": 0, "deaths": 0, "assists": 0})
-        elo_change = 25 if won else -20
+        kills = kda["kills"]
+        if won:
+            elo_change = 25 if kills >= 12 else 17
+            coins_reward = 15
+        else:
+            elo_change = -15 if kills >= 12 else -23
+            coins_reward = 4
         p = get_player(uid)
         if p:
             prem = has_active_premium(uid)
             if prem:
                 elo_change = int(elo_change * 1.5) if won else elo_change
+                coins_reward = int(coins_reward * 1.5)
         if won:
             cur.execute(
-                "UPDATE players SET wins=wins+1, elo=GREATEST(0, elo+%s), kills=kills+%s, deaths=deaths+%s, assists=assists+%s WHERE user_id=%s",
-                (elo_change, kda["kills"], kda["deaths"], kda["assists"], uid),
+                "UPDATE players SET wins=wins+1, elo=GREATEST(0, elo+%s), kills=kills+%s, deaths=deaths+%s, assists=assists+%s, coins=coins+%s WHERE user_id=%s",
+                (elo_change, kda["kills"], kda["deaths"], kda["assists"], coins_reward, uid),
             )
         else:
             cur.execute(
-                "UPDATE players SET losses=losses+1, elo=GREATEST(0, elo+%s), kills=kills+%s, deaths=deaths+%s, assists=assists+%s WHERE user_id=%s",
-                (elo_change, kda["kills"], kda["deaths"], kda["assists"], uid),
+                "UPDATE players SET losses=losses+1, elo=GREATEST(0, elo+%s), kills=kills+%s, deaths=deaths+%s, assists=assists+%s, coins=coins+%s WHERE user_id=%s",
+                (elo_change, kda["kills"], kda["deaths"], kda["assists"], coins_reward, uid),
             )
-        all_stats[uid] = {**kda, "won": won, "elo_change": elo_change}
+        all_stats[uid] = {**kda, "won": won, "elo_change": elo_change, "coins_reward": coins_reward}
     conn.commit()
     conn.close()
     save_match_to_history(lobby, {"winner": winner, "score_w": score_w, "score_l": score_l}, all_stats)
     lobby["status"] = "finished"
     running_matches.pop(lobby_id, None)
-    result_lines = []
+    winner_lines = []
+    loser_lines  = []
     for uid, s in all_stats.items():
         p = get_player(uid)
         name = p[1] if p else str(uid)
         sign = "+" if s["elo_change"] >= 0 else ""
-        result_lines.append(
-            f"{'✅' if s['won'] else '❌'} {name} | K/D/A: {s['kills']}/{s['deaths']}/{s['assists']} | ELO: {sign}{s['elo_change']}"
+        line = (
+            f"👤 <b>{name}</b>\n"
+            f"   🔫 Киллы: {s['kills']}  🤝 Помощи: {s['assists']}  💀 Смерти: {s['deaths']}\n"
+            f"   📊 ELO: {sign}{s['elo_change']}  🪙 Коины: +{s['coins_reward']}"
         )
+        if s["won"]:
+            winner_lines.append(line)
+        else:
+            loser_lines.append(line)
+
+    winner_team_label = "💙 CT" if winner == "ct" else "🧡 T"
+    loser_team_label  = "🧡 T"  if winner == "ct" else "💙 CT"
+
     result_text = (
-        f"🏁 <b>Матч #{lobby.get('match_id','?')} завершён!</b>\n\n"
-        f"{'💙 CT' if winner=='ct' else '🧡 T'} победила! <b>{score_w}:{score_l}</b>\n\n"
-        + "\n".join(result_lines)
+        f"🏁 <b>Матч #{lobby.get('match_id','?')} завершён!</b>\n"
+        f"━━━━━━━━━━━━━━━━━━━━\n"
+        f"🗺 Карта: {lobby.get('map_name', '?')}  |  Счёт: <b>{score_w}:{score_l}</b>\n"
+        f"🏆 Победитель: <b>{winner_team_label}</b>\n"
+        f"━━━━━━━━━━━━━━━━━━━━\n\n"
+        f"✅ <b>{winner_team_label} — Победа</b>\n"
+        + "\n\n".join(winner_lines)
+        + f"\n\n❌ <b>{loser_team_label} — Поражение</b>\n"
+        + "\n\n".join(loser_lines)
     )
     for uid in all_stats:
         try:
-            bot.send_message(uid, result_text)
+            bot.send_message(uid, result_text, parse_mode="HTML")
         except Exception:
             pass
     reg_send(reg_uid, f"✅ Матч зарегистрирован!\n\n{result_text}", parse_mode="HTML")
@@ -2373,7 +2628,10 @@ def handle_party_invite(msg):
 def cb_party_accept(c):
     uid = c.from_user.id
     parts = c.data.split("_")
-    party_id = f"party_{parts[2]}_{parts[3]}"
+    # Формат: party_accept_party_LEADER_TIMESTAMP_INVITERID
+    # party_id это всё что после "party_accept_" до последнего "_<inviterID>"
+    raw = c.data[len("party_accept_"):]
+    party_id = "_".join(raw.split("_")[:-1])
     party = parties.get(party_id)
     if not party:
         bot.answer_callback_query(c.id, "❌ Пати не существует")
