@@ -46,7 +46,7 @@ telebot.apihelper.ENABLE_MIDDLEWARE = True
 bot = telebot.TeleBot(TOKEN, parse_mode="HTML")
 
 # ==================== ГЛОБАЛЬНЫЕ СОСТОЯНИЯ ====================
-maintenance_mode      = False
+
 active_lobbies        = {}
 running_matches       = {}
 user_lobby            = {}
@@ -754,41 +754,6 @@ def pick_captain(team):
     weights = [1.07 if has_active_premium(u) else 1.0 for u in eligible]
     return random.choices(eligible, weights=weights, k=1)[0]
 
-
-# ==================== ТЕХРАБОТЫ (MIDDLEWARE) ====================
-@bot.middleware_handler(update_types=["message", "callback_query"])
-def maintenance_middleware(bot_instance, update):
-    global maintenance_mode
-    if not maintenance_mode:
-        return
-    if hasattr(update, "from_user") and update.from_user:
-        uid = update.from_user.id
-    else:
-        return
-    if uid in ADMIN_IDS_LIST:
-        return
-    p = get_player(uid)
-    if p and p[11] == 1:
-        return
-    # CallbackQuery имеет атрибут .id и .message; Message — только .chat, .text и т.д.
-    if hasattr(update, "data"):  # это CallbackQuery
-        try:
-            bot_instance.answer_callback_query(
-                update.id,
-                "🔧 Технические работы!\nБот временно недоступен. Попробуйте позже.",
-                show_alert=True,
-            )
-        except Exception:
-            pass
-    else:  # это Message
-        try:
-            bot_instance.send_message(
-                update.chat.id,
-                "🔧 <b>Технические работы</b>\n\nБот временно недоступен для игроков. Попробуйте позже.",
-            )
-        except Exception:
-            pass
-    raise CancelUpdate()
 
 
 # ==================== ПРОВЕРКА БЛОКИРОВОК ====================
@@ -2850,10 +2815,8 @@ def cb_admin_panel(c):
         f"👥 Игроков: <b>{len(players)}</b>\n🎮 Лобби: <b>{len(active_lobbies)}</b>\n"
         f"🔴 Матчей: <b>{active_count}</b>\n\nВыберите действие:"
     )
-    maint_btn = "🟢 Вкл. тех. работы" if not maintenance_mode else "🔴 Выкл. тех. работы"
     kb = types.InlineKeyboardMarkup(row_width=1)
     kb.add(
-        types.InlineKeyboardButton(maint_btn,                 callback_data="admin_toggle_maintenance"),
         types.InlineKeyboardButton("👥 Список игроков",       callback_data="admin_players"),
         types.InlineKeyboardButton("🔍 Поиск по нику/ID",    callback_data="admin_search"),
         types.InlineKeyboardButton("🔍 Поиск по Game ID",    callback_data="admin_search_gameid"),
@@ -2880,56 +2843,6 @@ def cb_admin_panel(c):
     bot.edit_message_text(text, c.message.chat.id, c.message.message_id, reply_markup=kb)
     bot.answer_callback_query(c.id)
 
-
-@bot.callback_query_handler(func=lambda c: c.data == "admin_toggle_maintenance")
-def cb_toggle_maintenance(c):
-    global maintenance_mode
-    uid = c.from_user.id
-    if not is_admin(uid):
-        bot.answer_callback_query(c.id, "❌ Нет доступа")
-        return
-    maintenance_mode = not maintenance_mode
-    status = "🔴 ВКЛЮЧЕНЫ" if maintenance_mode else "🟢 ВЫКЛЮЧЕНЫ"
-    bot.answer_callback_query(c.id, f"Технические работы: {status}", show_alert=True)
-    players = get_all_players()
-    active_count = sum(1 for l in running_matches.values() if l.get("status") == "active")
-    maint_status = "🔴 Тех. работы АКТИВНЫ" if maintenance_mode else "🟢 Бот работает в штатном режиме"
-    text = (
-        f"⚙️ <b>АДМИН ПАНЕЛЬ</b>\n\n"
-        f"👥 Игроков: <b>{len(players)}</b>\n🎮 Лобби: <b>{len(active_lobbies)}</b>\n"
-        f"🔴 Матчей: <b>{active_count}</b>\n\n{maint_status}\n\nВыберите действие:"
-    )
-    maint_btn = "🟢 Вкл. тех. работы" if not maintenance_mode else "🔴 Выкл. тех. работы"
-    kb = types.InlineKeyboardMarkup(row_width=1)
-    kb.add(
-        types.InlineKeyboardButton(maint_btn,                 callback_data="admin_toggle_maintenance"),
-        types.InlineKeyboardButton("👥 Список игроков",       callback_data="admin_players"),
-        types.InlineKeyboardButton("🔍 Поиск по нику/ID",    callback_data="admin_search"),
-        types.InlineKeyboardButton("🔍 Поиск по Game ID",    callback_data="admin_search_gameid"),
-        types.InlineKeyboardButton("💰 Выдать монеты",        callback_data="admin_give_coins"),
-        types.InlineKeyboardButton("📊 Изменить ELO",         callback_data="admin_set_elo"),
-        types.InlineKeyboardButton("✏️ Изм. ник игрока",     callback_data="admin_change_nick"),
-        types.InlineKeyboardButton("🎮 Изм. Game ID игрока", callback_data="admin_change_gid"),
-        types.InlineKeyboardButton("📈 Редактировать стату",  callback_data="admin_edit_stats"),
-        types.InlineKeyboardButton("⚠️ Выдать варн",          callback_data="admin_warn"),
-        types.InlineKeyboardButton("🔇 Мут",                  callback_data="admin_mute"),
-        types.InlineKeyboardButton("🔊 Размутить",            callback_data="admin_unmute"),
-        types.InlineKeyboardButton("🔎 Вызвать на проверку",  callback_data="admin_check"),
-        types.InlineKeyboardButton("✅ Снять проверку",       callback_data="admin_uncheck"),
-        types.InlineKeyboardButton("🚫 Бан / Разбан",         callback_data="admin_ban"),
-        types.InlineKeyboardButton("👑 Выдать/Снять админку", callback_data="admin_give_admin"),
-        types.InlineKeyboardButton("🎮 Роль Гейм Рег",       callback_data="admin_give_game_reg"),
-        types.InlineKeyboardButton("⭐ Quals доступ",         callback_data="admin_quals_access"),
-        types.InlineKeyboardButton("🎁 Промокоды",            callback_data="admin_promos"),
-        types.InlineKeyboardButton("🎮 Управление матчами",   callback_data="admin_matches"),
-        types.InlineKeyboardButton("📋 История матчей",       callback_data="admin_match_history"),
-        types.InlineKeyboardButton("📢 Рассылка",             callback_data="admin_broadcast"),
-        types.InlineKeyboardButton("🔙 Назад",                callback_data="back"),
-    )
-    try:
-        bot.edit_message_text(text, c.message.chat.id, c.message.message_id, reply_markup=kb)
-    except Exception:
-        pass
 
 
 # ==================== ПРОМОКОДЫ (АДМИН) ====================
