@@ -1972,7 +1972,7 @@ def build_ban_status_text(lobby_id):
     t_p  = get_player(lobby.get("t_captain"))
     ct_name = ct_p[1] if ct_p else "CT капитан"
     t_name  = t_p[1]  if t_p  else "T капитан"
-   � bans = lobby.get("map_bans", [])
+   � bans = lobby.get("map_bans",[])
     remaining = lobby.get("maps_remaining", [])
     turn = lobby.get("ban_turn", "ct")
     lines = [f"🗺 <b>Бан карт</b>", "", f"💙 CT: <b>{ct_name}</b>", f"🧡 T: <b>{t_name}</b>", ""]
