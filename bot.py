@@ -1767,7 +1767,7 @@ def cb_leave(c):
         bot.answer_callback_query(c.id, "✅ Вы вышли из лобби")
         bot.edit_message_text("⚡ ACTUAL FACEIT", c.message.chat.id, c.message.message_id, reply_markup=main_menu(uid))
     else:
-        bot.answer_callback_query(c.id, "❌ В�ы не в этом лобби")
+        bot.answer_callback_query(c.id, "❌ Вы не в этом лобби")
 
 
 # ==================== ФАЗА ПРИНЯТИЯ ====================
@@ -1972,7 +1972,7 @@ def build_ban_status_text(lobby_id):
     t_p  = get_player(lobby.get("t_captain"))
     ct_name = ct_p[1] if ct_p else "CT капитан"
     t_name  = t_p[1]  if t_p  else "T капитан"
-   � bans = lobby.get("map_bans", [])
+    bans = lobby.get("map_bans", [])
     remaining = lobby.get("maps_remaining", [])
     turn = lobby.get("ban_turn", "ct")
     lines = [f"🗺 <b>Бан карт</b>", "", f"💙 CT: <b>{ct_name}</b>", f"🧡 T: <b>{t_name}</b>", ""]
@@ -2200,7 +2200,7 @@ def launch_match(lobby_id):
                     if m != ct_cap and m not in team_ct:
                         team_ct.append(m)
                 break
-    if t_cap and t_cap in p�layers:
+    if t_cap and t_cap in players:
         team_t.append(t_cap)
         for grp in party_groups:
             if t_cap in grp:
@@ -2396,7 +2396,7 @@ def cb_send_result(c):
         bot.edit_message_reply_markup(c.message.chat.id, c.message.message_id, reply_markup=None)
     except Exception:
         pass
-    bot.send_message(uid, "📸 <b>Отправь скриншот прямо в этот чат</b>\n\nПрикрепи фото или док�умент:")
+    bot.send_message(uid, "📸 <b>Отправь скриншот прямо в этот чат</b>\n\nПрикрепи фото или документ:")
 
 
 @bot.message_handler(content_types=["photo", "document"])
@@ -2610,7 +2610,7 @@ def cb_reg_abandon(c):
         thread_id = lobby.get("admin_thread_id")
         edit_kw = {"reply_markup": new_kb}
         if thread_id:
-      �      edit_kw["message_thread_id"] = thread_id
+            edit_kw["message_thread_id"] = thread_id
         bot.edit_message_reply_markup(c.message.chat.id, c.message.message_id, **edit_kw)
     except Exception:
         pass
@@ -2808,7 +2808,7 @@ def _finalize_match(reg_uid, match_key):
         if won:
             cur.execute(
                 "UPDATE players SET wins=wins+1, elo=GREATEST(0, elo+%s), kills=kills+%s, deaths=deaths+%s, assists=assists+%s, coins=coins+%s WHERE user_id=%s",
-                (elo_c�hange, kda["kills"], kda["deaths"], kda["assists"], coins_reward, uid),
+                (elo_change, kda["kills"], kda["deaths"], kda["assists"], coins_reward, uid),
             )
         else:
             cur.execute(
@@ -3019,7 +3019,7 @@ def cb_noop(c):
     bot.answer_callback_query(c.id)
 
 
-# ==================== МАГАЗИН =�===================
+# ==================== МАГАЗИН ====================
 @bot.callback_query_handler(func=lambda c: c.data == "shop")
 def cb_shop(c):
     uid = c.from_user.id
@@ -3216,7 +3216,7 @@ def cb_party_menu(c):
                 types.InlineKeyboardButton("🗑 Распустить пати", callback_data="party_disband"),
             )
         else:
-        �    kb.add(types.InlineKeyboardButton("🚪 Покинуть пати", callback_data="party_leave"))
+            kb.add(types.InlineKeyboardButton("🚪 Покинуть пати", callback_data="party_leave"))
         kb.add(types.InlineKeyboardButton("🔙 Назад", callback_data="back"))
     else:
         text = "👥 У вас нет пати.\nСоздайте пати или примите приглашение."
@@ -3427,7 +3427,7 @@ def cb_buy_package(c):
             provider_token="",
             currency="XTR",
             prices=[types.LabeledPrice(label=f"{coins_amount} AC", amount=stars)],
-            start_parameter=f"buy_coins�_{pkg_idx}",
+            start_parameter=f"buy_coins_{pkg_idx}",
         )
     except Exception as e:
         bot.send_message(uid, f"❌ Ошибка создания счёта: {e}")
@@ -3604,7 +3604,7 @@ def cb_admin_promo_create(c):
     )
 
 
-@bot.callback_query_handler(func=lambda c: c.data == "admin_promo_de�activate")
+@bot.callback_query_handler(func=lambda c: c.data == "admin_promo_deactivate")
 def cb_admin_promo_deactivate(c):
     uid = c.from_user.id
     if not is_admin(uid):
@@ -3795,7 +3795,7 @@ def cb_admin_match_history(c):
         return
     matches = get_match_history(10)
     text = "📋 <b>ИСТОРИЯ МАТЧЕЙ</b>\n\nМатчей нет." if not matches else "📋 <b>ИСТОРИЯ МАТЧЕЙ</b>\n\n"
-    for row in matches�:
+    for row in matches:
         match_id, league, device, map_name, winner, score_w, score_l, finished_at = row
         dt = datetime.datetime.fromtimestamp(finished_at).strftime("%d.%m %H:%M") if finished_at else "?"
         winner_str = "💙 CT" if winner == "ct" else "🧡 T"
@@ -3961,7 +3961,7 @@ def handle_admin_action(msg):
             bot.send_message(uid, "❌ Игрок не найден")
             return
         warn_flow[uid] = {"step": "reason", "target_id": p[0], "target_name": p[1]}
-        bot.send_message(uid, f"⚠️ <b>Шаг 2/2</b> — Причина варна для <b>{p[1]}</b>:\n\nВведите причину:", parse_mode="HT�ML")
+        bot.send_message(uid, f"⚠️ <b>Шаг 2/2</b> — Причина варна для <b>{p[1]}</b>:\n\nВведите причину:", parse_mode="HTML")
         return
 
     elif action == "unwarn":
@@ -4168,7 +4168,7 @@ def handle_ban_flow(msg):
         if p[14]:
             # Уже забанен — разбаниваем
             conn = _db(); cur = conn.cursor()
-            cur.execute("UPDATE players SET is_banned=0, ban_reason='',� ban_until=0 WHERE user_id=%s", (p[0],))
+            cur.execute("UPDATE players SET is_banned=0, ban_reason='', ban_until=0 WHERE user_id=%s", (p[0],))
             conn.commit(); conn.close()
             ban_flow.pop(uid, None)
             bot.send_message(uid, f"✅ Игрок <b>{p[1]}</b> разблокирован.", parse_mode="HTML")
@@ -4400,7 +4400,7 @@ def cb_admin_do_action(c):
     if action == "ban":
         # Запускаем ban_flow
         conn.close()
-        ban_flow[ui�d] = {"step": "duration", "target_id": target_id, "target_name": p[1], "is_banned": p[14]}
+        ban_flow[uid] = {"step": "duration", "target_id": target_id, "target_name": p[1], "is_banned": p[14]}
         if p[14]:
             # Разбаниваем
             ban_flow.pop(uid, None)
@@ -4586,7 +4586,7 @@ def cb_game_reg_panel(c):
         return
     active = [(mk, l) for mk, l in running_matches.items() if l.get("status") == "active"]
     if not active:
-        text = "📋 <b>Регистрация м�атчей</b>\n\nАктивных матчей нет."
+        text = "📋 <b>Регистрация матчей</b>\n\nАктивных матчей нет."
         kb = types.InlineKeyboardMarkup()
         kb.add(types.InlineKeyboardButton("🔙 Назад", callback_data="back"))
         bot.edit_message_text(text, c.message.chat.id, c.message.message_id, reply_markup=kb)
@@ -4785,7 +4785,7 @@ def cb_ticket_start(c):
     bot.answer_callback_query(c.id)
     try:
         bot.edit_message_text(
-      �      "🎟 <b>СОЗДАНИЕ ТИКЕТА</b>\n\n"
+            "🎟 <b>СОЗДАНИЕ ТИКЕТА</b>\n\n"
             "<b>Шаг 1/4</b> — Введите код матча (#XXXXXXX) к которому относится жалоба:\n"
             "<i>Если жалоба не связана с конкретным матчем — напишите <code>нет</code></i>",
             c.message.chat.id, c.message.message_id,
