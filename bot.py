@@ -99,14 +99,6 @@ ticket_flow           = {}   # uid -> {step, match_code, reason, evidence_file_i
 
 # ==================== ТОВАРЫ МАГАЗИНА ====================
 SHOP_ITEMS_DEFAULT = [
-    ("AK-47 | Fuel Injector",  "Легендарный скин на АК-47", "skins", 500,  "skin"),
-    ("AK-47 | Bloodsport",     "Агрессивный дизайн",        "skins", 350,  "skin"),
-    ("M4A4 | Howl",            "Редкий скин M4A4",           "skins", 800,  "skin"),
-    ("M4A4 | Neo-Noir",        "Элегантный скин M4A4",       "skins", 400,  "skin"),
-    ("AWP | Dragon Lore",      "Легендарный AWP",            "skins", 1200, "skin"),
-    ("AWP | Asiimov",          "Футуристичный AWP",          "skins", 600,  "skin"),
-    ("Нож | Butterfly Blue",   "Красивый нож-бабочка",       "skins", 1500, "skin"),
-    ("Нож | Karambit Fade",    "Редкий карамбит",            "skins", 2000, "skin"),
     ("Рамка Gold",             "Золотая рамка профиля",      "decor", 300,  "frame"),
     ("Рамка Diamond",          "Алмазная рамка профиля",     "decor", 600,  "frame"),
     ("Рамка Elite",            "Элитная рамка профиля",      "decor", 150,  "frame"),
@@ -122,8 +114,8 @@ SHOP_ITEMS_DEFAULT = [
     ("Quals доступ",           "Постоянный доступ к QUALS",  "goods", 1500, "quals"),
 ]
 
-CATEGORY_NAMES = {"skins": "🎨 Скины", "decor": "🖼 Декор", "goods": "📦 Товары"}
-CATEGORY_ICONS = {"skins": "🎨", "decor": "🖼", "goods": "📦"}
+CATEGORY_NAMES = {"decor": "🖼 Декор", "goods": "📦 Товары"}
+CATEGORY_ICONS = {"decor": "🖼", "goods": "📦"}
 
 COIN_PACKAGES = [
     ("Стартовый",   200,   40,   "40 ⭐"),
