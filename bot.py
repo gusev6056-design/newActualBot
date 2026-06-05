@@ -402,6 +402,24 @@ def init_db():
     """)
     conn.commit()
 
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS unregistered_matches (
+            id SERIAL PRIMARY KEY,
+            match_id INTEGER NOT NULL UNIQUE,
+            match_code TEXT NOT NULL,
+            league TEXT DEFAULT '',
+            device TEXT DEFAULT '',
+            map_name TEXT DEFAULT '',
+            players_json TEXT DEFAULT '[]',
+            team_ct_json TEXT DEFAULT '[]',
+            team_t_json TEXT DEFAULT '[]',
+            host_game_id TEXT DEFAULT '',
+            screenshots_count INTEGER DEFAULT 0,
+            started_at BIGINT DEFAULT EXTRACT(EPOCH FROM NOW())::BIGINT
+        )
+    """)
+    conn.commit()
+
     conn.close()
     print("✅ БД инициализирована (PostgreSQL / Supabase).")
 
@@ -706,6 +724,9 @@ def save_match_start(lobby):
             "name": p[1] if p else str(uid),
             "team": "ct" if uid in lobby.get("team_ct", []) else "t",
         })
+    players_json_str = json.dumps(players_info, ensure_ascii=False)
+    team_ct_json_str = json.dumps(lobby.get("team_ct", []), ensure_ascii=False)
+    team_t_json_str  = json.dumps(lobby.get("team_t",  []), ensure_ascii=False)
     conn = _db()
     cur = conn.cursor()
     try:
@@ -721,7 +742,27 @@ def save_match_start(lobby):
                 lobby.get("league", ""),
                 lobby.get("device", ""),
                 lobby.get("map_name", ""),
-                json.dumps(players_info, ensure_ascii=False),
+                players_json_str,
+                int(time.time()),
+            ),
+        )
+        # Также пишем в unregistered_matches — удалим оттуда при регистрации/отмене
+        cur.execute(
+            """INSERT INTO unregistered_matches
+               (match_id, match_code, league, device, map_name, players_json,
+                team_ct_json, team_t_json, host_game_id, screenshots_count, started_at)
+               VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, 0, %s)
+               ON CONFLICT (match_id) DO NOTHING""",
+            (
+                lobby.get("match_id", 0),
+                lobby.get("match_code", ""),
+                lobby.get("league", ""),
+                lobby.get("device", ""),
+                lobby.get("map_name", ""),
+                players_json_str,
+                team_ct_json_str,
+                team_t_json_str,
+                lobby.get("host_game_id", ""),
                 int(time.time()),
             ),
         )
@@ -771,6 +812,11 @@ def save_match_to_history(lobby, data, all_stats):
             int(time.time()),
         ),
     )
+    # Матч зарегистрирован — удаляем из незарегистрированных
+    try:
+        cur.execute("DELETE FROM unregistered_matches WHERE match_id=%s", (lobby.get("match_id", 0),))
+    except Exception:
+        pass
     conn.commit()
     conn.close()
 
@@ -809,6 +855,11 @@ def save_match_cancelled(lobby, reason=""):
                 int(time.time()),
             ),
         )
+        # Матч отменён — удаляем из незарегистрированных
+        try:
+            cur.execute("DELETE FROM unregistered_matches WHERE match_id=%s", (lobby.get("match_id", 0),))
+        except Exception:
+            pass
         conn.commit()
     except Exception as e:
         print(f"save_match_cancelled error: {e}")
@@ -1759,7 +1810,14 @@ def cb_leave(c):
         bot.answer_callback_query(c.id, "✅ Вы вышли из лобби")
         bot.edit_message_text("⚡ ACTUAL FACEIT", c.message.chat.id, c.message.message_id, reply_markup=main_menu(uid))
     else:
-        bot.answer_callback_query(c.id, "❌ Вы не в этом лобби")
+        # Игрок не найден в лобби (лобби удалено или игрок уже вышел)
+        # Всё равно чистим зависший user_lobby
+        user_lobby.pop(uid, None)
+        bot.answer_callback_query(c.id, "❌ Лобби недоступно")
+        try:
+            bot.edit_message_text("⚡ ACTUAL FACEIT", c.message.chat.id, c.message.message_id, reply_markup=main_menu(uid))
+        except Exception:
+            pass
 
 
 # ==================== ФАЗА ПРИНЯТИЯ ====================
@@ -1893,6 +1951,17 @@ def start_accept_phase(lobby_id):
                     )
                 else:
                     bot.send_message(uid, f"⚠️ Варн {warns}/3 за непринятие матча.\n❌ Вы исключены из лобби.")
+                    try:
+                        prow2 = get_player(uid)
+                        pname2 = prow2[1] if prow2 else str(uid)
+                        send_punishment_log(
+                            f"⚠️ <b>Авто-варн (непринятие матча)</b>\n"
+                            f"👤 Игрок: {tg_link(uid, pname2)}\n"
+                            f"⚠️ Варны: {warns}/3\n"
+                            f"📝 Причина: не принял матч за {ACCEPT_TIMEOUT} сек"
+                        )
+                    except Exception:
+                        pass
             except Exception:
                 pass
         if len(lobby2["players"]) >= 10:
