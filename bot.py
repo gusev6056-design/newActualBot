@@ -2200,7 +2200,7 @@ def launch_match(lobby_id):
                     if m != ct_cap and m not in team_ct:
                         team_ct.append(m)
                 break
-    if t_cap and t_cap in p�layers:
+    if t_cap and t_cap in players:
         team_t.append(t_cap)
         for grp in party_groups:
             if t_cap in grp:
