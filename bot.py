@@ -2610,7 +2610,7 @@ def cb_reg_abandon(c):
         thread_id = lobby.get("admin_thread_id")
         edit_kw = {"reply_markup": new_kb}
         if thread_id:
-      �      edit_kw["message_thread_id"] = thread_id
+    edit_kw["message_thread_id"] = thread_id
         bot.edit_message_reply_markup(c.message.chat.id, c.message.message_id, **edit_kw)
     except Exception:
         pass
