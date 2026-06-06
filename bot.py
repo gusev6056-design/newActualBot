@@ -12,6 +12,19 @@ import time
 import datetime
 import json
 
+try:
+    from card_generator import (
+        generate_profile_card, generate_leaderboard_card,
+        generate_match_result_card,
+    )
+    CARDS_ENABLED = True
+except Exception as _card_err:
+    CARDS_ENABLED = False
+
+def format_league(league) -> str:
+    league = (league or "default").lower().strip()
+    return {"quals": "Quals", "default": "Default"}.get(league, league.capitalize())
+
 # ==================== FLASK ====================
 app = Flask(__name__)
 
@@ -152,7 +165,7 @@ def elo_bar(elo: int, lvl: int) -> str:
 
 # ==================== ПОДКЛЮЧЕНИЕ К БД ====================
 def _db():
-    return psycopg2.connect(DATABASE_URL)
+    return psycopg2.connect(DATABASE_URL, connect_timeout=15)
 
 
 def _add_column_if_missing(cur, table, col, definition):
@@ -209,6 +222,13 @@ def init_db():
         ("tg_username",    "TEXT DEFAULT ''"),
         ("ban_reason",     "TEXT DEFAULT ''"),
         ("ban_until",      "BIGINT DEFAULT 0"),
+        ("quals_wins",     "INTEGER DEFAULT 0"),
+        ("quals_losses",   "INTEGER DEFAULT 0"),
+        ("quals_kills",    "INTEGER DEFAULT 0"),
+        ("quals_deaths",   "INTEGER DEFAULT 0"),
+        ("quals_assists",  "INTEGER DEFAULT 0"),
+        ("quals_elo",      "INTEGER DEFAULT 1000"),
+        ("mvp_count",      "INTEGER DEFAULT 0"),
     ]:
         _add_column_if_missing(cur, "players", col, definition)
     conn.commit()
@@ -659,6 +679,41 @@ def get_all_players():
     conn.close()
     return rows
 
+def get_quals_players():
+    conn = _db()
+    cur = conn.cursor()
+    cur.execute("""
+        SELECT user_id, username, quals_elo, quals_wins, quals_losses, quals_kills, quals_deaths, quals_assists
+        FROM players WHERE is_bot=0 AND registered=1 AND quals_access=1
+        ORDER BY quals_elo DESC
+    """)
+    rows = cur.fetchall()
+    conn.close()
+    return rows
+
+def get_player_quals_stats(uid):
+    conn = _db()
+    cur = conn.cursor()
+    try:
+        cur.execute("""
+            SELECT quals_elo, quals_wins, quals_losses, quals_kills, quals_deaths, quals_assists, quals_access
+            FROM players WHERE user_id=%s
+        """, (uid,))
+        row = cur.fetchone()
+    except Exception:
+        row = None
+    conn.close()
+    if not row:
+        return None
+    qelo, qw, ql, qk, qd, qa, q_access = row
+    has_games  = (qw or 0) + (ql or 0) > 0
+    has_access = bool(q_access)
+    # Показываем секцию если есть доступ к quals ИЛИ уже есть сыгранные матчи
+    if not has_games and not has_access:
+        return None
+    return {"elo": qelo or 1000, "wins": qw or 0, "losses": ql or 0,
+            "kills": qk or 0, "deaths": qd or 0, "assists": qa or 0}
+
 def get_player_by_game_id(game_id):
     conn = _db()
     cur = conn.cursor()
@@ -785,40 +840,53 @@ def save_match_to_history(lobby, data, all_stats):
             "assists": s["assists"],
             "won": s["won"],
         })
-    conn = _db()
-    cur = conn.cursor()
-    # Обновляем существующую запись если она уже есть (создана при старте)
-    cur.execute(
-        """INSERT INTO matches
-           (match_id, match_code, league, device, map_name, winner, score_w, score_l, players_json,
-            status, started_at)
-           VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, 'registered', %s)
-           ON CONFLICT (match_id) DO UPDATE SET
-               winner      = EXCLUDED.winner,
-               score_w     = EXCLUDED.score_w,
-               score_l     = EXCLUDED.score_l,
-               players_json = EXCLUDED.players_json,
-               status      = 'registered'""",
-        (
-            lobby.get("match_id", 0),
-            lobby.get("match_code", ""),
-            lobby.get("league", ""),
-            lobby.get("device", ""),
-            lobby.get("map_name", ""),
-            data.get("winner", ""),
-            data.get("score_w", 0),
-            data.get("score_l", 0),
-            json.dumps(players_info, ensure_ascii=False),
-            int(time.time()),
-        ),
-    )
-    # Матч зарегистрирован — удаляем из незарегистрированных
+    conn = None
     try:
-        cur.execute("DELETE FROM unregistered_matches WHERE match_id=%s", (lobby.get("match_id", 0),))
-    except Exception:
-        pass
-    conn.commit()
-    conn.close()
+        conn = _db()
+        cur = conn.cursor()
+        cur.execute(
+            """INSERT INTO matches
+               (match_id, match_code, league, device, map_name, winner, score_w, score_l, players_json,
+                status, started_at)
+               VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, 'registered', %s)
+               ON CONFLICT (match_id) DO UPDATE SET
+                   winner      = EXCLUDED.winner,
+                   score_w     = EXCLUDED.score_w,
+                   score_l     = EXCLUDED.score_l,
+                   players_json = EXCLUDED.players_json,
+                   status      = 'registered'""",
+            (
+                lobby.get("match_id", 0),
+                lobby.get("match_code", ""),
+                lobby.get("league", ""),
+                lobby.get("device", ""),
+                lobby.get("map_name", ""),
+                data.get("winner", ""),
+                data.get("score_w", 0),
+                data.get("score_l", 0),
+                json.dumps(players_info, ensure_ascii=False),
+                int(time.time()),
+            ),
+        )
+        try:
+            cur.execute("DELETE FROM unregistered_matches WHERE match_id=%s", (lobby.get("match_id", 0),))
+        except Exception:
+            pass
+        conn.commit()
+    except Exception as e:
+        print(f"[save_match_to_history ERROR] {e}")
+        import traceback; traceback.print_exc()
+        try:
+            if conn:
+                conn.rollback()
+        except Exception:
+            pass
+    finally:
+        try:
+            if conn:
+                conn.close()
+        except Exception:
+            pass
 
 
 def save_match_cancelled(lobby, reason=""):
@@ -921,6 +989,98 @@ def get_match_history(limit=10):
     rows = cur.fetchall()
     conn.close()
     return rows
+
+
+def get_player_map_stats(user_id):
+    """Returns list of {"map": str, "wr": float, "kd": float} for each map the player played."""
+    conn = _db()
+    cur = conn.cursor()
+    cur.execute(
+        "SELECT map_name, players_json FROM matches WHERE status='registered' AND players_json IS NOT NULL"
+    )
+    rows = cur.fetchall()
+    conn.close()
+
+    from collections import defaultdict
+    stats = defaultdict(lambda: {"wins": 0, "total": 0, "kills": 0, "deaths": 0})
+    for map_name, pj in rows:
+        if not map_name:
+            continue
+        try:
+            players = json.loads(pj or "[]")
+        except Exception:
+            continue
+        for p in players:
+            if p.get("user_id") == user_id:
+                k = stats[map_name]
+                k["total"]  += 1
+                k["wins"]   += 1 if p.get("won") else 0
+                k["kills"]  += p.get("kills",  0)
+                k["deaths"] += p.get("deaths", 1)
+
+    result = []
+    for map_name, s in stats.items():
+        wr = s["wins"] / s["total"] if s["total"] > 0 else 0.0
+        kd = round(s["kills"] / max(s["deaths"], 1), 2)
+        result.append({"map": map_name, "wr": wr, "kd": kd})
+
+    # Sort by matches played desc, pad with zeroes for default maps
+    for default_map in MAPS:
+        if not any(r["map"] == default_map for r in result):
+            result.append({"map": default_map, "wr": 0.0, "kd": 0.0})
+
+    result.sort(key=lambda r: r["wr"], reverse=True)
+    return result[:5]
+
+
+def get_player_recent_matches(user_id, limit=5):
+    """Returns list of booleans (True=win) for last N Default matches of the player."""
+    conn = _db()
+    cur = conn.cursor()
+    cur.execute(
+        "SELECT players_json FROM matches WHERE status='registered' AND (league='default' OR league IS NULL) AND players_json IS NOT NULL ORDER BY finished_at DESC LIMIT 50"
+    )
+    rows = cur.fetchall()
+    conn.close()
+
+    recent = []
+    for (pj,) in rows:
+        if len(recent) >= limit:
+            break
+        try:
+            players = json.loads(pj or "[]")
+        except Exception:
+            continue
+        for p in players:
+            if p.get("user_id") == user_id:
+                recent.append(bool(p.get("won")))
+                break
+    return recent
+
+
+def get_player_quals_recent_matches(user_id, limit=5):
+    """Returns list of booleans (True=win) for last N Quals matches of the player."""
+    conn = _db()
+    cur = conn.cursor()
+    cur.execute(
+        "SELECT players_json FROM matches WHERE status='registered' AND league='quals' AND players_json IS NOT NULL ORDER BY finished_at DESC LIMIT 50"
+    )
+    rows = cur.fetchall()
+    conn.close()
+
+    recent = []
+    for (pj,) in rows:
+        if len(recent) >= limit:
+            break
+        try:
+            players = json.loads(pj or "[]")
+        except Exception:
+            continue
+        for p in players:
+            if p.get("user_id") == user_id:
+                recent.append(bool(p.get("won")))
+                break
+    return recent
 
 
 # ==================== ПРОМОКОДЫ ====================
@@ -1537,20 +1697,91 @@ def cb_profile(c):
         bot.edit_message_text("❌ Ошибка", c.message.chat.id, c.message.message_id)
         bot.answer_callback_query(c.id)
         return
-    games = p[6] + p[7]
+
+    games   = p[6] + p[7]
     winrate = round(p[6] / games * 100, 1) if games > 0 else 0
-    kd = round(p[8] / p[9], 2) if p[9] > 0 else p[8]
-    warns = p[15] if len(p) > 15 else 0
-    quals = "✅" if (len(p) > 16 and p[16] == 1) else "❌"
+    kd      = round(p[8] / p[9], 2) if p[9] > 0 else p[8]
+    warns   = p[15] if len(p) > 15 else 0
+    quals   = "✅" if (len(p) > 16 and p[16] == 1) else "❌"
     premium = has_active_premium(uid)
-    crown = " 👑 Premium" if premium else ""
-    lvl = get_faceit_level(p[4])
-    bar = elo_bar(p[4], lvl)
-    muted = is_muted_check(uid)
+    crown   = " 👑 Premium" if premium else ""
+    lvl     = get_faceit_level(p[4])
+    bar     = elo_bar(p[4], lvl)
+    muted   = is_muted_check(uid)
     mute_text = ""
     if muted:
         mins = get_mute_remaining(uid) // 60
         mute_text = f"\n🔇 Мут: {mins} мин."
+
+    kb = types.InlineKeyboardMarkup(row_width=2)
+    kb.add(
+        types.InlineKeyboardButton("✏️ Изменить ник",     callback_data="change_nick"),
+        types.InlineKeyboardButton("🎮 Изменить Game ID", callback_data="change_game_id"),
+    )
+    if has_quals_access(uid):
+        kb.add(types.InlineKeyboardButton("⭐ Quals профиль", callback_data="profile_quals"))
+    kb.add(types.InlineKeyboardButton("🔙 Назад", callback_data="back"))
+
+    if CARDS_ENABLED:
+        try:
+            # rank among registered players
+            all_p   = get_all_players()
+            rank    = next((i+1 for i, row in enumerate(all_p) if row[0] == uid), len(all_p))
+            league  = "DEFAULT"
+
+            map_stats   = get_player_map_stats(uid)
+            recent      = get_player_recent_matches(uid, limit=5)
+            quals_stats = get_player_quals_stats(uid)
+            lb_data     = [
+                (i+1, row[1], row[2], has_active_premium(row[0]), is_admin(row[0]))
+                for i, row in enumerate(all_p[:3])
+            ]
+            mvp_count   = p[31] if len(p) > 31 else 0
+
+            img_buf = generate_profile_card(
+                username    = p[1]   or "Unknown",
+                game_id     = p[2]   or "",
+                user_id     = p[0],
+                elo         = p[4],
+                wins        = p[6],
+                losses      = p[7],
+                kills       = p[8],
+                deaths      = p[9],
+                assists     = p[10],
+                is_premium  = premium,
+                is_admin    = bool(p[11]) if len(p) > 11 else False,
+                global_rank = rank,
+                league      = league,
+                map_stats   = map_stats,
+                recent      = recent,
+                leaderboard = lb_data,
+                quals_stats = quals_stats,
+                mvp_count   = mvp_count,
+            )
+
+            # delete old message, send photo with buttons
+            try:
+                bot.delete_message(c.message.chat.id, c.message.message_id)
+            except Exception:
+                pass
+
+            caption = (
+                f"👤 <b>{p[1]}</b>{crown}  |  📊 ELO: <b>{p[4]}</b>  |  Lvl <b>{lvl}</b>\n"
+                f"💰 Баланс: {p[5]} AC  ·  ⭐ Quals: {quals}  ·  ⚠️ Варны: {warns}/3{mute_text}"
+            )
+            bot.send_photo(
+                c.message.chat.id,
+                img_buf,
+                caption    = caption,
+                reply_markup = kb,
+                parse_mode = "HTML",
+            )
+            bot.answer_callback_query(c.id)
+            return
+        except Exception as e:
+            print(f"[card_profile] error: {e}")
+
+    # fallback text profile
     text = (
         f"👤 <b>{p[1]}</b>{crown}\n"
         f"🆔 Telegram ID: <code>{p[0]}</code>\n"
@@ -1564,33 +1795,242 @@ def cb_profile(c):
         f"🏆 {p[6]}W · ❌ {p[7]}L · 📈 {winrate}%\n"
         f"🔫 K: {p[8]} · 💀 D: {p[9]} · 🤝 A: {p[10]} · K/D: {kd}"
     )
-    kb = types.InlineKeyboardMarkup(row_width=2)
-    kb.add(
-        types.InlineKeyboardButton("✏️ Изменить ник", callback_data="change_nick"),
-        types.InlineKeyboardButton("🎮 Изменить Game ID", callback_data="change_game_id"),
-        types.InlineKeyboardButton("🔙 Назад", callback_data="back"),
-    )
     bot.edit_message_text(text, c.message.chat.id, c.message.message_id, reply_markup=kb)
     bot.answer_callback_query(c.id)
 
 
-# ==================== ТОП ====================
+# ==================== QUALS ПРОФИЛЬ ====================
+@bot.callback_query_handler(func=lambda c: c.data == "profile_quals")
+def cb_profile_quals(c):
+    uid = c.from_user.id
+    if not has_quals_access(uid):
+        bot.answer_callback_query(c.id, "❌ Нет доступа к Quals лиге", show_alert=True)
+        return
+    p = get_player(uid)
+    if not p:
+        bot.answer_callback_query(c.id)
+        return
+
+    qs = get_player_quals_stats(uid)
+    q_elo    = qs["elo"]    if qs else 1000
+    q_wins   = qs["wins"]   if qs else 0
+    q_losses = qs["losses"] if qs else 0
+    q_kills  = qs["kills"]  if qs else 0
+    q_deaths = qs["deaths"] if qs else 0
+    q_assists= qs["assists"]if qs else 0
+
+    premium  = has_active_premium(uid)
+    crown    = " 👑 Premium" if premium else ""
+    lvl      = get_faceit_level(q_elo)
+
+    kb = types.InlineKeyboardMarkup(row_width=1)
+    kb.add(
+        types.InlineKeyboardButton("📊 Default профиль", callback_data="profile"),
+        types.InlineKeyboardButton("🔙 Назад",           callback_data="back"),
+    )
+
+    if CARDS_ENABLED:
+        try:
+            quals_list = get_quals_players()
+            q_rank     = next((i+1 for i, row in enumerate(quals_list) if row[0] == uid), len(quals_list))
+            lb_data    = [
+                (i+1, row[1], row[2], has_active_premium(row[0]), is_admin(row[0]))
+                for i, row in enumerate(quals_list[:3])
+            ]
+            quals_recent = get_player_quals_recent_matches(uid, limit=5)
+            q_mvp_count  = p[31] if len(p) > 31 else 0
+            img_buf = generate_profile_card(
+                username    = p[1] or "Unknown",
+                game_id     = p[2] or "",
+                user_id     = p[0],
+                elo         = q_elo,
+                wins        = q_wins,
+                losses      = q_losses,
+                kills       = q_kills,
+                deaths      = q_deaths,
+                assists     = q_assists,
+                is_premium  = premium,
+                is_admin    = bool(p[11]) if len(p) > 11 else False,
+                global_rank = q_rank,
+                league      = "QUALS",
+                map_stats   = [],
+                recent      = quals_recent,
+                leaderboard = lb_data,
+                quals_stats = None,
+                mvp_count   = q_mvp_count,
+            )
+            try:
+                bot.delete_message(c.message.chat.id, c.message.message_id)
+            except Exception:
+                pass
+            q_games = q_wins + q_losses
+            q_wr    = round(q_wins / q_games * 100, 1) if q_games > 0 else 0.0
+            caption = (
+                f"⭐ <b>{p[1]}</b>{crown}  |  Quals ELO: <b>{q_elo}</b>  |  Lvl <b>{lvl}</b>\n"
+                f"🏆 {q_wins}W · ❌ {q_losses}L · 📈 {q_wr}%  |  Rank #{q_rank}"
+            )
+            bot.send_photo(c.message.chat.id, img_buf,
+                           caption=caption, reply_markup=kb, parse_mode="HTML")
+            bot.answer_callback_query(c.id)
+            return
+        except Exception as e:
+            print(f"[card_quals] error: {e}")
+
+    # fallback text
+    q_games = q_wins + q_losses
+    q_wr    = round(q_wins / q_games * 100, 1) if q_games > 0 else 0.0
+    q_kd    = round(q_kills / q_deaths, 2) if q_deaths > 0 else float(q_kills)
+    text = (
+        f"⭐ <b>{p[1]}</b> — Quals профиль\n\n"
+        f"📊 Quals ELO: <b>{q_elo}</b>  |  Lvl <b>{lvl}</b>\n"
+        f"🏆 {q_wins}W · ❌ {q_losses}L · 📈 {q_wr}%\n"
+        f"🔫 K: {q_kills} · 💀 D: {q_deaths} · 🤝 A: {q_assists} · K/D: {q_kd}"
+    )
+    bot.edit_message_text(text, c.message.chat.id, c.message.message_id,
+                          reply_markup=kb, parse_mode="HTML")
+    bot.answer_callback_query(c.id)
+
+
+# ==================== ТОП (меню выбора) ====================
 @bot.callback_query_handler(func=lambda c: c.data == "top")
 def cb_top(c):
+    kb = types.InlineKeyboardMarkup(row_width=1)
+    kb.add(
+        types.InlineKeyboardButton("📊 Default — Топ по ELO",      callback_data="top_default"),
+        types.InlineKeyboardButton("⭐ Quals — Топ квалификации",  callback_data="top_quals"),
+        types.InlineKeyboardButton("🔙 Назад",                      callback_data="back"),
+    )
+    try:
+        bot.edit_message_text("🏆 <b>Выберите таблицу лидеров:</b>", c.message.chat.id,
+                              c.message.message_id, reply_markup=kb, parse_mode="HTML")
+    except Exception:
+        try:
+            bot.delete_message(c.message.chat.id, c.message.message_id)
+        except Exception:
+            pass
+        bot.send_message(c.message.chat.id, "🏆 <b>Выберите таблицу лидеров:</b>",
+                         reply_markup=kb, parse_mode="HTML")
+    bot.answer_callback_query(c.id)
+
+
+@bot.callback_query_handler(func=lambda c: c.data == "top_default")
+def cb_top_default(c):
     players = get_all_players()
-    text = "🏆 <b>ТОП ИГРОКОВ ПО ELO</b>\n\n" if players else "🏆 <b>ТОП</b>\n\nИгроков нет."
+    kb = types.InlineKeyboardMarkup(row_width=1)
+    kb.add(
+        types.InlineKeyboardButton("⭐ Quals топ", callback_data="top_quals"),
+        types.InlineKeyboardButton("🔙 Назад",     callback_data="back"),
+    )
+    if not players:
+        bot.edit_message_text("🏆 <b>ТОП</b>\n\nИгроков нет.", c.message.chat.id,
+                              c.message.message_id, reply_markup=kb, parse_mode="HTML")
+        bot.answer_callback_query(c.id)
+        return
+    if CARDS_ENABLED:
+        try:
+            lb_players = []
+            for i, p in enumerate(players[:10], 1):
+                uid2, name, elo, wins, losses, kills, deaths, coins, banned, warns = p
+                kd  = round(kills / deaths, 2) if deaths > 0 else float(kills)
+                lvl = get_faceit_level(elo)
+                lb_players.append({
+                    "rank": i, "name": name, "elo": elo, "wins": wins,
+                    "losses": losses, "kd": kd, "level": lvl,
+                    "is_premium": has_active_premium(uid2), "is_admin": is_admin(uid2),
+                })
+            img_buf = generate_leaderboard_card(lb_players, title="📊 DEFAULT — TOP ELO")
+            try:
+                bot.delete_message(c.message.chat.id, c.message.message_id)
+            except Exception:
+                pass
+            bot.send_photo(c.message.chat.id, img_buf,
+                           caption="🏆 <b>ТОП ИГРОКОВ ПО ELO</b>",
+                           reply_markup=kb, parse_mode="HTML")
+            bot.answer_callback_query(c.id)
+            return
+        except Exception as e:
+            print(f"[card_top_default] error: {e}")
+    # fallback text
+    text   = "🏆 <b>ТОП ИГРОКОВ ПО ELO</b>\n\n"
     medals = {1: "🥇", 2: "🥈", 3: "🥉"}
     for i, p in enumerate(players[:10], 1):
         uid2, name, elo, wins, losses, kills, deaths, coins, banned, warns = p
-        games = wins + losses
+        games   = wins + losses
         winrate = round(wins / games * 100, 1) if games > 0 else 0
-        kd = round(kills / deaths, 2) if deaths > 0 else kills
-        lvl = get_faceit_level(elo)
-        prem = " 👑" if has_active_premium(uid2) else ""
-        text += f"{medals.get(i, f'{i}.')} <b>{name}</b>{prem} [Lvl {lvl}]\n   ELO: {elo} | {wins}W/{losses}L ({winrate}%) | K/D: {kd}\n\n"
-    kb = types.InlineKeyboardMarkup()
-    kb.add(types.InlineKeyboardButton("🔙 Назад", callback_data="back"))
-    bot.edit_message_text(text, c.message.chat.id, c.message.message_id, reply_markup=kb)
+        kd      = round(kills / deaths, 2) if deaths > 0 else kills
+        lvl     = get_faceit_level(elo)
+        prem    = " 👑" if has_active_premium(uid2) else ""
+        text   += f"{medals.get(i, f'{i}.')} <b>{name}</b>{prem} [Lvl {lvl}]\n   ELO: {elo} | {wins}W/{losses}L ({winrate}%) | K/D: {kd}\n\n"
+    try:
+        bot.edit_message_text(text, c.message.chat.id, c.message.message_id,
+                              reply_markup=kb, parse_mode="HTML")
+    except Exception:
+        try:
+            bot.delete_message(c.message.chat.id, c.message.message_id)
+        except Exception:
+            pass
+        bot.send_message(c.message.chat.id, text, reply_markup=kb, parse_mode="HTML")
+    bot.answer_callback_query(c.id)
+
+
+@bot.callback_query_handler(func=lambda c: c.data == "top_quals")
+def cb_top_quals(c):
+    players = get_quals_players()
+    kb = types.InlineKeyboardMarkup(row_width=1)
+    kb.add(
+        types.InlineKeyboardButton("📊 Default топ", callback_data="top_default"),
+        types.InlineKeyboardButton("🔙 Назад",        callback_data="back"),
+    )
+    if not players:
+        bot.edit_message_text(
+            "⭐ <b>QUALS ТОП</b>\n\nНет игроков с доступом к Quals.",
+            c.message.chat.id, c.message.message_id, reply_markup=kb, parse_mode="HTML"
+        )
+        bot.answer_callback_query(c.id)
+        return
+    if CARDS_ENABLED:
+        try:
+            lb_players = []
+            for i, row in enumerate(players[:10], 1):
+                uid2, name, qelo, qw, ql, qk, qd, qa = row
+                qkd = round(qk / qd, 2) if qd > 0 else float(qk)
+                lvl = get_faceit_level(qelo or 1000)
+                lb_players.append({
+                    "rank": i, "name": name, "elo": qelo or 1000,
+                    "wins": qw or 0, "losses": ql or 0, "kd": qkd, "level": lvl,
+                    "is_premium": has_active_premium(uid2), "is_admin": is_admin(uid2),
+                })
+            img_buf = generate_leaderboard_card(lb_players, title="⭐ QUALS — TOP ELO")
+            try:
+                bot.delete_message(c.message.chat.id, c.message.message_id)
+            except Exception:
+                pass
+            bot.send_photo(c.message.chat.id, img_buf,
+                           caption="⭐ <b>QUALS ТОП ИГРОКОВ</b>",
+                           reply_markup=kb, parse_mode="HTML")
+            bot.answer_callback_query(c.id)
+            return
+        except Exception as e:
+            print(f"[card_top_quals] error: {e}")
+    # fallback text
+    text   = "⭐ <b>QUALS ТОП</b>\n\n"
+    medals = {1: "🥇", 2: "🥈", 3: "🥉"}
+    for i, row in enumerate(players[:10], 1):
+        uid2, name, qelo, qw, ql, qk, qd, qa = row
+        games   = (qw or 0) + (ql or 0)
+        winrate = round((qw or 0) / games * 100, 1) if games > 0 else 0
+        kd      = round((qk or 0) / (qd or 1), 2)
+        prem    = " 👑" if has_active_premium(uid2) else ""
+        text   += f"{medals.get(i, f'{i}.')} <b>{name}</b>{prem}\n   Q.ELO: {qelo or 1000} | {qw}W/{ql}L ({winrate}%) | K/D: {kd}\n\n"
+    try:
+        bot.edit_message_text(text, c.message.chat.id, c.message.message_id,
+                              reply_markup=kb, parse_mode="HTML")
+    except Exception:
+        try:
+            bot.delete_message(c.message.chat.id, c.message.message_id)
+        except Exception:
+            pass
+        bot.send_message(c.message.chat.id, text, reply_markup=kb, parse_mode="HTML")
     bot.answer_callback_query(c.id)
 
 
@@ -1598,7 +2038,18 @@ def cb_top(c):
 @bot.callback_query_handler(func=lambda c: c.data == "back")
 def cb_back(c):
     uid = c.from_user.id
-    bot.edit_message_text("⚡ ACTUAL FACEIT", c.message.chat.id, c.message.message_id, reply_markup=main_menu(uid))
+    try:
+        # Если сообщение — текст, редактируем его
+        bot.edit_message_text("⚡ ACTUAL FACEIT", c.message.chat.id, c.message.message_id,
+                              reply_markup=main_menu(uid))
+    except Exception:
+        # Если сообщение — фото (карточка профиля/топа), удаляем и шлём новое
+        try:
+            bot.delete_message(c.message.chat.id, c.message.message_id)
+        except Exception:
+            pass
+        bot.send_message(c.message.chat.id, "⚡ ACTUAL FACEIT",
+                         reply_markup=main_menu(uid), parse_mode="HTML")
     bot.answer_callback_query(c.id)
 
 
@@ -1613,12 +2064,18 @@ def build_lobby_text(lobby_id):
         f"🎮 <b>Лобби #{slot} ({league.upper()}/{device.upper()})</b>\n"
         f"👥 Игроков: {len(lobby['players'])}/10\n\n"
     )
+    is_quals = (league == "quals")
     for i, pid in enumerate(lobby["players"], 1):
         p = get_player(pid)
         if p:
             icon = "🤖" if p[13] else "👤"
             prem = " 👑" if (not p[13] and has_active_premium(pid)) else ""
-            text += f"{i}. {icon} {p[1]}{prem} [Lvl {get_faceit_level(p[4])} | {p[4]} ELO]\n"
+            # Show ELO and level from the correct league
+            if is_quals and len(p) > 30 and not p[13]:
+                display_elo = p[30] if p[30] is not None else 1000
+            else:
+                display_elo = p[4]
+            text += f"{i}. {icon} {p[1]}{prem} [Lvl {get_faceit_level(display_elo)} | {display_elo} ELO]\n"
         else:
             text += f"{i}. {pid}\n"
     return text
@@ -1892,7 +2349,7 @@ def start_accept_phase(lobby_id):
             sent = bot.send_message(
                 uid,
                 f"🔔 <b>Матч найден!</b>\n\n"
-                f"🏷 Лига: {lobby['league'].upper()}\n📱 Устройство: {lobby['device'].upper()}\n\n"
+                f"🏷 Лига: {format_league(lobby.get('league','default'))}\n📱 Устройство: {lobby.get('device','').upper()}\n\n"
                 f"⏱ У вас <b>{ACCEPT_TIMEOUT} секунд</b> чтобы принять.\nПри непринятии — предупреждение ⚠️",
                 reply_markup=kb,
             )
@@ -2097,6 +2554,24 @@ def start_map_ban_phase(lobby_id):
     lobby["ban_turn"] = "ct"
     lobby["ban_count"] = 0
     players = lobby["players"]
+
+    # Гарантируем ровно 10 игроков — добиваем ботами если нужно
+    if len(players) < 10:
+        try:
+            _conn_b = _db()
+            _cur_b  = _conn_b.cursor()
+            _cur_b.execute("SELECT user_id FROM players WHERE is_bot=1")
+            all_bot_ids  = [r[0] for r in _cur_b.fetchall()]
+            _conn_b.close()
+            already_in   = set(players)
+            available_b  = [b for b in all_bot_ids if b not in already_in]
+            needed_cnt   = 10 - len(players)
+            fill_bots    = random.sample(available_b, min(needed_cnt, len(available_b)))
+            for b in fill_bots:
+                players.append(b)
+        except Exception as _e:
+            print(f"[fill_bots] {_e}")
+
     delete_match_found(lobby_id)
     delete_accept_status(lobby_id)
     delete_lobby_messages(lobby_id)
@@ -2340,8 +2815,8 @@ def launch_match(lobby_id):
     t_lines  = "\n".join([admin_pline(i, u) for i, u in enumerate(team_t)])
     match_text = (
         f"🎮 <b>МАТЧ #{match_code} НАЧАЛСЯ</b>\n\n"
-        f"🏷 Лига: {lobby['league'].upper()}\n📱 Устройство: {lobby['device'].upper()}\n"
-        f"🗺 Карта: <b>{lobby['map_name']}</b>\n"
+        f"🏷 Лига: {format_league(lobby.get('league','default'))}\n📱 Устройство: {lobby.get('device','').upper()}\n"
+        f"🗺 Карта: <b>{lobby.get('map_name','?')}</b>\n"
         f"👑 Хост: <b>{host_name}</b> | Game ID: <code>{host_game_id}</code>\n\n"
         f"💙 <b>Команда CT</b>\n{ct_lines}\n\n"
         f"🧡 <b>Команда T</b>\n{t_lines}"
@@ -2399,8 +2874,11 @@ def launch_match(lobby_id):
         kb_player.add(types.InlineKeyboardButton("📸 Отправить результаты", callback_data=f"send_result_{match_key}"))
         try:
             # disable_web_page_preview=True чтобы tg:// ссылки не давали превью
-            bot.send_message(uid, player_text, reply_markup=kb_player, disable_web_page_preview=True)
+            sent_pm = bot.send_message(uid, player_text, reply_markup=kb_player, disable_web_page_preview=True)
             awaiting_screenshot[uid] = match_key
+            if "player_start_msgs" not in lobby:
+                lobby["player_start_msgs"] = {}
+            lobby["player_start_msgs"][uid] = sent_pm.message_id
         except Exception:
             pass
 
@@ -2419,6 +2897,8 @@ def launch_match(lobby_id):
 
     lobby_player_messages.pop(lobby_id, None)
     delete_ban_status(lobby_id)
+    delete_accept_status(lobby_id)
+    delete_match_found(lobby_id)
     for uid in players:
         user_lobby.pop(uid, None)
 
@@ -2457,7 +2937,14 @@ def cb_send_result(c):
         bot.edit_message_reply_markup(c.message.chat.id, c.message.message_id, reply_markup=None)
     except Exception:
         pass
-    bot.send_message(uid, "📸 <b>Отправь скриншот прямо в этот чат</b>\n\nПрикрепи фото или документ:")
+    sent_prompt = bot.send_message(uid, "📸 <b>Отправь скриншот прямо в этот чат</b>\n\nПрикрепи фото или документ:", parse_mode="HTML")
+    # Сохраняем ID чтобы удалить после получения скриншота
+    if "screenshot_prompt_msgs" not in (running_matches.get(awaiting_screenshot.get(uid)) or {}):
+        lobby2 = running_matches.get(match_key)
+        if lobby2 is not None:
+            if "screenshot_prompt_msgs" not in lobby2:
+                lobby2["screenshot_prompt_msgs"] = {}
+            lobby2["screenshot_prompt_msgs"][uid] = sent_prompt.message_id
 
 
 @bot.message_handler(content_types=["photo", "document"])
@@ -2477,6 +2964,13 @@ def handle_player_screenshot(msg):
         awaiting_screenshot.pop(uid, None)
         return
     awaiting_screenshot.pop(uid, None)
+    # Удаляем сообщение "Отправь скриншот прямо в этот чат"
+    prompt_mid = lobby.get("screenshot_prompt_msgs", {}).pop(uid, None)
+    if prompt_mid:
+        try:
+            bot.delete_message(uid, prompt_mid)
+        except Exception:
+            pass
     p = get_player(uid)
     name = p[1] if p else str(uid)
     match_id = lobby.get("match_id", "?")
@@ -2522,7 +3016,14 @@ def reg_send(uid, text, **kwargs):
     thread_id = data.get("reply_thread_id")
     if thread_id:
         kwargs["message_thread_id"] = thread_id
-    bot.send_message(chat_id, text, **kwargs)
+    try:
+        bot.send_message(chat_id, text, **kwargs)
+    except Exception as _e:
+        print(f"[reg_send error] chat_id={chat_id} thread_id={thread_id}: {_e}")
+        try:
+            bot.send_message(uid, text, **kwargs)
+        except Exception as _e2:
+            print(f"[reg_send fallback error] uid={uid}: {_e2}")
 
 
 @bot.callback_query_handler(func=lambda c: c.data.startswith("reg_match|"))
@@ -2824,7 +3325,43 @@ def reg_step_all_kills(msg):
         reg_send(uid, err, parse_mode="HTML")
         return
     data["kills_data"].update(parsed)
-    _finalize_match(uid, data["match_key"])
+    match_key = data["match_key"]
+    try:
+        _finalize_match(uid, match_key)
+    except Exception as _fe:
+        import traceback
+        tb = traceback.format_exc()
+        print(f"[finalize_match ERROR] {_fe}\n{tb}")
+        reg_send(uid, f"❌ <b>Ошибка при регистрации матча:</b>\n<code>{_fe}</code>", parse_mode="HTML")
+        # Восстанавливаем данные чтобы можно было повторить
+        if uid not in match_registration:
+            match_registration[uid] = data
+            match_registration[uid]["step"] = "all_kills"
+
+
+def _cleanup_match_messages(lobby):
+    """Удаляет мусорные сообщения после завершения/отмены матча."""
+    # 1. Удаляем "МАТЧ НАЧАЛСЯ!" у каждого игрока в личке
+    for uid, mid in list(lobby.get("player_start_msgs", {}).items()):
+        try:
+            bot.delete_message(uid, mid)
+        except Exception:
+            pass
+    lobby.pop("player_start_msgs", None)
+
+    # 2. Убираем кнопки с admin-сообщения "МАТЧ НАЧАЛСЯ" (не удаляем — полезно для контекста)
+    admin_msg_id = lobby.get("admin_msg_id")
+    if ADMIN_CHAT_ID and admin_msg_id:
+        try:
+            bot.edit_message_reply_markup(ADMIN_CHAT_ID, admin_msg_id, reply_markup=None)
+        except Exception:
+            pass
+
+    # 3. Чистим awaiting_screenshot для всех игроков этого матча
+    match_key = lobby.get("match_key")
+    for uid in list(lobby.get("team_ct", [])) + list(lobby.get("team_t", [])):
+        if awaiting_screenshot.get(uid) == match_key:
+            awaiting_screenshot.pop(uid, None)
 
 
 def _finalize_match(reg_uid, match_key):
@@ -2842,43 +3379,101 @@ def _finalize_match(reg_uid, match_key):
     winner_team = team_ct if winner == "ct" else team_t
     loser_team  = team_t  if winner == "ct" else team_ct
     all_stats = {}
-    conn = _db()
-    cur = conn.cursor()
-    for uid in team_ct + team_t:
-        if is_bot_player(uid):
-            continue
-        won = uid in winner_team
-        kda = kills_data.get(uid, {"kills": 0, "deaths": 0, "assists": 0})
-        kills = kda["kills"]
-        if won:
-            elo_change = 25 if kills >= 12 else 17
-            coins_reward = 15
-        else:
-            elo_change = -15 if kills >= 12 else -23
-            coins_reward = 4
-        p = get_player(uid)
-        if p:
-            prem = has_active_premium(uid)
-            if prem:
-                # ФИКС: за победу с 12+ килами premium не умножает (остаётся 25, не 37)
-                if won and kills >= 12:
-                    elo_change = 25  # уже максимум — не умножаем
-                elif won:
-                    elo_change = int(elo_change * 1.5)  # 17 → 25
-                coins_reward = int(coins_reward * 1.5)
-        if won:
-            cur.execute(
-                "UPDATE players SET wins=wins+1, elo=GREATEST(0, elo+%s), kills=kills+%s, deaths=deaths+%s, assists=assists+%s, coins=coins+%s WHERE user_id=%s",
-                (elo_change, kda["kills"], kda["deaths"], kda["assists"], coins_reward, uid),
-            )
-        else:
-            cur.execute(
-                "UPDATE players SET losses=losses+1, elo=GREATEST(0, elo+%s), kills=kills+%s, deaths=deaths+%s, assists=assists+%s, coins=coins+%s WHERE user_id=%s",
-                (elo_change, kda["kills"], kda["deaths"], kda["assists"], coins_reward, uid),
-            )
-        all_stats[uid] = {**kda, "won": won, "elo_change": elo_change, "coins_reward": coins_reward}
-    conn.commit()
-    conn.close()
+    is_quals_match = (lobby.get("league") == "quals")
+    conn = None
+    try:
+        conn = _db()
+        cur = conn.cursor()
+        for _uid in team_ct + team_t:
+            if is_bot_player(_uid):
+                continue
+            won = _uid in winner_team
+            kda = kills_data.get(_uid, {"kills": 0, "deaths": 0, "assists": 0})
+            kills = kda["kills"]
+            if won:
+                elo_change = 25 if kills >= 12 else 17
+                coins_reward = 15
+            else:
+                elo_change = -15 if kills >= 12 else -23
+                coins_reward = 4
+            p = get_player(_uid)
+            if p:
+                try:
+                    prem = has_active_premium(_uid)
+                    if prem:
+                        if won and kills >= 12:
+                            elo_change = 25
+                        elif won:
+                            elo_change = int(elo_change * 1.5)
+                        coins_reward = int(coins_reward * 1.5)
+                except Exception as _pe:
+                    print(f"[premium check error] uid={_uid}: {_pe}")
+
+            if is_quals_match:
+                # Quals матч: обновляем только quals-колонки + монеты
+                if won:
+                    cur.execute(
+                        "UPDATE players SET quals_wins=quals_wins+1, "
+                        "quals_elo=GREATEST(0, quals_elo+%s), "
+                        "quals_kills=quals_kills+%s, quals_deaths=quals_deaths+%s, "
+                        "quals_assists=quals_assists+%s, coins=coins+%s WHERE user_id=%s",
+                        (elo_change, kda["kills"], kda["deaths"], kda["assists"], coins_reward, _uid),
+                    )
+                else:
+                    cur.execute(
+                        "UPDATE players SET quals_losses=quals_losses+1, "
+                        "quals_elo=GREATEST(0, quals_elo+%s), "
+                        "quals_kills=quals_kills+%s, quals_deaths=quals_deaths+%s, "
+                        "quals_assists=quals_assists+%s, coins=coins+%s WHERE user_id=%s",
+                        (elo_change, kda["kills"], kda["deaths"], kda["assists"], coins_reward, _uid),
+                    )
+            else:
+                # Default матч: обновляем только default-колонки + монеты
+                if won:
+                    cur.execute(
+                        "UPDATE players SET wins=wins+1, elo=GREATEST(0, elo+%s), kills=kills+%s, deaths=deaths+%s, assists=assists+%s, coins=coins+%s WHERE user_id=%s",
+                        (elo_change, kda["kills"], kda["deaths"], kda["assists"], coins_reward, _uid),
+                    )
+                else:
+                    cur.execute(
+                        "UPDATE players SET losses=losses+1, elo=GREATEST(0, elo+%s), kills=kills+%s, deaths=deaths+%s, assists=assists+%s, coins=coins+%s WHERE user_id=%s",
+                        (elo_change, kda["kills"], kda["deaths"], kda["assists"], coins_reward, _uid),
+                    )
+            all_stats[_uid] = {**kda, "won": won, "elo_change": elo_change, "coins_reward": coins_reward}
+        conn.commit()
+    except Exception as _dbe:
+        print(f"[_finalize_match DB ERROR] {_dbe}")
+        import traceback; traceback.print_exc()
+        try:
+            if conn:
+                conn.rollback()
+        except Exception:
+            pass
+        raise
+    finally:
+        try:
+            if conn:
+                conn.close()
+        except Exception:
+            pass
+    # ===== MVP: найти игрока с наибольшим количеством киллов и +1 к счётчику =====
+    mvp_uid = None
+    max_kills_mvp = -1
+    for _uid, s in all_stats.items():
+        if s["kills"] > max_kills_mvp:
+            max_kills_mvp = s["kills"]
+            mvp_uid = _uid
+    if mvp_uid and max_kills_mvp >= 0:
+        try:
+            _mc = _db()
+            _mcc = _mc.cursor()
+            _mcc.execute("UPDATE players SET mvp_count=mvp_count+1 WHERE user_id=%s", (mvp_uid,))
+            _mc.commit()
+            _mc.close()
+        except Exception as _me:
+            print(f"[mvp_count update] {_me}")
+
+    _cleanup_match_messages(lobby)
     save_match_to_history(lobby, {"winner": winner, "score_w": score_w, "score_l": score_l}, all_stats)
     lobby["status"] = "finished"
     running_matches.pop(match_key, None)
@@ -2907,6 +3502,7 @@ def _finalize_match(reg_uid, match_key):
         f"🏁 <b>Матч #{match_code} завершён!</b>\n"
         f"━━━━━━━━━━━━━━━━━━━━\n"
         f"🗺 Карта: {lobby.get('map_name', '?')}  |  Счёт: <b>{score_w}:{score_l}</b>\n"
+        f"🏷 Лига: {format_league(lobby.get('league','default'))}\n"
         f"🏆 Победитель: <b>{winner_team_label}</b>\n"
         f"━━━━━━━━━━━━━━━━━━━━\n\n"
         f"✅ <b>{winner_team_label} — Победа</b>\n"
@@ -2926,7 +3522,7 @@ def _finalize_match(reg_uid, match_key):
         f"🏁 <b>Матч #{match_code} завершён</b>\n"
         f"🗺 {lobby.get('map_name','?')} | Счёт: <b>{score_w}:{score_l}</b>\n"
         f"🏆 Победитель: <b>{winner_team_label}</b>\n"
-        f"🏷 {lobby.get('league','').upper()}/{lobby.get('device','').upper()}"
+        f"🏷 {format_league(lobby.get('league',''))}/{lobby.get('device','').upper()}"
     )
 
     # Отправляем "Матч Зарегистрирован" в ветку + закрываем тему
@@ -3007,6 +3603,7 @@ def handle_cancel_reason(msg):
             bot.send_message(puid, f"❌ <b>Матч #{match_code} отменён администратором.</b>\n\n📝 Причина: {reason}", parse_mode="HTML")
         except Exception:
             pass
+    _cleanup_match_messages(lobby)
     lobby["status"] = "cancelled"
     running_matches.pop(match_key, None)
     # Сохраняем отменённый матч в БД
@@ -3526,6 +4123,37 @@ STAT_FIELDS = {
     "elo":     ("elo",     "📊 ELO"),
 }
 
+QUALS_STAT_FIELDS = {
+    "quals_elo":     ("quals_elo",     "⭐ Quals ELO"),
+    "quals_wins":    ("quals_wins",    "🏆 Quals Победы"),
+    "quals_losses":  ("quals_losses",  "❌ Quals Поражения"),
+    "quals_kills":   ("quals_kills",   "🔫 Quals Убийства"),
+    "quals_deaths":  ("quals_deaths",  "💀 Quals Смерти"),
+    "quals_assists": ("quals_assists", "🤝 Quals Ассисты"),
+}
+
+@bot.callback_query_handler(func=lambda c: c.data.startswith("editstatlg_"))
+def cb_editstat_league(c):
+    uid = c.from_user.id
+    if not is_admin(uid):
+        bot.answer_callback_query(c.id, "❌ Нет доступа")
+        return
+    parts = c.data.split("_", 3)
+    league_type = parts[1]
+    target_id   = int(parts[2])
+    p = get_player(target_id)
+    if not p:
+        bot.answer_callback_query(c.id, "❌ Игрок не найден")
+        return
+    bot.answer_callback_query(c.id)
+    fields = QUALS_STAT_FIELDS if league_type == "quals" else STAT_FIELDS
+    kb = types.InlineKeyboardMarkup(row_width=2)
+    for field_key, (db_f, label) in fields.items():
+        kb.add(types.InlineKeyboardButton(f"✏️ {label}", callback_data=f"editstat_{field_key}_{target_id}"))
+    league_label = "⭐ Quals" if league_type == "quals" else "📊 Default"
+    bot.send_message(uid, f"📈 {league_label} — Стата <b>{p[1]}</b>:", parse_mode="HTML", reply_markup=kb)
+
+
 @bot.callback_query_handler(func=lambda c: c.data.startswith("editstat_"))
 def cb_editstat_pick(c):
     uid = c.from_user.id
@@ -3533,16 +4161,25 @@ def cb_editstat_pick(c):
         bot.answer_callback_query(c.id, "❌ Нет доступа")
         return
     parts = c.data.split("_")
-    field = parts[1]
-    target_id = int(parts[2])
+    if parts[1] == "league":
+        return
+    # Поддержка quals-полей: "editstat_quals_elo_123" → field="quals_elo", target_id=123
+    if parts[1] == "quals" and len(parts) >= 4:
+        field     = f"quals_{parts[2]}"
+        target_id = int(parts[3])
+    else:
+        field     = parts[1]
+        target_id = int(parts[2])
     p = get_player(target_id)
     if not p:
         bot.answer_callback_query(c.id, "❌ Игрок не найден")
         return
     editstat_flow[uid] = {"field": field, "target_id": target_id}
     bot.answer_callback_query(c.id)
-    _, label = STAT_FIELDS.get(field, (field, field))
+    all_fields = {**STAT_FIELDS, **QUALS_STAT_FIELDS}
+    _, label = all_fields.get(field, (field, field))
     bot.send_message(uid, f"✏️ Введите новое значение для <b>{label}</b> игрока <b>{p[1]}</b>:", parse_mode="HTML")
+
 
 @bot.message_handler(func=lambda m: m.from_user.id in editstat_flow and m.text is not None)
 def handle_editstat_flow(msg):
@@ -3563,7 +4200,8 @@ def handle_editstat_flow(msg):
     except ValueError:
         bot.send_message(uid, "❌ Введите целое неотрицательное число")
         return
-    db_field, label = STAT_FIELDS.get(field, (field, field))
+    all_fields = {**STAT_FIELDS, **QUALS_STAT_FIELDS}
+    db_field, label = all_fields.get(field, (field, field))
     conn = _db()
     cur = conn.cursor()
     cur.execute(f"UPDATE players SET {db_field}=%s WHERE user_id=%s", (value, target_id))
@@ -3965,8 +4603,11 @@ def handle_admin_action(msg):
             types.InlineKeyboardButton("👑 Дать/Снять адм", callback_data=f"admin_do_give_admin_{target_id}"),
             types.InlineKeyboardButton("⭐ Quals",           callback_data=f"admin_do_quals_{target_id}"),
         )
-        for field_key, (db_f, label) in STAT_FIELDS.items():
-            kb.add(types.InlineKeyboardButton(f"✏️ {label}", callback_data=f"editstat_{field_key}_{target_id}"))
+        p_target = get_player(target_id)
+        has_q = p_target and has_quals_access(target_id)
+        kb.add(types.InlineKeyboardButton("✏️ Default стата", callback_data=f"editstatlg_default_{target_id}"))
+        if has_q:
+            kb.add(types.InlineKeyboardButton("⭐ Quals стата", callback_data=f"editstatlg_quals_{target_id}"))
         bot.send_message(uid, resp, parse_mode="HTML", reply_markup=kb)
 
     elif action == "search_gameid":
@@ -4190,9 +4831,11 @@ def handle_admin_action(msg):
         if not p:
             bot.send_message(uid, "❌ Игрок не найден")
             return
+        has_q = has_quals_access(p[0])
         kb = types.InlineKeyboardMarkup(row_width=2)
-        for field_key, (db_f, label) in STAT_FIELDS.items():
-            kb.add(types.InlineKeyboardButton(f"✏️ {label}", callback_data=f"editstat_{field_key}_{p[0]}"))
+        kb.add(types.InlineKeyboardButton("✏️ Default стата", callback_data=f"editstatlg_default_{p[0]}"))
+        if has_q:
+            kb.add(types.InlineKeyboardButton("⭐ Quals стата", callback_data=f"editstatlg_quals_{p[0]}"))
         bot.send_message(uid, f"📈 Редактирование статы <b>{p[1]}</b>:", parse_mode="HTML", reply_markup=kb)
 
 

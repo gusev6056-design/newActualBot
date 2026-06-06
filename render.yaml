@@ -1,0 +1,26 @@
+services:
+  - type: web
+    name: actual-faceit-bot
+    env: python
+    region: frankfurt
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: python bot.py
+    healthCheckPath: /
+    envVars:
+      - key: BOT_TOKEN
+        sync: false
+      - key: DATABASE_URL
+        sync: false
+      - key: ADMIN_IDS
+        sync: false
+      - key: ADMIN_CHAT_ID
+        sync: false
+      - key: LOG_CHAT_ID
+        sync: false
+      - key: LOG_THREAD_ID
+        value: "0"
+      - key: RESULTS_THREAD_ID
+        value: "0"
+      - key: PORT
+        value: "8099"
