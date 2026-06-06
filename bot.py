@@ -440,6 +440,51 @@ def init_db():
     """)
     conn.commit()
 
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS seasons (
+            id SERIAL PRIMARY KEY,
+            season_number INTEGER NOT NULL,
+            name TEXT DEFAULT '',
+            started_at BIGINT DEFAULT EXTRACT(EPOCH FROM NOW())::BIGINT,
+            ended_at BIGINT DEFAULT NULL,
+            reset_by BIGINT DEFAULT NULL,
+            is_active INTEGER DEFAULT 1
+        )
+    """)
+    conn.commit()
+
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS season_player_history (
+            id SERIAL PRIMARY KEY,
+            season_id INTEGER NOT NULL,
+            season_number INTEGER NOT NULL,
+            user_id BIGINT NOT NULL,
+            username TEXT DEFAULT '',
+            elo INTEGER DEFAULT 1000,
+            wins INTEGER DEFAULT 0,
+            losses INTEGER DEFAULT 0,
+            kills INTEGER DEFAULT 0,
+            deaths INTEGER DEFAULT 0,
+            assists INTEGER DEFAULT 0,
+            quals_wins INTEGER DEFAULT 0,
+            quals_losses INTEGER DEFAULT 0,
+            quals_kills INTEGER DEFAULT 0,
+            quals_deaths INTEGER DEFAULT 0,
+            quals_assists INTEGER DEFAULT 0,
+            quals_elo INTEGER DEFAULT 1000,
+            mvp_count INTEGER DEFAULT 0,
+            saved_at BIGINT DEFAULT EXTRACT(EPOCH FROM NOW())::BIGINT
+        )
+    """)
+    conn.commit()
+
+    cur.execute("SELECT COUNT(*) FROM seasons WHERE is_active=1")
+    if cur.fetchone()[0] == 0:
+        cur.execute(
+            "INSERT INTO seasons (season_number, name, is_active) VALUES (1, 'Сезон 1', 1)"
+        )
+        conn.commit()
+
     conn.close()
     print("✅ БД инициализирована (PostgreSQL / Supabase).")
 
@@ -766,6 +811,116 @@ def generate_ticket_code():
     """Generates a random ticket code like TKT-AB3X9"""
     chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789'
     return 'TKT-' + ''.join(random.choices(chars, k=5))
+
+
+# ==================== СЕЗОНЫ — ХЕЛПЕРЫ ====================
+
+def get_current_season():
+    conn = _db()
+    cur = conn.cursor()
+    cur.execute(
+        "SELECT id, season_number, name, started_at FROM seasons WHERE is_active=1 ORDER BY id DESC LIMIT 1"
+    )
+    row = cur.fetchone()
+    conn.close()
+    return row  # (id, season_number, name, started_at) or None
+
+
+def get_all_seasons():
+    conn = _db()
+    cur = conn.cursor()
+    cur.execute(
+        "SELECT id, season_number, name, started_at, ended_at, is_active FROM seasons ORDER BY season_number DESC"
+    )
+    rows = cur.fetchall()
+    conn.close()
+    return rows
+
+
+def get_season_top(season_id, limit=10):
+    conn = _db()
+    cur = conn.cursor()
+    cur.execute(
+        """SELECT username, elo, wins, losses, kills, deaths, mvp_count
+           FROM season_player_history
+           WHERE season_id=%s AND username NOT LIKE 'Bot_%%'
+           ORDER BY elo DESC LIMIT %s""",
+        (season_id, limit)
+    )
+    rows = cur.fetchall()
+    conn.close()
+    return rows
+
+
+def reset_season(admin_uid):
+    """
+    Архивирует статистику всех игроков в season_player_history,
+    сбрасывает их ELO/статистику и создаёт новый сезон.
+    Возвращает (new_season_number, players_archived).
+    """
+    conn = _db()
+    cur = conn.cursor()
+    try:
+        cur.execute(
+            "SELECT id, season_number, name FROM seasons WHERE is_active=1 ORDER BY id DESC LIMIT 1"
+        )
+        cur_season = cur.fetchone()
+        if not cur_season:
+            season_id = 1
+            season_number = 1
+        else:
+            season_id, season_number, _ = cur_season
+
+        cur.execute(
+            """SELECT user_id, username, elo, wins, losses, kills, deaths, assists,
+                      COALESCE(quals_wins,0), COALESCE(quals_losses,0),
+                      COALESCE(quals_kills,0), COALESCE(quals_deaths,0),
+                      COALESCE(quals_assists,0), COALESCE(quals_elo,1000),
+                      COALESCE(mvp_count,0)
+               FROM players WHERE is_bot=0"""
+        )
+        players = cur.fetchall()
+
+        for p in players:
+            (uid, uname, elo, wins, losses, kills, deaths, assists,
+             qw, ql, qk, qd, qa, qelo, mvp) = p
+            cur.execute(
+                """INSERT INTO season_player_history
+                   (season_id, season_number, user_id, username, elo, wins, losses,
+                    kills, deaths, assists, quals_wins, quals_losses, quals_kills,
+                    quals_deaths, quals_assists, quals_elo, mvp_count)
+                   VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)""",
+                (season_id, season_number, uid, uname or '', elo, wins, losses,
+                 kills, deaths, assists, qw, ql, qk, qd, qa, qelo, mvp)
+            )
+
+        now_ts = int(time.time())
+        cur.execute(
+            "UPDATE seasons SET is_active=0, ended_at=%s, reset_by=%s WHERE id=%s",
+            (now_ts, admin_uid, season_id)
+        )
+
+        new_season_number = season_number + 1
+        new_name = f"Сезон {new_season_number}"
+        cur.execute(
+            "INSERT INTO seasons (season_number, name, is_active, started_at) VALUES (%s, %s, 1, %s)",
+            (new_season_number, new_name, now_ts)
+        )
+
+        cur.execute(
+            """UPDATE players SET
+               elo=1000, wins=0, losses=0, kills=0, deaths=0, assists=0,
+               quals_wins=0, quals_losses=0, quals_kills=0, quals_deaths=0,
+               quals_assists=0, quals_elo=1000, mvp_count=0
+               WHERE is_bot=0"""
+        )
+        conn.commit()
+        conn.close()
+        return new_season_number, len(players)
+    except Exception as e:
+        conn.rollback()
+        conn.close()
+        raise e
 
 def save_match_start(lobby):
     """Сохраняет матч в БД при старте со статусом 'active'."""
@@ -4253,6 +4408,7 @@ def cb_admin_panel(c):
         types.InlineKeyboardButton("📋 История матчей",       callback_data="admin_match_history"),
         types.InlineKeyboardButton("📢 Рассылка",             callback_data="admin_broadcast"),
         types.InlineKeyboardButton("🎟 Открытые тикеты",      callback_data="admin_tickets"),
+        types.InlineKeyboardButton("🏆 Управление сезонами",  callback_data="admin_seasons"),
         types.InlineKeyboardButton("🔙 Назад",                callback_data="back"),
     )
     bot.edit_message_text(text, c.message.chat.id, c.message.message_id, reply_markup=kb)
@@ -5380,6 +5536,189 @@ def auto_unban_loop():
             print(f"[auto_unban] Ошибка: {e}")
 
         time.sleep(30 * 60)  # проверка каждые 30 минут
+
+
+# ==================== СЕЗОНЫ — АДМИН ПАНЕЛЬ ====================
+
+@bot.callback_query_handler(func=lambda c: c.data == "admin_seasons")
+def cb_admin_seasons(c):
+    uid = c.from_user.id
+    if not is_admin(uid):
+        bot.answer_callback_query(c.id, "❌ Нет доступа")
+        return
+    season = get_current_season()
+    all_seasons = get_all_seasons()
+
+    if season:
+        sid, snum, sname, started_at = season
+        dt_start = datetime.datetime.fromtimestamp(started_at).strftime("%d.%m.%Y %H:%M")
+        text = (
+            f"🏆 <b>УПРАВЛЕНИЕ СЕЗОНАМИ</b>\n\n"
+            f"📅 Текущий сезон: <b>{sname}</b>\n"
+            f"🔢 Номер: <b>{snum}</b>\n"
+            f"🕐 Начат: <b>{dt_start}</b>\n\n"
+            f"📊 Всего сезонов: <b>{len(all_seasons)}</b>\n\n"
+            f"⚠️ <i>Сброс сезона обнуляет ELO и статистику всех игроков, "
+            f"предварительно сохраняя их в архив.</i>"
+        )
+    else:
+        text = "🏆 <b>УПРАВЛЕНИЕ СЕЗОНАМИ</b>\n\nСезон не найден."
+
+    kb = types.InlineKeyboardMarkup(row_width=1)
+    kb.add(
+        types.InlineKeyboardButton("🔄 Сбросить сезон",        callback_data="admin_season_reset_confirm"),
+        types.InlineKeyboardButton("📜 История сезонов",        callback_data="admin_season_history"),
+    )
+    if season:
+        kb.add(types.InlineKeyboardButton(f"🏅 Топ сезона #{season[1]}", callback_data=f"admin_season_top|{season[0]}"))
+    kb.add(types.InlineKeyboardButton("🔙 Назад", callback_data="admin_panel"))
+    bot.edit_message_text(text, c.message.chat.id, c.message.message_id, reply_markup=kb, parse_mode="HTML")
+    bot.answer_callback_query(c.id)
+
+
+@bot.callback_query_handler(func=lambda c: c.data == "admin_season_reset_confirm")
+def cb_admin_season_reset_confirm(c):
+    uid = c.from_user.id
+    if not is_admin(uid):
+        bot.answer_callback_query(c.id, "❌ Нет доступа")
+        return
+    season = get_current_season()
+    sname = season[2] if season else "текущий сезон"
+    snum  = season[1] if season else 1
+
+    text = (
+        f"⚠️ <b>ПОДТВЕРЖДЕНИЕ СБРОСА СЕЗОНА</b>\n\n"
+        f"Вы собираетесь завершить <b>{sname}</b> и начать <b>Сезон {snum + 1}</b>.\n\n"
+        f"<b>Что произойдёт:</b>\n"
+        f"• Статистика всех игроков сохранится в архив сезона\n"
+        f"• ELO всех игроков сбросится до <b>1000</b>\n"
+        f"• Победы, поражения, убийства, смерти, MVP — обнулятся\n"
+        f"• Монеты игроков <b>не будут тронуты</b>\n"
+        f"• Инвентарь и покупки <b>не будут тронуты</b>\n\n"
+        f"❗ <b>Это действие необратимо!</b>\n"
+        f"Вы уверены?"
+    )
+    kb = types.InlineKeyboardMarkup(row_width=2)
+    kb.add(
+        types.InlineKeyboardButton("✅ Да, сбросить",  callback_data="admin_season_reset_execute"),
+        types.InlineKeyboardButton("❌ Отмена",         callback_data="admin_seasons"),
+    )
+    bot.edit_message_text(text, c.message.chat.id, c.message.message_id, reply_markup=kb, parse_mode="HTML")
+    bot.answer_callback_query(c.id)
+
+
+@bot.callback_query_handler(func=lambda c: c.data == "admin_season_reset_execute")
+def cb_admin_season_reset_execute(c):
+    uid = c.from_user.id
+    if not is_admin(uid):
+        bot.answer_callback_query(c.id, "❌ Нет доступа")
+        return
+    bot.answer_callback_query(c.id, "⏳ Выполняется сброс...")
+    try:
+        new_season_number, players_count = reset_season(uid)
+        admin_p = get_player(uid)
+        admin_name = admin_p[1] if admin_p else str(uid)
+        text = (
+            f"✅ <b>СЕЗОН СБРОШЕН!</b>\n\n"
+            f"🏆 Начат <b>Сезон {new_season_number}</b>\n"
+            f"👥 Архивировано игроков: <b>{players_count}</b>\n"
+            f"👮 Администратор: <b>{admin_name}</b>\n\n"
+            f"Все игроки начинают с ELO 1000."
+        )
+        kb = types.InlineKeyboardMarkup(row_width=1)
+        kb.add(
+            types.InlineKeyboardButton("🏆 К сезонам", callback_data="admin_seasons"),
+            types.InlineKeyboardButton("🔙 Админ панель", callback_data="admin_panel"),
+        )
+        bot.edit_message_text(text, c.message.chat.id, c.message.message_id, reply_markup=kb, parse_mode="HTML")
+
+        # Уведомить всех администраторов
+        notif_text = (
+            f"🏆 <b>СЕЗОН СБРОШЕН!</b>\n\n"
+            f"Начат <b>Сезон {new_season_number}</b>\n"
+            f"Архивировано: {players_count} игроков\n"
+            f"Выполнил: <b>{admin_name}</b>"
+        )
+        for admin_id in ADMIN_IDS_LIST:
+            if admin_id != uid:
+                try:
+                    bot.send_message(admin_id, notif_text, parse_mode="HTML")
+                except Exception:
+                    pass
+
+    except Exception as e:
+        bot.send_message(
+            c.message.chat.id,
+            f"❌ <b>Ошибка при сбросе сезона:</b>\n<code>{e}</code>",
+            parse_mode="HTML"
+        )
+
+
+@bot.callback_query_handler(func=lambda c: c.data == "admin_season_history")
+def cb_admin_season_history(c):
+    uid = c.from_user.id
+    if not is_admin(uid):
+        bot.answer_callback_query(c.id, "❌ Нет доступа")
+        return
+    seasons = get_all_seasons()
+    text = "📜 <b>ИСТОРИЯ СЕЗОНОВ</b>\n\n"
+    if not seasons:
+        text += "Сезонов нет."
+    else:
+        for s in seasons:
+            sid, snum, sname, started_at, ended_at, is_active = s
+            dt_start = datetime.datetime.fromtimestamp(started_at).strftime("%d.%m.%Y") if started_at else "?"
+            if is_active:
+                text += f"🟢 <b>{sname}</b> — начат {dt_start} <i>(активный)</i>\n"
+            else:
+                dt_end = datetime.datetime.fromtimestamp(ended_at).strftime("%d.%m.%Y") if ended_at else "?"
+                text += f"⚫ <b>{sname}</b> — {dt_start} → {dt_end}\n"
+
+    kb = types.InlineKeyboardMarkup(row_width=1)
+    for s in seasons:
+        sid, snum, sname, started_at, ended_at, is_active = s
+        if not is_active:
+            kb.add(types.InlineKeyboardButton(f"🏅 Топ: {sname}", callback_data=f"admin_season_top|{sid}"))
+    kb.add(types.InlineKeyboardButton("🔙 Назад", callback_data="admin_seasons"))
+    bot.edit_message_text(text, c.message.chat.id, c.message.message_id, reply_markup=kb, parse_mode="HTML")
+    bot.answer_callback_query(c.id)
+
+
+@bot.callback_query_handler(func=lambda c: c.data.startswith("admin_season_top|"))
+def cb_admin_season_top(c):
+    uid = c.from_user.id
+    if not is_admin(uid):
+        bot.answer_callback_query(c.id, "❌ Нет доступа")
+        return
+    season_id = int(c.data.split("|", 1)[1])
+    top = get_season_top(season_id)
+
+    conn = _db()
+    cur = conn.cursor()
+    cur.execute("SELECT season_number, name FROM seasons WHERE id=%s", (season_id,))
+    srow = cur.fetchone()
+    conn.close()
+    sname = srow[1] if srow else f"Сезон {season_id}"
+
+    text = f"🏅 <b>ТОП — {sname}</b>\n\n"
+    if not top:
+        text += "Нет данных."
+    else:
+        medals = ["🥇", "🥈", "🥉"]
+        for i, row in enumerate(top):
+            uname, elo, wins, losses, kills, deaths, mvp = row
+            medal = medals[i] if i < 3 else f"{i+1}."
+            kd = f"{kills/deaths:.2f}" if deaths else "—"
+            text += (
+                f"{medal} <b>{uname}</b>\n"
+                f"   ELO: {elo} | {wins}W/{losses}L | K/D: {kd}"
+                + (f" | MVP: {mvp}" if mvp else "") + "\n"
+            )
+
+    kb = types.InlineKeyboardMarkup()
+    kb.add(types.InlineKeyboardButton("🔙 Назад", callback_data="admin_season_history"))
+    bot.edit_message_text(text, c.message.chat.id, c.message.message_id, reply_markup=kb, parse_mode="HTML")
+    bot.answer_callback_query(c.id)
 
 
 # ==================== ТИКЕТЫ — АДМИН ПАНЕЛЬ ====================
