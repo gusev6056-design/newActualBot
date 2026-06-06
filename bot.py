@@ -1188,12 +1188,27 @@ def get_player_map_stats(user_id):
     return result[:5]
 
 
+def _get_season_start_ts():
+    """Returns the started_at timestamp of the current active season, or 0 if none."""
+    try:
+        conn = _db()
+        cur = conn.cursor()
+        cur.execute("SELECT started_at FROM seasons WHERE is_active=1 ORDER BY id DESC LIMIT 1")
+        row = cur.fetchone()
+        conn.close()
+        return row[0] if row else 0
+    except Exception:
+        return 0
+
+
 def get_player_recent_matches(user_id, limit=5):
-    """Returns list of booleans (True=win) for last N Default matches of the player."""
+    """Returns list of booleans (True=win) for last N Default matches of the player in current season."""
+    season_start = _get_season_start_ts()
     conn = _db()
     cur = conn.cursor()
     cur.execute(
-        "SELECT players_json FROM matches WHERE status='registered' AND (league='default' OR league IS NULL) AND players_json IS NOT NULL ORDER BY finished_at DESC LIMIT 50"
+        "SELECT players_json FROM matches WHERE status='registered' AND (league='default' OR league IS NULL) AND players_json IS NOT NULL AND finished_at >= %s ORDER BY finished_at DESC LIMIT 50",
+        (season_start,)
     )
     rows = cur.fetchall()
     conn.close()
@@ -1214,11 +1229,13 @@ def get_player_recent_matches(user_id, limit=5):
 
 
 def get_player_quals_recent_matches(user_id, limit=5):
-    """Returns list of booleans (True=win) for last N Quals matches of the player."""
+    """Returns list of booleans (True=win) for last N Quals matches of the player in current season."""
+    season_start = _get_season_start_ts()
     conn = _db()
     cur = conn.cursor()
     cur.execute(
-        "SELECT players_json FROM matches WHERE status='registered' AND league='quals' AND players_json IS NOT NULL ORDER BY finished_at DESC LIMIT 50"
+        "SELECT players_json FROM matches WHERE status='registered' AND league='quals' AND players_json IS NOT NULL AND finished_at >= %s ORDER BY finished_at DESC LIMIT 50",
+        (season_start,)
     )
     rows = cur.fetchall()
     conn.close()
