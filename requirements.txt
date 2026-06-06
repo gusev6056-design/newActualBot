@@ -1,4 +1,4 @@
 pyTelegramBotAPI==4.22.1
-psycopg2-binary==2.9.9
+psycopg2-binary==2.9.10
 Flask==3.0.3
 Pillow==10.4.0
