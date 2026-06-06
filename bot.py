@@ -1147,11 +1147,13 @@ def get_match_history(limit=10):
 
 
 def get_player_map_stats(user_id):
-    """Returns list of {"map": str, "wr": float, "kd": float} for each map the player played."""
+    """Returns list of {"map": str, "wr": float, "kd": float} for each map the player played in current season."""
+    season_start = _get_season_start_ts()
     conn = _db()
     cur = conn.cursor()
     cur.execute(
-        "SELECT map_name, players_json FROM matches WHERE status='registered' AND players_json IS NOT NULL"
+        "SELECT map_name, players_json FROM matches WHERE status='registered' AND players_json IS NOT NULL AND finished_at >= %s",
+        (season_start,)
     )
     rows = cur.fetchall()
     conn.close()
