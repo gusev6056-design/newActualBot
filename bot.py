@@ -834,6 +834,13 @@ def get_current_player(uid):
     conn.close()
     return row
 
+def get_player_in_lobby(uid, lobby):
+    """Получает игрока из таблицы приватки лобби/матча (не из user_private)."""
+    private_key = lobby.get("private", "darling") if lobby else "darling"
+    priv_table = PRIVATE_CONFIG.get(private_key, PRIVATE_CONFIG["darling"])["table"]
+    p = get_player_from_table(uid, priv_table)
+    return p if p else get_player(uid)
+
 def is_registered(uid):
     p = get_current_player(uid)
     return p is not None and p[12] == 1
@@ -1202,7 +1209,7 @@ def save_match_start(lobby):
     for uid in list(lobby.get("team_ct", [])) + list(lobby.get("team_t", [])):
         if is_bot_player(uid):
             continue
-        p = get_player(uid)
+        p = get_player_in_lobby(uid, lobby)
         players_info.append({
             "user_id": uid,
             "name": p[1] if p else str(uid),
@@ -1270,7 +1277,7 @@ def save_match_start(lobby):
 def save_match_to_history(lobby, data, all_stats):
     players_info = []
     for uid, s in all_stats.items():
-        p = get_player(uid)
+        p = get_player_in_lobby(uid, lobby)
         players_info.append({
             "user_id": uid,
             "name": p[1] if p else str(uid),
@@ -1348,7 +1355,7 @@ def save_match_cancelled(lobby, reason=""):
     for uid in list(lobby.get("team_ct", [])) + list(lobby.get("team_t", [])):
         if is_bot_player(uid):
             continue
-        p = get_player(uid)
+        p = get_player_in_lobby(uid, lobby)
         players_info.append({
             "user_id": uid,
             "name": p[1] if p else str(uid),
@@ -2930,7 +2937,7 @@ def build_accept_text(lobby_id):
     real_players = [u for u in lobby["players"] if not is_bot_player(u)]
     text = "🔔 <b>Матч найден! Статус принятия:</b>\n\n"
     for u in real_players:
-        p = get_player(u)
+        p = get_player_in_lobby(u, lobby)
         name = p[1] if p else str(u)
         prem = " 👑" if has_active_premium(u) else ""
         icon = "✅" if u in accepted else "⏳"
@@ -3129,8 +3136,8 @@ def build_ban_status_text(lobby_id):
     lobby = active_lobbies.get(lobby_id)
     if not lobby:
         return ""
-    ct_p = get_player(lobby.get("ct_captain"))
-    t_p  = get_player(lobby.get("t_captain"))
+    ct_p = get_player_in_lobby(lobby.get("ct_captain"), lobby) if lobby.get("ct_captain") else None
+    t_p  = get_player_in_lobby(lobby.get("t_captain"),  lobby) if lobby.get("t_captain")  else None
     ct_name = ct_p[1] if ct_p else "CT капитан"
     t_name  = t_p[1]  if t_p  else "T капитан"
     bans = lobby.get("map_bans", [])
@@ -3307,18 +3314,18 @@ def cb_ban_map(c):
 
 
 # ==================== ЗАПУСК МАТЧА ====================
-def pline(uid):
+def pline(uid, priv_table=None):
     """Строчка игрока без ссылки (для обычных мест)."""
-    p = get_player(uid)
+    p = (get_player_from_table(uid, priv_table) or get_player(uid)) if priv_table else get_player(uid)
     if p:
         icon = "🤖" if p[13] else "👤"
         prem = " 👑" if (not p[13] and has_active_premium(uid)) else ""
         return f"{icon} {p[1]}{prem} [Lvl {get_faceit_level(p[4])} | {p[4]} ELO]"
     return str(uid)
 
-def pline_link(uid):
+def pline_link(uid, priv_table=None):
     """Строчка игрока с кликабельным именем — ведёт на TG-профиль (без превью ссылки)."""
-    p = get_player(uid)
+    p = (get_player_from_table(uid, priv_table) or get_player(uid)) if priv_table else get_player(uid)
     if p:
         icon = "🤖" if p[13] else "👤"
         prem = " 👑" if (not p[13] and has_active_premium(uid)) else ""
@@ -3439,14 +3446,15 @@ def launch_match(lobby_id):
         host_uid = ct_captain_uid
     else:
         host_uid = next((u for u in team_ct if not is_bot_player(u)), None)
-    host_p    = get_player(host_uid) if host_uid else None
+    _launch_priv_table = PRIVATE_CONFIG.get(lobby.get("private", "darling"), PRIVATE_CONFIG["darling"])["table"]
+    host_p    = (get_player_from_table(host_uid, _launch_priv_table) or get_player(host_uid)) if host_uid else None
     host_game_id = host_p[2] if host_p else "—"
     host_name    = host_p[1] if host_p else "—"
     lobby["host_uid"]     = host_uid
     lobby["host_game_id"] = host_game_id
 
     def admin_pline(idx, u):
-        p = get_player(u)
+        p = get_player_from_table(u, _launch_priv_table) or get_player(u)
         num = NUMBER_EMOJI[idx] if idx < len(NUMBER_EMOJI) else f"{idx+1}."
         if p:
             icon = "🤖" if p[13] else ""
@@ -3514,9 +3522,9 @@ def launch_match(lobby_id):
             f"👑 Хост: <b>{host_name}</b>\n"
             f"🎮 Game ID хоста: <code>{host_game_id}</code>\n\n"
             f"💙 <b>Команда CT</b>\n"
-            + "\n".join([f"  {i+1}. {pline_link(u)}" for i, u in enumerate(team_ct)])
+            + "\n".join([f"  {i+1}. {pline_link(u, _launch_priv_table)}" for i, u in enumerate(team_ct)])
             + f"\n\n🧡 <b>Команда T</b>\n"
-            + "\n".join([f"  {i+1}. {pline_link(u)}" for i, u in enumerate(team_t)])
+            + "\n".join([f"  {i+1}. {pline_link(u, _launch_priv_table)}" for i, u in enumerate(team_t)])
             + f"\n\n📸 После матча нажми кнопку и отправь скриншот результатов."
         )
         kb_player = types.InlineKeyboardMarkup()
@@ -3631,7 +3639,7 @@ def handle_player_screenshot(msg):
             bot.delete_message(uid, start_mid)
         except Exception:
             pass
-    p = get_player(uid)
+    p = get_player_in_lobby(uid, lobby)
     name = p[1] if p else str(uid)
     match_id = lobby.get("match_id", "?")
     lobby["screenshots_count"] = lobby.get("screenshots_count", 0) + 1
@@ -3874,8 +3882,9 @@ def reg_step_score(msg):
     match_registration[uid]["step"] = "winner"
     match_key = match_registration[uid]["match_key"]
     lobby = running_matches.get(match_key)
-    ct_list = "\n".join([f"  {i+1}. {pline(u)}" for i, u in enumerate((lobby.get("team_ct", []) if lobby else []))])
-    t_list  = "\n".join([f"  {i+1}. {pline(u)}" for i, u in enumerate((lobby.get("team_t",  []) if lobby else []))])
+    _rs_priv_table = PRIVATE_CONFIG.get(lobby.get("private", "darling") if lobby else "darling", PRIVATE_CONFIG["darling"])["table"] if lobby else None
+    ct_list = "\n".join([f"  {i+1}. {pline(u, _rs_priv_table)}" for i, u in enumerate((lobby.get("team_ct", []) if lobby else []))])
+    t_list  = "\n".join([f"  {i+1}. {pline(u, _rs_priv_table)}" for i, u in enumerate((lobby.get("team_t",  []) if lobby else []))])
     kb = types.InlineKeyboardMarkup()
     kb.add(
         types.InlineKeyboardButton("💙 CT победила", callback_data=f"reg_winner_ct|{match_key}"),
@@ -3921,14 +3930,16 @@ def reg_winner(c):
     match_registration[uid]["ct_players"] = ct_players
     match_registration[uid]["t_players"]  = t_players
     match_registration[uid]["kills_data"] = {}
-    _ask_all_kda(uid, ct_players, t_players)
+    _reg_lobby = running_matches.get(match_key)
+    _reg_priv_table = PRIVATE_CONFIG.get(_reg_lobby.get("private", "darling") if _reg_lobby else "darling", PRIVATE_CONFIG["darling"])["table"]
+    _ask_all_kda(uid, ct_players, t_players, priv_table=_reg_priv_table)
 
 
-def _ask_all_kda(reg_uid, ct_players, t_players):
+def _ask_all_kda(reg_uid, ct_players, t_players, priv_table=None):
     all_players = ct_players + t_players
     lines = []
     for u in all_players:
-        p = get_player(u)
+        p = (get_player_from_table(u, priv_table) or get_player(u)) if priv_table else get_player(u)
         name = p[1] if p else str(u)
         team = "💙 CT" if u in ct_players else "🧡 T"
         lines.append(f"  {team} {name} — <code>{u}</code>")
@@ -4150,7 +4161,7 @@ def _finalize_match(reg_uid, match_key):
     winner_lines = []
     loser_lines  = []
     for uid, s in all_stats.items():
-        p = get_player(uid)
+        p = get_player_from_table(uid, priv_table) or get_player(uid)
         name = p[1] if p else str(uid)
         sign = "+" if s["elo_change"] >= 0 else ""
         line = (

@@ -1,28 +1,23 @@
 services:
   - type: web
-    name: actual-faceit-bot
-    env: python
-    region: frankfurt
-    plan: free
+    name: telegram-bot
     runtime: python
-    pythonVersion: "3.11.9"
     buildCommand: pip install -r requirements.txt
     startCommand: python bot.py
-    healthCheckPath: /
     envVars:
       - key: BOT_TOKEN
         sync: false
       - key: DATABASE_URL
         sync: false
-      - key: ADMIN_IDS
-        sync: false
       - key: ADMIN_CHAT_ID
+        sync: false
+      - key: ADMIN_IDS
         sync: false
       - key: LOG_CHAT_ID
         sync: false
       - key: LOG_THREAD_ID
-        value: "0"
+        sync: false
       - key: RESULTS_THREAD_ID
-        value: "0"
+        sync: false
       - key: PORT
-        value: "8099"
+        value: 10000
