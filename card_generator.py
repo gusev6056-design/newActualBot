@@ -137,6 +137,7 @@ def generate_profile_card(
     leaderboard: list,
     quals_stats: dict = None,
     mvp_count:   int  = 0,
+    is_verified: bool = False,
 ) -> io.BytesIO:
 
     QUALS_H = 70 if quals_stats else 0
@@ -183,6 +184,10 @@ def generate_profile_card(
     if is_admin:
         _rr(draw, (badge_x, 40, badge_x + 40, 62), 4, fill=(170, 28, 28))
         draw.text((badge_x + 4, 42), "ADM", font=_font(12, bold=True), fill=WHITE)
+        badge_x += 48
+    if is_verified:
+        _rr(draw, (badge_x, 40, badge_x + 24, 62), 4, fill=(29, 108, 236))
+        draw.text((badge_x + 4, 42), "✓", font=_font(14, bold=True), fill=WHITE)
 
     draw.text((152, 78), f"ID: {game_id}", font=_font(14), fill=GRAY)
     draw.text((W - 200, 16), "ELO RATING", font=_font(11), fill=GRAY)
@@ -259,6 +264,7 @@ def generate_profile_card(
         rank, name, p_elo = entry[0], entry[1], entry[2]
         is_p  = entry[3] if len(entry) > 3 else False
         is_ad = entry[4] if len(entry) > 4 else False
+        is_vf = entry[5] if len(entry) > 5 else False
         ly = LBY + 30 + i * 42
         draw.text((14, ly+10), str(rank), font=_font(14, bold=True), fill=GRAY)
         _rr(draw, (38, ly, 72, ly+34), 5, fill=(38, 32, 8), outline=GOLD_DIM, width=1)
@@ -272,6 +278,10 @@ def generate_profile_card(
         if is_ad:
             _rr(draw, (nx2, ly+10, nx2+32, ly+26), 3, fill=(170, 28, 28))
             draw.text((nx2+3, ly+11), "ADM", font=_font(10, bold=True), fill=WHITE)
+            nx2 += 38
+        if is_vf:
+            _rr(draw, (nx2, ly+10, nx2+22, ly+26), 3, fill=(29, 108, 236))
+            draw.text((nx2+4, ly+11), "✓", font=_font(10, bold=True), fill=WHITE)
         _text_r(draw, W-20, ly+10, str(p_elo), _font(14, bold=True), WHITE)
 
     # ===== QUALS STATS SECTION (optional) =====
@@ -358,6 +368,11 @@ def generate_leaderboard_card(players: list, title: str = "TOP ИГРОКОВ П
             _rr(draw, (bx, y+ROW_H//2-12, bx+36, y+ROW_H//2+6), 3, fill=(170, 28, 28))
             draw.text((bx+4, y+ROW_H//2-11), "ADM", font=_font(11, bold=True), fill=WHITE)
             bx += 44
+
+        if p.get("is_verified"):
+            _rr(draw, (bx, y+ROW_H//2-12, bx+24, y+ROW_H//2+6), 3, fill=(29, 108, 236))
+            draw.text((bx+4, y+ROW_H//2-11), "✓", font=_font(13, bold=True), fill=WHITE)
+            bx += 32
 
         if p.get("is_premium"):
             _rr(draw, (bx, y+ROW_H//2-12, bx+36, y+ROW_H//2+6), 3, fill=TEAL_DIM)
