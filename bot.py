@@ -168,13 +168,19 @@ def _db():
     return psycopg2.connect(DATABASE_URL, connect_timeout=15)
 
 
-def _add_column_if_missing(cur, table, col, definition):
+def _add_column_if_missing(table, col, definition):
+    conn = _db()
+    cur = conn.cursor()
     try:
         cur.execute(f"ALTER TABLE {table} ADD COLUMN {col} {definition}")
+        conn.commit()
     except psycopg2.errors.DuplicateColumn:
-        cur.connection.rollback()
-    except Exception:
-        cur.connection.rollback()
+        conn.rollback()
+    except Exception as e:
+        conn.rollback()
+        print(f"[_add_column_if_missing] {table}.{col}: {e}")
+    finally:
+        conn.close()
 
 
 def init_db():
@@ -230,8 +236,7 @@ def init_db():
         ("quals_elo",      "INTEGER DEFAULT 1000"),
         ("mvp_count",      "INTEGER DEFAULT 0"),
     ]:
-        _add_column_if_missing(cur, "players", col, definition)
-    conn.commit()
+        _add_column_if_missing("players", col, definition)
 
     for admin_uid in ADMIN_IDS_LIST:
         cur.execute(
@@ -301,8 +306,7 @@ def init_db():
         ("is_activated", "INTEGER DEFAULT 0"),
         ("activated_at", "BIGINT DEFAULT NULL"),
     ]:
-        _add_column_if_missing(cur, "inventory", col, definition)
-    conn.commit()
+        _add_column_if_missing("inventory", col, definition)
 
     cur.execute("""
         CREATE TABLE IF NOT EXISTS match_counter (
@@ -376,11 +380,10 @@ def init_db():
     """)
     conn.commit()
 
-    _add_column_if_missing(cur, "matches", "match_code",    "TEXT DEFAULT ''")
-    _add_column_if_missing(cur, "matches", "status",        "TEXT DEFAULT 'registered'")
-    _add_column_if_missing(cur, "matches", "cancel_reason", "TEXT DEFAULT ''")
-    _add_column_if_missing(cur, "matches", "started_at",    "BIGINT DEFAULT 0")
-    conn.commit()
+    _add_column_if_missing("matches", "match_code",    "TEXT DEFAULT ''")
+    _add_column_if_missing("matches", "status",        "TEXT DEFAULT 'registered'")
+    _add_column_if_missing("matches", "cancel_reason", "TEXT DEFAULT ''")
+    _add_column_if_missing("matches", "started_at",    "BIGINT DEFAULT 0")
     # UNIQUE-индекс на match_id для ON CONFLICT
     try:
         cur.execute("CREATE UNIQUE INDEX IF NOT EXISTS matches_match_id_uq ON matches (match_id)")
@@ -3897,6 +3900,9 @@ def cb_shop_item(c):
         bot.answer_callback_query(c.id, "❌ Товар не найден")
         return
     _, name, desc, category, price, item_type = item
+    if category == "decor":
+        bot.answer_callback_query(c.id, "🔧 На технических работах", show_alert=True)
+        return
     p = get_player(uid)
     coins = p[5] if p else 0
     owned = has_item_in_inventory(uid, item_id)
