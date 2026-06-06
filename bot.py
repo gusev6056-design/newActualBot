@@ -155,9 +155,9 @@ ticket_flow           = {}   # uid -> {step, match_code, reason, evidence_file_i
 
 # ==================== КОНФИГ ПРИВАТОК ====================
 PRIVATE_CONFIG = {
-    "darling": {"table": "players",      "display": "StandDarling", "emoji": "⚡"},
-    "fade":    {"table": "fade_players", "display": "StandFade",    "emoji": "🔥"},
-    "lite":    {"table": "lite_players", "display": "Fade Lite",    "emoji": "💫"},
+    "darling": {"table": "players",      "display": "StandDarling", "emoji": "⚡", "matches_table": "darling_matches"},
+    "fade":    {"table": "fade_players", "display": "StandFade",    "emoji": "🔥", "matches_table": "fade_matches"},
+    "lite":    {"table": "lite_players", "display": "Fade Lite",    "emoji": "💫", "matches_table": "lite_matches"},
 }
 user_private = {}  # uid -> "darling" | "fade" | "lite"
 
@@ -217,10 +217,19 @@ def elo_bar(elo: int, lvl: int) -> str:
 # ==================== ПОДКЛЮЧЕНИЕ К БД ====================
 def _db():
     url = DATABASE_URL
-    # psycopg2 требует postgresql://, Replit отдаёт postgres://
     if url and url.startswith("postgres://"):
         url = "postgresql://" + url[len("postgres://"):]
-    return psycopg2.connect(url, connect_timeout=15)
+    last_err = None
+    for _attempt in range(3):
+        try:
+            return psycopg2.connect(url, connect_timeout=15)
+        except psycopg2.OperationalError as e:
+            last_err = e
+            if "SSL" in str(e) or "connection" in str(e).lower():
+                time.sleep(1)
+                continue
+            raise
+    raise last_err
 
 
 def _add_column_if_missing(table, col, definition):
@@ -526,6 +535,34 @@ def init_db():
     except Exception:
         conn.rollback()
 
+    # Per-private match tables: darling_matches, fade_matches, lite_matches
+    for _priv_key, _priv_cfg in PRIVATE_CONFIG.items():
+        _mt = _priv_cfg["matches_table"]
+        cur.execute(f"""
+            CREATE TABLE IF NOT EXISTS {_mt} (
+                id SERIAL PRIMARY KEY,
+                match_id INTEGER NOT NULL,
+                match_code TEXT DEFAULT '',
+                league TEXT DEFAULT '',
+                device TEXT DEFAULT '',
+                map_name TEXT DEFAULT '',
+                winner TEXT DEFAULT '',
+                score_w INTEGER DEFAULT 0,
+                score_l INTEGER DEFAULT 0,
+                status TEXT DEFAULT 'registered',
+                cancel_reason TEXT DEFAULT '',
+                started_at BIGINT DEFAULT 0,
+                players_json TEXT DEFAULT '[]',
+                finished_at BIGINT DEFAULT EXTRACT(EPOCH FROM NOW())::BIGINT
+            )
+        """)
+        conn.commit()
+        try:
+            cur.execute(f"CREATE UNIQUE INDEX IF NOT EXISTS {_mt}_match_id_uq ON {_mt} (match_id)")
+            conn.commit()
+        except Exception:
+            conn.rollback()
+
     # ===== МАТЧИ С ТРЕМЯ СТАТУСАМИ =====
     # active = матч идёт, registered = зарегистрирован, cancelled = отменён
     cur.execute("""
@@ -774,6 +811,18 @@ def get_player(user_id):
     row = cur.fetchone()
     conn.close()
     return row
+
+def get_player_from_table(user_id, table):
+    """Получает игрока из указанной таблицы приватки."""
+    try:
+        conn = _db()
+        cur = conn.cursor()
+        cur.execute(f"SELECT * FROM {table} WHERE user_id=%s", (user_id,))
+        row = cur.fetchone()
+        conn.close()
+        return row
+    except Exception:
+        return None
 
 def get_current_player(uid):
     """Получает игрока из таблицы текущей приватки пользователя."""
@@ -1201,6 +1250,16 @@ def save_match_start(lobby):
                 int(time.time()),
             ),
         )
+        # Пишем в таблицу матчей конкретной приватки
+        _pmt = PRIVATE_CONFIG.get(lobby.get("private", "darling"), PRIVATE_CONFIG["darling"])["matches_table"]
+        cur.execute(
+            f"""INSERT INTO {_pmt}
+               (match_id, match_code, league, device, map_name, status, players_json, started_at, winner, score_w, score_l)
+               VALUES (%s, %s, %s, %s, %s, 'active', %s, %s, '', 0, 0)
+               ON CONFLICT (match_id) DO NOTHING""",
+            (lobby.get("match_id", 0), lobby.get("match_code", ""), lobby.get("league", ""),
+             lobby.get("device", ""), lobby.get("map_name", ""), players_json_str, int(time.time())),
+        )
         conn.commit()
     except Exception as e:
         print(f"save_match_start error: {e}")
@@ -1252,6 +1311,20 @@ def save_match_to_history(lobby, data, all_stats):
             cur.execute("DELETE FROM unregistered_matches WHERE match_id=%s", (lobby.get("match_id", 0),))
         except Exception:
             pass
+        # Пишем результат в таблицу матчей конкретной приватки
+        _pmt = PRIVATE_CONFIG.get(lobby.get("private", "darling"), PRIVATE_CONFIG["darling"])["matches_table"]
+        cur.execute(
+            f"""INSERT INTO {_pmt}
+               (match_id, match_code, league, device, map_name, winner, score_w, score_l, players_json, status, started_at)
+               VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, 'registered', %s)
+               ON CONFLICT (match_id) DO UPDATE SET
+                   winner=EXCLUDED.winner, score_w=EXCLUDED.score_w, score_l=EXCLUDED.score_l,
+                   players_json=EXCLUDED.players_json, status='registered'""",
+            (lobby.get("match_id", 0), lobby.get("match_code", ""), lobby.get("league", ""),
+             lobby.get("device", ""), lobby.get("map_name", ""), data.get("winner", ""),
+             data.get("score_w", 0), data.get("score_l", 0),
+             json.dumps(players_info, ensure_ascii=False), int(time.time())),
+        )
         conn.commit()
     except Exception as e:
         print(f"[save_match_to_history ERROR] {e}")
@@ -1308,6 +1381,20 @@ def save_match_cancelled(lobby, reason=""):
             cur.execute("DELETE FROM unregistered_matches WHERE match_id=%s", (lobby.get("match_id", 0),))
         except Exception:
             pass
+        # Пишем отмену в таблицу матчей конкретной приватки
+        _pmt = PRIVATE_CONFIG.get(lobby.get("private", "darling"), PRIVATE_CONFIG["darling"])["matches_table"]
+        cur.execute(
+            f"""INSERT INTO {_pmt}
+               (match_id, match_code, league, device, map_name, status, cancel_reason, players_json,
+                winner, score_w, score_l, started_at)
+               VALUES (%s, %s, %s, %s, %s, 'cancelled', %s, %s, '', 0, 0, %s)
+               ON CONFLICT (match_id) DO UPDATE SET
+                   status='cancelled', cancel_reason=EXCLUDED.cancel_reason""",
+            (lobby.get("match_id", 0), lobby.get("match_code", ""), lobby.get("league", ""),
+             lobby.get("device", ""), lobby.get("map_name", ""),
+             lobby.get("cancel_reason", ""), json.dumps(players_info, ensure_ascii=False),
+             int(time.time())),
+        )
         conn.commit()
     except Exception as e:
         print(f"save_match_cancelled error: {e}")
@@ -2298,7 +2385,7 @@ def cb_profile(c):
                 deaths      = p[9],
                 assists     = p[10],
                 is_premium  = premium,
-                is_admin    = bool(p[11]) if len(p) > 11 else False,
+                is_admin    = is_admin(uid),
                 global_rank = rank,
                 league      = league,
                 map_stats   = map_stats,
@@ -2400,7 +2487,7 @@ def cb_profile_quals(c):
                 deaths      = q_deaths,
                 assists     = q_assists,
                 is_premium  = premium,
-                is_admin    = bool(p[11]) if len(p) > 11 else False,
+                is_admin    = is_admin(uid),
                 global_rank = q_rank,
                 league      = "QUALS",
                 map_stats   = [],
@@ -2630,17 +2717,18 @@ def build_lobby_text(lobby_id):
         f"👥 Игроков: {len(lobby['players'])}/10\n\n"
     )
     is_quals = (league == "quals")
+    priv_table_name = priv_cfg["table"]
     for i, pid in enumerate(lobby["players"], 1):
-        p = get_player(pid)
+        p = get_player_from_table(pid, priv_table_name) or get_player(pid)
         if p:
             icon = "🤖" if p[13] else "👤"
             prem = " 👑" if (not p[13] and has_active_premium(pid)) else ""
-            # Show ELO and level from the correct league
             if is_quals and len(p) > 30 and not p[13]:
                 display_elo = p[30] if p[30] is not None else 1000
             else:
                 display_elo = p[4]
-            text += f"{i}. {icon} {p[1]}{prem} [Lvl {get_faceit_level(display_elo)} | {display_elo} ELO]\n"
+            priv_elo_label = f"{priv_cfg['emoji']} {display_elo}"
+            text += f"{i}. {icon} {p[1]}{prem} [Lvl {get_faceit_level(display_elo)} | {priv_elo_label} ELO]\n"
         else:
             text += f"{i}. {pid}\n"
     return text
