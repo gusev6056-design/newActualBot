@@ -113,7 +113,7 @@ except Exception:
 _dynamic_log_thread_id     = LOG_THREAD_ID
 _dynamic_results_thread_id = RESULTS_THREAD_ID
 
-DATABASE_URL = os.environ.get("DATABASE_URL", "")
+DATABASE_URL = os.environ.get("DATABASE_URL") or os.environ.get("SUPABASE_URL", "")
 
 ACCEPT_TIMEOUT = 60
 MAPS = ["Zone 9", "Rust", "Province", "Sakura", "Sandstone"]
