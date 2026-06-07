@@ -1631,6 +1631,33 @@ def get_player_quals_recent_matches(user_id, limit=5):
     return recent
 
 
+def get_player_duo_recent_matches(user_id, limit=5):
+    """Returns list of booleans (True=win) for last N 2v2 matches of the player in current season."""
+    season_start = _get_season_start_ts()
+    conn = _db()
+    cur = conn.cursor()
+    cur.execute(
+        "SELECT players_json FROM matches WHERE status='registered' AND league='2v2' AND players_json IS NOT NULL AND finished_at >= %s ORDER BY finished_at DESC LIMIT 50",
+        (season_start,)
+    )
+    rows = cur.fetchall()
+    conn.close()
+
+    recent = []
+    for (pj,) in rows:
+        if len(recent) >= limit:
+            break
+        try:
+            players = json.loads(pj or "[]")
+        except Exception:
+            continue
+        for p in players:
+            if p.get("user_id") == user_id:
+                recent.append(bool(p.get("won")))
+                break
+    return recent
+
+
 # ==================== ПРОМОКОДЫ ====================
 def create_promo_code(code, reward_type, reward_value, max_uses, reward_days=30):
     conn = _db()
@@ -2415,8 +2442,11 @@ def cb_profile(c):
         types.InlineKeyboardButton("✏️ Изменить ник",     callback_data="change_nick"),
         types.InlineKeyboardButton("🎮 Изменить Game ID", callback_data="change_game_id"),
     )
+    extra_btns = []
     if has_quals_access(uid):
-        kb.add(types.InlineKeyboardButton("⭐ Quals профиль", callback_data="profile_quals"))
+        extra_btns.append(types.InlineKeyboardButton("⭐ Quals профиль", callback_data="profile_quals"))
+    extra_btns.append(types.InlineKeyboardButton("👥 2v2 профиль", callback_data="profile_duo"))
+    kb.add(*extra_btns)
     kb.add(types.InlineKeyboardButton("🔙 Назад", callback_data="back"))
 
     if CARDS_ENABLED:
@@ -2527,6 +2557,7 @@ def cb_profile_quals(c):
     kb = types.InlineKeyboardMarkup(row_width=1)
     kb.add(
         types.InlineKeyboardButton("📊 Default профиль", callback_data="profile"),
+        types.InlineKeyboardButton("👥 2v2 профиль",     callback_data="profile_duo"),
         types.InlineKeyboardButton("🔙 Назад",           callback_data="back"),
     )
 
@@ -2587,6 +2618,101 @@ def cb_profile_quals(c):
         f"📊 Quals ELO: <b>{q_elo}</b>  |  Lvl <b>{lvl}</b>\n"
         f"🏆 {q_wins}W · ❌ {q_losses}L · 📈 {q_wr}%\n"
         f"🔫 K: {q_kills} · 💀 D: {q_deaths} · 🤝 A: {q_assists} · K/D: {q_kd}"
+    )
+    bot.edit_message_text(text, c.message.chat.id, c.message.message_id,
+                          reply_markup=kb, parse_mode="HTML")
+    bot.answer_callback_query(c.id)
+
+
+# ==================== 2v2 ПРОФИЛЬ ====================
+@bot.callback_query_handler(func=lambda c: c.data == "profile_duo")
+def cb_profile_duo(c):
+    uid = c.from_user.id
+    p = get_current_player(uid)
+    if not p:
+        bot.answer_callback_query(c.id)
+        return
+
+    _priv_table = get_user_table(uid)
+    ds = get_player_duo_stats(uid, _priv_table)
+    d_elo    = ds["elo"]     if ds else 1000
+    d_wins   = ds["wins"]    if ds else 0
+    d_losses = ds["losses"]  if ds else 0
+    d_kills  = ds["kills"]   if ds else 0
+    d_deaths = ds["deaths"]  if ds else 0
+    d_assists= ds["assists"] if ds else 0
+
+    premium = has_active_premium(uid)
+    crown   = " 👑 Premium" if premium else ""
+    lvl     = get_faceit_level(d_elo)
+
+    kb = types.InlineKeyboardMarkup(row_width=1)
+    nav = [types.InlineKeyboardButton("📊 Default профиль", callback_data="profile")]
+    if has_quals_access(uid):
+        nav.append(types.InlineKeyboardButton("⭐ Quals профиль", callback_data="profile_quals"))
+    nav.append(types.InlineKeyboardButton("🔙 Назад", callback_data="back"))
+    kb.add(*nav)
+
+    if CARDS_ENABLED:
+        try:
+            duo_list = get_duo_players(_priv_table)
+            duo_list = [r for r in duo_list if (r[3] or 0) + (r[4] or 0) > 0]
+            d_rank   = next((i+1 for i, r in enumerate(duo_list) if r[0] == uid), len(duo_list) or 1)
+            lb_data  = [
+                (i+1, r[1], r[2], has_active_premium(r[0]), is_admin(r[0]), is_verified_check(r[0]))
+                for i, r in enumerate(duo_list[:3])
+            ]
+            duo_recent  = get_player_duo_recent_matches(uid, limit=5)
+            mvp_count   = p[31] if len(p) > 31 else 0
+
+            img_buf = generate_profile_card(
+                username    = p[1] or "Unknown",
+                game_id     = p[2] or "",
+                user_id     = p[0],
+                elo         = d_elo,
+                wins        = d_wins,
+                losses      = d_losses,
+                kills       = d_kills,
+                deaths      = d_deaths,
+                assists     = d_assists,
+                is_premium  = premium,
+                is_admin    = is_admin(uid),
+                global_rank = d_rank,
+                league      = "2V2",
+                map_stats   = [],
+                recent      = duo_recent,
+                leaderboard = lb_data,
+                quals_stats = None,
+                mvp_count   = mvp_count,
+                is_verified = is_verified_check(uid),
+                duo_stats   = None,
+            )
+            try:
+                bot.delete_message(c.message.chat.id, c.message.message_id)
+            except Exception:
+                pass
+            d_games = d_wins + d_losses
+            d_wr    = round(d_wins / d_games * 100, 1) if d_games > 0 else 0.0
+            caption = (
+                f"👥 <b>{p[1]}</b>{crown}  |  2v2 ELO: <b>{d_elo}</b>  |  Lvl <b>{lvl}</b>\n"
+                f"🏆 {d_wins}W · ❌ {d_losses}L · 📈 {d_wr}%  |  Rank #{d_rank}"
+            )
+            bot.send_photo(c.message.chat.id, img_buf,
+                           caption=caption, reply_markup=kb, parse_mode="HTML")
+            bot.answer_callback_query(c.id)
+            return
+        except Exception as e:
+            print(f"[card_duo] error: {e}")
+
+    # fallback text
+    d_games = d_wins + d_losses
+    d_wr    = round(d_wins / d_games * 100, 1) if d_games > 0 else 0.0
+    d_kd    = round(d_kills / d_deaths, 2) if d_deaths > 0 else float(d_kills)
+    text = (
+        f"👥 <b>{p[1]}</b> — 2v2 профиль\n\n"
+        f"📊 2v2 ELO: <b>{d_elo}</b>  |  Lvl <b>{lvl}</b>\n"
+        f"🏆 {d_wins}W · ❌ {d_losses}L · 📈 {d_wr}%\n"
+        f"🔫 K: {d_kills} · 💀 D: {d_deaths} · 🤝 A: {d_assists} · K/D: {d_kd}"
     )
     bot.edit_message_text(text, c.message.chat.id, c.message.message_id,
                           reply_markup=kb, parse_mode="HTML")
@@ -2869,6 +2995,7 @@ def build_lobby_text(lobby_id):
         f"👥 Игроков: {len(lobby['players'])}/{_lobby_max_size(league)}\n\n"
     )
     is_quals = (league == "quals")
+    is_duo   = (league == "2v2")
     priv_table_name = priv_cfg["table"]
     for i, pid in enumerate(lobby["players"], 1):
         p = get_player_from_table(pid, priv_table_name) or get_player(pid)
@@ -2877,6 +3004,8 @@ def build_lobby_text(lobby_id):
             prem = " 👑" if (not p[13] and has_active_premium(pid)) else ""
             if is_quals and len(p) > 30 and not p[13]:
                 display_elo = p[30] if p[30] is not None else 1000
+            elif is_duo and len(p) > 34 and not p[13]:
+                display_elo = p[34] if p[34] is not None else 1000
             else:
                 display_elo = p[4]
             priv_elo_label = f"{priv_cfg['emoji']} {display_elo}"
