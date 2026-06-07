@@ -1992,20 +1992,23 @@ def get_party_max_size(party):
 def pick_captain(team):
     if not team:
         return None
+    # Всегда предпочитаем живых игроков ботам: капитан должен баниь карты вручную
+    real_in_team = [u for u in team if not is_bot_player(u)]
+    effective_team = real_in_team if real_in_team else team
     party_leaders_in_team = []
     party_members_non_leader = set()
-    for u in team:
+    for u in effective_team:
         party = get_party_of(u)
         if party and len(party["members"]) > 1:
-            team_members_in_party = [m for m in party["members"] if m in team]
+            team_members_in_party = [m for m in party["members"] if m in effective_team]
             if len(team_members_in_party) > 1:
                 if u == party["leader"]:
                     party_leaders_in_team.append(u)
                 else:
                     party_members_non_leader.add(u)
-    eligible = [u for u in team if u not in party_members_non_leader]
+    eligible = [u for u in effective_team if u not in party_members_non_leader]
     if not eligible:
-        eligible = team
+        eligible = effective_team
     if party_leaders_in_team:
         leader = party_leaders_in_team[0]
         if random.random() < 0.60:
@@ -3747,6 +3750,8 @@ def start_map_ban_phase(lobby_id):
     send_ban_status_to_all(lobby_id)
     _do_ban_turn(lobby_id)
 
+BAN_TURN_TIMEOUT = 30  # секунды на бан карты для капитана
+
 def _do_ban_turn(lobby_id):
     lobby = active_lobbies.get(lobby_id)
     if not lobby or lobby["status"] != "mapban":
@@ -3755,7 +3760,7 @@ def _do_ban_turn(lobby_id):
     captain_uid = lobby["ct_captain"] if turn == "ct" else lobby["t_captain"]
     if is_bot_player(captain_uid):
         def bot_auto_ban():
-            time.sleep(random.uniform(1, 2))
+            time.sleep(random.uniform(2, 4))
             lobby2 = active_lobbies.get(lobby_id)
             if not lobby2 or lobby2["status"] != "mapban" or not lobby2["maps_remaining"]:
                 return
@@ -3763,6 +3768,28 @@ def _do_ban_turn(lobby_id):
         threading.Thread(target=bot_auto_ban, daemon=True).start()
     else:
         _send_ban_keyboard(lobby_id, captain_uid)
+        # Таймер: если капитан не забанил за BAN_TURN_TIMEOUT секунд — баним случайную карту автоматически
+        def captain_afk_timeout():
+            time.sleep(BAN_TURN_TIMEOUT)
+            lobby2 = active_lobbies.get(lobby_id)
+            if not lobby2 or lobby2["status"] != "mapban":
+                return
+            if lobby2.get("ban_turn") != turn:
+                return  # Ход уже сменился — капитан успел забанить
+            remaining2 = lobby2.get("maps_remaining", [])
+            if not remaining2:
+                return
+            chosen = random.choice(remaining2)
+            try:
+                bot.send_message(
+                    captain_uid,
+                    f"⏰ Время вышло! Карта <b>{chosen}</b> забанена автоматически.",
+                    parse_mode="HTML",
+                )
+            except Exception:
+                pass
+            _apply_ban(lobby_id, captain_uid, chosen)
+        threading.Thread(target=captain_afk_timeout, daemon=True).start()
 
 def _send_ban_keyboard(lobby_id, captain_uid):
     lobby = active_lobbies.get(lobby_id)
