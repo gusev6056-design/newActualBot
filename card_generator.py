@@ -138,17 +138,39 @@ def generate_profile_card(
     quals_stats: dict = None,
     mvp_count:   int  = 0,
     is_verified: bool = False,
+    duo_stats:   dict = None,
 ) -> io.BytesIO:
 
     QUALS_H = 70 if quals_stats else 0
-    W, H = 1055, 695 + QUALS_H
-    img  = Image.new("RGB", (W, H), BG)
+    DUO_H   = 70 if duo_stats   else 0
+    W, H = 1055, 695 + QUALS_H + DUO_H
+    # ===== DEEP PURPLE THEME =====
+    _BG         = (14,  12,  24)
+    _BG_GRID    = (20,  16,  34)
+    _PANEL      = (24,  18,  44)
+    _PANEL_GOLD = (34,  22,  62)
+    _HEADER     = (20,  15,  38)
+    _GOLD       = (130,  96, 242)
+    _GOLD_DIM   = ( 72,  48, 168)
+    _TEXT       = (232, 230, 248)
+    _TEXT_MID   = (172, 164, 210)
+    _TEXT_GRAY  = (120, 112, 158)
+    _TEXT_LGRAY = (142, 134, 174)
+    _GREEN      = ( 50, 198, 108)
+    _RED        = (210,  52,  52)
+    _TEAL       = (110,  80, 232)
+    _TEAL_DIM   = ( 64,  44, 152)
+    _WH         = (255, 255, 255)
+    _DUO_COL    = (110,  80, 232)
+    _DUO_DIM    = ( 64,  44, 152)
+
+    img  = Image.new("RGB", (W, H), _BG)
     draw = ImageDraw.Draw(img)
 
     for x in range(0, W, 42):
-        draw.line([(x, 0), (x, H)], fill=BG_GRID, width=1)
+        draw.line([(x, 0), (x, H)], fill=_BG_GRID, width=1)
     for y in range(0, H, 42):
-        draw.line([(0, y), (W, y)], fill=BG_GRID, width=1)
+        draw.line([(0, y), (W, y)], fill=_BG_GRID, width=1)
 
     lvl    = get_level(elo)
     games  = wins + losses
@@ -159,51 +181,50 @@ def generate_profile_card(
     impact = round((kills + assists) / games, 2) if games > 0 else 0.0
     rating = round(kd * (wr / 100) * 2, 2)       if games > 0 else 0.0
 
-    # ===== GLOW: header =====
-    glow_color = GOLD if is_premium else GOLD_DIM
-    img = _apply_glow(img, (8, 8, W-8, 148), r=10, color=glow_color, strength=22, layers=10)
+    # ===== HEADER PANEL =====
+    glow_color = _GOLD if is_premium else _GOLD_DIM
+    img = _apply_glow(img, (8, 8, W-8, 148), r=10, color=glow_color, strength=12, layers=6)
     draw = ImageDraw.Draw(img)
 
-    # ===== HEADER PANEL =====
-    _rr(draw, (8, 8, W-8, 148), 10, fill=(30, 28, 16), outline=GOLD_DIM, width=1)
+    _rr(draw, (8, 8, W-8, 148), 10, fill=_HEADER, outline=_GOLD_DIM, width=1)
 
     AX, AY, AS = 20, 18, 118
-    img = _apply_glow(img, (AX, AY, AX+AS, AY+AS), r=8, color=GOLD, strength=16, layers=8)
+    img = _apply_glow(img, (AX, AY, AX+AS, AY+AS), r=8, color=_GOLD, strength=10, layers=6)
     draw = ImageDraw.Draw(img)
-    _rr(draw, (AX, AY, AX+AS, AY+AS), 8, fill=(20, 18, 6), outline=GOLD, width=2)
+    _rr(draw, (AX, AY, AX+AS, AY+AS), 8, fill=(22, 16, 44), outline=_GOLD, width=2)
     initials = (username[:2]).upper() if username else "??"
-    _text_c(draw, AX + AS//2, AY + AS//2 - 22, initials, _font(38, bold=True), GOLD)
+    _text_c(draw, AX + AS//2, AY + AS//2 - 22, initials, _font(38, bold=True), _GOLD)
 
-    draw.text((152, 20), f"#{user_id}", font=_font(13), fill=GRAY)
+    draw.text((152, 20), f"#{user_id}", font=_font(13), fill=_TEXT_GRAY)
     fname = _font(30, bold=True)
-    draw.text((152, 36), username, font=fname, fill=WHITE)
+    draw.text((152, 36), username, font=fname, fill=_TEXT)
     badge_x = 152 + _tw(draw, username, fname) + 10
     if is_premium:
-        draw.text((badge_x, 40), "★", font=_font(26, bold=True), fill=GOLD)
+        draw.text((badge_x, 40), "★", font=_font(26, bold=True), fill=_GOLD)
         badge_x += _tw(draw, "★", _font(26, bold=True)) + 8
     if is_admin:
         _rr(draw, (badge_x, 40, badge_x + 40, 62), 4, fill=(170, 28, 28))
-        draw.text((badge_x + 4, 42), "ADM", font=_font(12, bold=True), fill=WHITE)
+        draw.text((badge_x + 4, 42), "ADM", font=_font(12, bold=True), fill=_WH)
         badge_x += 48
     if is_verified:
         _rr(draw, (badge_x, 40, badge_x + 24, 62), 4, fill=(29, 108, 236))
-        draw.text((badge_x + 4, 42), "✓", font=_font(14, bold=True), fill=WHITE)
+        draw.text((badge_x + 4, 42), "✓", font=_font(14, bold=True), fill=_WH)
 
-    draw.text((152, 78), f"ID: {game_id}", font=_font(14), fill=GRAY)
-    draw.text((W - 200, 16), "ELO RATING", font=_font(11), fill=GRAY)
-    _text_r(draw, W - 36, 28, str(elo), _font(46, bold=True), GOLD)
+    draw.text((152, 78), f"ID: {game_id}", font=_font(14), fill=_TEXT_GRAY)
+    draw.text((W - 200, 16), "ELO RATING", font=_font(11), fill=_TEXT_GRAY)
+    _text_r(draw, W - 36, 28, str(elo), _font(46, bold=True), _GOLD)
     BX, BY, BS = W - 80, 88, 40
-    _rr(draw, (BX, BY, BX+BS, BY+BS), 6, fill=GOLD)
-    _text_c(draw, BX + BS//2, BY + 8, str(lvl), _font(20, bold=True), (18, 14, 0))
+    _rr(draw, (BX, BY, BX+BS, BY+BS), 6, fill=_GOLD)
+    _text_c(draw, BX + BS//2, BY + 8, str(lvl), _font(20, bold=True), (232, 228, 255))
 
     # ===== RANK BAR =====
     RY = 162
-    _rr(draw, (8, RY, W-8, RY+33), 6, fill=(22, 21, 14), outline=(52, 48, 28), width=1)
-    draw.ellipse([(18, RY+10), (30, RY+22)], outline=WHITE, width=2)
-    draw.text((36, RY+8), f"GLOBAL RANK:  #{global_rank}", font=_font(12, bold=True), fill=WHITE)
-    draw.line([(225, RY+5), (225, RY+28)], fill=(58, 54, 32), width=1)
-    draw.ellipse([(233, RY+10), (243, RY+22)], fill=GOLD)
-    draw.text((250, RY+8), f"LEAGUE:  {format_league(league).upper()}", font=_font(12, bold=True), fill=WHITE)
+    _rr(draw, (8, RY, W-8, RY+33), 6, fill=(22, 16, 46), outline=(56, 42, 96), width=1)
+    draw.ellipse([(18, RY+10), (30, RY+22)], outline=_TEXT, width=2)
+    draw.text((36, RY+8), f"GLOBAL RANK:  #{global_rank}", font=_font(12, bold=True), fill=_TEXT)
+    draw.line([(225, RY+5), (225, RY+28)], fill=(56, 42, 96), width=1)
+    draw.ellipse([(233, RY+10), (243, RY+22)], fill=_GOLD)
+    draw.text((250, RY+8), f"LEAGUE:  {format_league(league).upper()}", font=_font(12, bold=True), fill=_TEXT)
 
     # ===== STAT CARDS =====
     SY = 205
@@ -211,13 +232,13 @@ def generate_profile_card(
     RX = 605
 
     def stat_card(x, y, w, h, label, value, highlight=False, sub=None):
-        bg = CARD_BG_GOLD if highlight else CARD_BG
-        ol = GOLD_DIM     if highlight else None
+        bg = _PANEL_GOLD if highlight else _PANEL
+        ol = _GOLD_DIM   if highlight else (44, 34, 82)
         _rr(draw, (x, y, x+w, y+h), 8, fill=bg, outline=ol, width=1)
-        draw.text((x+12, y+9),  label,       font=_font(10),            fill=GRAY)
-        draw.text((x+12, y+28), str(value),  font=_font(34, bold=True), fill=(GOLD if highlight else WHITE))
+        draw.text((x+12, y+9),  label,      font=_font(10),            fill=_TEXT_GRAY)
+        draw.text((x+12, y+28), str(value), font=_font(34, bold=True), fill=(_GOLD if highlight else _TEXT))
         if sub:
-            draw.text((x+12, y+h-18), sub, font=_font(11), fill=GRAY)
+            draw.text((x+12, y+h-18), sub, font=_font(11), fill=_TEXT_MID)
 
     CW1, CW2, CH = 225, 350, 90
 
@@ -234,31 +255,31 @@ def generate_profile_card(
         stat_card(8 + i*(MW+8), SY+(CH+8)*2, MW, CH, lbl, val)
 
     # ===== MAP STATS PANEL =====
-    _rr(draw, (RX, SY, W-8, SY+CH*3+8*2), 8, fill=CARD_BG)
-    draw.text((RX+12, SY+8), "○  MAP STATS", font=_font(11), fill=GRAY)
+    _rr(draw, (RX, SY, W-8, SY+CH*3+8*2), 8, fill=_PANEL, outline=(44, 34, 82), width=1)
+    draw.text((RX+12, SY+8), "○  MAP STATS", font=_font(11), fill=_TEXT_GRAY)
     MROW = (CH*3+8*2-30) // max(len(map_stats[:5]), 1)
     for idx, ms in enumerate(map_stats[:5]):
         my = SY + 30 + idx * MROW
-        draw.text((RX+12, my+2), ms["map"].upper(), font=_font(12, bold=True), fill=LGRAY)
-        _text_r(draw, W-20, my+2,  f"{round(ms['wr']*100)}% WR", _font(11), GRAY)
-        _text_r(draw, W-20, my+17, f"{ms['kd']:.2f} K/D",        _font(11), GRAY)
+        draw.text((RX+12, my+2), ms["map"].upper(), font=_font(12, bold=True), fill=_TEXT_LGRAY)
+        _text_r(draw, W-20, my+2,  f"{round(ms['wr']*100)}% WR", _font(11), _TEXT_GRAY)
+        _text_r(draw, W-20, my+17, f"{ms['kd']:.2f} K/D",        _font(11), _TEXT_GRAY)
         if idx < len(map_stats[:5]) - 1:
-            draw.line([(RX+10, my+MROW-2), (W-20, my+MROW-2)], fill=(42, 40, 26), width=1)
+            draw.line([(RX+10, my+MROW-2), (W-20, my+MROW-2)], fill=(44, 34, 82), width=1)
 
     # ===== RECENT PERFORMANCE =====
     RPY = SY + (CH+8)*3 + 10
-    draw.text((14, RPY+2), "⚡  RECENT PERFORMANCE", font=_font(11, bold=True), fill=GRAY)
+    draw.text((14, RPY+2), "⚡  RECENT PERFORMANCE", font=_font(11, bold=True), fill=_TEXT_GRAY)
     SQ = 44
     for i, won in enumerate(recent[:5]):
         sx = 14 + i * (SQ+8)
         sy = RPY + 22
-        _rr(draw, (sx, sy, sx+SQ, sy+SQ-4), 6, fill=(GREEN if won else RED))
-        _text_c(draw, sx+SQ//2, sy+8, "W" if won else "L", _font(18, bold=True), WHITE)
+        _rr(draw, (sx, sy, sx+SQ, sy+SQ-4), 6, fill=(_GREEN if won else _RED))
+        _text_c(draw, sx+SQ//2, sy+8, "W" if won else "L", _font(18, bold=True), _WH)
 
     # ===== MINI LEADERBOARD =====
     LBY = RPY + 76
-    draw.line([(8, LBY), (W-8, LBY)], fill=(44, 40, 26), width=1)
-    draw.text((14, LBY+7), "🏆  LEADERBOARD", font=_font(11, bold=True), fill=GRAY)
+    draw.line([(8, LBY), (W-8, LBY)], fill=(44, 34, 82), width=1)
+    draw.text((14, LBY+7), "🏆  LEADERBOARD", font=_font(11, bold=True), fill=_TEXT_GRAY)
 
     for i, entry in enumerate(leaderboard[:2]):
         rank, name, p_elo = entry[0], entry[1], entry[2]
@@ -266,37 +287,37 @@ def generate_profile_card(
         is_ad = entry[4] if len(entry) > 4 else False
         is_vf = entry[5] if len(entry) > 5 else False
         ly = LBY + 30 + i * 42
-        draw.text((14, ly+10), str(rank), font=_font(14, bold=True), fill=GRAY)
-        _rr(draw, (38, ly, 72, ly+34), 5, fill=(38, 32, 8), outline=GOLD_DIM, width=1)
-        _text_c(draw, 55, ly+8, name[:2].upper(), _font(13, bold=True), GOLD)
+        draw.text((14, ly+10), str(rank), font=_font(14, bold=True), fill=_TEXT_GRAY)
+        _rr(draw, (38, ly, 72, ly+34), 5, fill=(26, 18, 52), outline=_GOLD_DIM, width=1)
+        _text_c(draw, 55, ly+8, name[:2].upper(), _font(13, bold=True), _GOLD)
         nx2 = 82
-        draw.text((nx2, ly+10), name.upper(), font=_font(14, bold=True), fill=GOLD)
+        draw.text((nx2, ly+10), name.upper(), font=_font(14, bold=True), fill=_GOLD)
         nx2 += _tw(draw, name.upper(), _font(14, bold=True)) + 6
         if is_p:
-            draw.text((nx2, ly+10), "★", font=_font(14, bold=True), fill=GOLD)
+            draw.text((nx2, ly+10), "★", font=_font(14, bold=True), fill=_GOLD)
             nx2 += _tw(draw, "★", _font(14, bold=True)) + 5
         if is_ad:
             _rr(draw, (nx2, ly+10, nx2+32, ly+26), 3, fill=(170, 28, 28))
-            draw.text((nx2+3, ly+11), "ADM", font=_font(10, bold=True), fill=WHITE)
+            draw.text((nx2+3, ly+11), "ADM", font=_font(10, bold=True), fill=_WH)
             nx2 += 38
         if is_vf:
             _rr(draw, (nx2, ly+10, nx2+22, ly+26), 3, fill=(29, 108, 236))
-            draw.text((nx2+4, ly+11), "✓", font=_font(10, bold=True), fill=WHITE)
-        _text_r(draw, W-20, ly+10, str(p_elo), _font(14, bold=True), WHITE)
+            draw.text((nx2+4, ly+11), "✓", font=_font(10, bold=True), fill=_WH)
+        _text_r(draw, W-20, ly+10, str(p_elo), _font(14, bold=True), _TEXT)
 
     # ===== QUALS STATS SECTION (optional) =====
     if quals_stats:
         QY = LBY + 30 + 2 * 42 + 8
-        draw.line([(8, QY), (W-8, QY)], fill=(0, 100, 110), width=1)
-        _rr(draw, (8, QY+4, W-8, QY+QUALS_H-4), 8, fill=(12, 28, 30), outline=(0, 90, 100), width=1)
-        draw.text((20, QY+10), "⭐  QUALS STATS", font=_font(11, bold=True), fill=TEAL)
+        draw.line([(8, QY), (W-8, QY)], fill=_TEAL_DIM, width=1)
+        _rr(draw, (8, QY+4, W-8, QY+QUALS_H-4), 8, fill=(18, 14, 40), outline=_TEAL_DIM, width=1)
+        draw.text((20, QY+10), "⭐  QUALS STATS", font=_font(11, bold=True), fill=_TEAL)
 
-        qw  = quals_stats.get("wins", 0)
+        qw  = quals_stats.get("wins",   0)
         ql  = quals_stats.get("losses", 0)
-        qk  = quals_stats.get("kills", 0)
+        qk  = quals_stats.get("kills",  0)
         qd  = quals_stats.get("deaths", 0)
-        qa  = quals_stats.get("assists", 0)
-        qelo= quals_stats.get("elo", 1000)
+        qa  = quals_stats.get("assists",0)
+        qelo= quals_stats.get("elo",    1000)
         qg  = qw + ql
         qwr = round(qw / qg * 100, 1) if qg > 0 else 0.0
         qkd = round(qk / qd, 2) if qd > 0 else float(qk)
@@ -308,8 +329,36 @@ def generate_profile_card(
             ("Q.K/D",     f"{qkd:.2f}",  440),
             ("Q.KILLS",   str(qk),        580),
         ]:
-            draw.text((px, QY+26), label, font=_font(10),          fill=GRAY)
-            draw.text((px, QY+40), value, font=_font(16, bold=True), fill=TEAL)
+            draw.text((px, QY+26), label, font=_font(10),           fill=_TEXT_GRAY)
+            draw.text((px, QY+40), value, font=_font(16, bold=True), fill=_TEAL)
+
+    # ===== DUO (2v2) STATS SECTION (optional) =====
+    if duo_stats:
+        base_y = LBY + 30 + 2 * 42 + 8 + QUALS_H
+        DY = base_y
+        draw.line([(8, DY), (W-8, DY)], fill=_DUO_DIM, width=1)
+        _rr(draw, (8, DY+4, W-8, DY+DUO_H-4), 8, fill=(20, 14, 44), outline=_DUO_DIM, width=1)
+        draw.text((20, DY+10), "👥  2v2 STATS", font=_font(11, bold=True), fill=_DUO_COL)
+
+        dw  = duo_stats.get("wins",   0)
+        dl  = duo_stats.get("losses", 0)
+        dk  = duo_stats.get("kills",  0)
+        dd  = duo_stats.get("deaths", 0)
+        da  = duo_stats.get("assists",0)
+        delo= duo_stats.get("elo",    1000)
+        dg  = dw + dl
+        dwr = round(dw / dg * 100, 1) if dg > 0 else 0.0
+        dkd = round(dk / dd, 2) if dd > 0 else float(dk)
+
+        for label, value, px in [
+            ("2v2 ELO",     str(delo),      20),
+            ("2v2 MATCHES", str(dg),        160),
+            ("2v2 WIN%",    f"{dwr}%",      300),
+            ("2v2 K/D",     f"{dkd:.2f}",  440),
+            ("2v2 KILLS",   str(dk),        580),
+        ]:
+            draw.text((px, DY+26), label, font=_font(10),           fill=_TEXT_GRAY)
+            draw.text((px, DY+40), value, font=_font(16, bold=True), fill=_DUO_COL)
 
     buf = io.BytesIO()
     img.save(buf, format="PNG", optimize=True)
@@ -320,82 +369,120 @@ def generate_profile_card(
 # ==================== LEADERBOARD CARD ====================
 def generate_leaderboard_card(players: list, title: str = "TOP ИГРОКОВ ПО ELO") -> io.BytesIO:
     n      = min(len(players), 10)
-    ROW_H  = 68
-    HEAD_H = 50
-    H      = HEAD_H + ROW_H * n + 14
+    ROW_H  = 74
+    HEAD_H = 60
+    H      = HEAD_H + ROW_H * n + 8
     W      = 970
 
-    img  = Image.new("RGB", (W, H), (16, 16, 20))
+    # ── deep purple theme (same as 2v2) ──
+    _BG    = (13,  11,  22)
+    _ROW_A = (20,  16,  34)
+    _ROW_B = (13,  11,  22)
+    _SEP   = (42,  32,  68)
+    _HDR   = (110,  98, 145)
+    _TEXT  = (232, 230, 248)
+    _GOLD  = (232, 185,   0)
+    _GREEN = ( 48, 198, 108)
+    _RED   = (210,  52,  52)
+    _TD    = ( 64,  44, 152)
+    _GRAY  = (108,  98, 140)
+    _WH    = (255, 255, 255)
+
+    # top-1/2/3: subtle tints + gold/silver/bronze left stripe
+    _RANK_BG     = {1: (26, 20, 44), 2: (20, 16, 40), 3: (22, 14, 38)}
+    _RANK_STRIPE = {1: (200, 155,  0), 2: (148, 148, 175), 3: (158, 105, 42)}
+
+    img  = Image.new("RGB", (W, H), _BG)
     draw = ImageDraw.Draw(img)
 
-    draw.text((20, 14), title, font=_font(16, bold=True), fill=WHITE)
+    # ── header ──
+    draw.rectangle([(0, 0), (W, HEAD_H - 1)], fill=(9, 7, 18))
+    draw.line([(0, HEAD_H - 1), (W, HEAD_H - 1)], fill=_SEP, width=2)
+    draw.ellipse([(18, 19), (30, 31)], fill=(110, 80, 232))
+    draw.text((38, 17), "ACTUAL FACEIT", font=_font(13, bold=True), fill=_TEXT)
 
-    for label, x in [("#", 30), ("PLAYER  ELO", 88), ("WINS", 448),
-                      ("LOSSES", 530), ("W/L%", 618), ("K/D", 730)]:
-        draw.text((x, HEAD_H - 20), label, font=_font(12), fill=(100, 100, 112))
-    draw.line([(0, HEAD_H), (W, HEAD_H)], fill=(38, 38, 48), width=1)
+    badge_x = W - 12
+    for badge_text, badge_col in [
+        ("2V2",   ( 88,  58, 208)),
+        ("QUALS", ( 64,  44, 152)),
+        ("DEFAULT", (52, 38, 112)),
+    ]:
+        if badge_text in title.upper():
+            bw = _tw(draw, badge_text, _font(11, bold=True)) + 16
+            badge_x -= bw
+            _rr(draw, (badge_x, 15, badge_x + bw, 37), 5, fill=badge_col)
+            draw.text((badge_x + 8, 17), badge_text, font=_font(11, bold=True), fill=_WH)
+            break
 
+    for label, x in [("#", 22), ("PLAYER  ELO", 74), ("WINS", 430),
+                      ("LOSSES", 514), ("W/L%", 600), ("K/D", 710)]:
+        draw.text((x, HEAD_H - 22), label, font=_font(11), fill=_HDR)
+
+    # ── rows ──
     for i, p in enumerate(players[:n]):
-        y      = HEAD_H + i * ROW_H
-        row_bg = (20, 20, 25) if i % 2 == 0 else (16, 16, 20)
-        draw.rectangle([(0, y), (W, y+ROW_H)], fill=row_bg)
+        y    = HEAD_H + i * ROW_H
+        rank = p.get("rank", i + 1)
 
-        rank   = p.get("rank", i + 1)
-        rcolor = (GOLD if rank == 1
-                  else (210, 165, 0) if rank == 2
-                  else (185, 128, 60) if rank == 3
-                  else (115, 115, 128))
-        draw.text((30, y+ROW_H//2-10), str(rank), font=_font(19, bold=True), fill=rcolor)
+        # row background: gold/silver/bronze tint for top 3, else alternating
+        row_bg = _RANK_BG.get(rank, _ROW_A if i % 2 == 0 else _ROW_B)
+        draw.rectangle([(0, y), (W, y + ROW_H)], fill=row_bg)
 
-        lv     = p.get("level", 1)
-        av_col = LVL_COLORS.get(lv, (100, 100, 100))
-        ax, ay = 60, y + ROW_H//2 - 20
-        ar     = 20
-        draw.ellipse([(ax, ay), (ax+ar*2, ay+ar*2)], fill=av_col, outline=(48, 48, 58), width=2)
-        _text_c(draw, ax+ar, ay+ar-10,
-                (p.get("name", "??")[:2]).upper(), _font(13, bold=True), (240, 240, 245))
+        # coloured left stripe for top 3
+        if rank in _RANK_STRIPE:
+            draw.rectangle([(0, y), (5, y + ROW_H)], fill=_RANK_STRIPE[rank])
+
+        rcolor = (_GOLD if rank == 1 else (132, 132, 152) if rank == 2
+                  else (148, 100, 36) if rank == 3 else (110, 106, 88))
+        draw.text((14, y + ROW_H // 2 - 10), str(rank), font=_font(17, bold=True), fill=rcolor)
+
+        elo = p.get("elo", 1000)
+        lv  = p.get("level", get_level(elo))
+        av  = LVL_COLORS.get(lv, (130, 125, 105))
+        ax, ay, ar = 54, y + ROW_H // 2 - 20, 19
+        draw.ellipse([(ax, ay), (ax + ar*2, ay + ar*2)], fill=av, outline=(190, 186, 172), width=2)
+        _text_c(draw, ax + ar, ay + ar - 10, (p.get("name", "??")[:2]).upper(),
+                _font(12, bold=True), _WH)
 
         name = p.get("name", "Unknown")
-        nx   = 108
-        draw.text((nx, y+ROW_H//2-14), name, font=_font(15, bold=True), fill=WHITE)
-        bx = nx + _tw(draw, name, _font(15, bold=True)) + 8
+        nx   = 100
+        draw.text((nx, y + 10), name, font=_font(14, bold=True), fill=_TEXT)
+        bx = nx + _tw(draw, name, _font(14, bold=True)) + 8
 
         if p.get("is_premium"):
-            draw.text((bx, y+ROW_H//2-14), "★", font=_font(15, bold=True), fill=GOLD)
-            bx += _tw(draw, "★", _font(15, bold=True)) + 6
-
+            draw.text((bx, y + 10), "★", font=_font(14, bold=True), fill=_GOLD)
+            bx += _tw(draw, "★", _font(14, bold=True)) + 5
         if p.get("is_admin"):
-            _rr(draw, (bx, y+ROW_H//2-12, bx+36, y+ROW_H//2+6), 3, fill=(170, 28, 28))
-            draw.text((bx+4, y+ROW_H//2-11), "ADM", font=_font(11, bold=True), fill=WHITE)
-            bx += 44
-
-        if p.get("is_verified"):
-            _rr(draw, (bx, y+ROW_H//2-12, bx+24, y+ROW_H//2+6), 3, fill=(29, 108, 236))
-            draw.text((bx+4, y+ROW_H//2-11), "✓", font=_font(13, bold=True), fill=WHITE)
-            bx += 32
-
+            _rr(draw, (bx, y + 10, bx + 32, y + 25), 3, fill=(154, 24, 24))
+            draw.text((bx + 4, y + 11), "ADM", font=_font(10, bold=True), fill=_WH)
+            bx += 40
         if p.get("is_premium"):
-            _rr(draw, (bx, y+ROW_H//2-12, bx+36, y+ROW_H//2+6), 3, fill=TEAL_DIM)
-            draw.text((bx+4, y+ROW_H//2-11), "PRO", font=_font(11, bold=True), fill=WHITE)
+            _rr(draw, (bx, y + 10, bx + 32, y + 25), 3, fill=_TD)
+            draw.text((bx + 4, y + 11), "PRO", font=_font(10, bold=True), fill=_WH)
+        if p.get("is_verified"):
+            _rr(draw, (bx, y + 10, bx + 24, y + 25), 3, fill=(28, 106, 234))
+            draw.text((bx + 4, y + 11), "✓",  font=_font(10, bold=True), fill=_WH)
 
-        elo  = p.get("elo", 1000)
-        by2  = y + ROW_H//2 + 5
-        _rr(draw, (nx, by2, nx+18, by2+15), 3, fill=TEAL_DIM)
-        _text_c(draw, nx+9, by2+1, str(lv), _font(10, bold=True), WHITE)
-        draw.text((nx+22, by2+1), str(elo), font=_font(14, bold=True), fill=WHITE)
+        uid_val = p.get("uid")
+        if uid_val:
+            draw.text((nx, y + 29), f"#{str(uid_val)[-7:]}", font=_font(10), fill=_GRAY)
+
+        by2 = y + ROW_H - 21
+        _rr(draw, (nx, by2, nx + 20, by2 + 14), 3, fill=_TD)
+        _text_c(draw, nx + 10, by2 + 2, str(lv), _font(10, bold=True), _WH)
+        draw.text((nx + 24, by2 + 2), str(elo), font=_font(12, bold=True), fill=_TEXT)
 
         wins   = p.get("wins",   0)
         losses = p.get("losses", 0)
         games  = wins + losses
-        wr_pct = f"{round(wins/games*100)}%" if games > 0 else "0%"
-
-        draw.text((448, y+ROW_H//2-10), str(wins),            font=_font(16, bold=True), fill=GREEN)
-        draw.text((535, y+ROW_H//2-10), str(losses),          font=_font(16, bold=True), fill=RED)
-        draw.text((625, y+ROW_H//2-10), wr_pct,               font=_font(16, bold=True), fill=WHITE)
-        draw.text((735, y+ROW_H//2-10), f"{p.get('kd',0.0):.2f}", font=_font(16, bold=True), fill=WHITE)
+        wr_pct = f"{round(wins / games * 100)}%" if games > 0 else "0%"
+        cy = y + ROW_H // 2 - 10
+        draw.text((430, cy), str(wins),                  font=_font(15, bold=True), fill=_GREEN)
+        draw.text((514, cy), str(losses),                font=_font(15, bold=True), fill=_RED)
+        draw.text((600, cy), wr_pct,                     font=_font(15, bold=True), fill=_TEXT)
+        draw.text((710, cy), f"{p.get('kd', 0.0):.2f}", font=_font(15, bold=True), fill=_TEXT)
 
         if i < n - 1:
-            draw.line([(0, y+ROW_H), (W, y+ROW_H)], fill=(34, 34, 42), width=1)
+            draw.line([(0, y + ROW_H), (W, y + ROW_H)], fill=_SEP, width=1)
 
     buf = io.BytesIO()
     img.save(buf, format="PNG", optimize=True)
@@ -547,6 +634,109 @@ def generate_match_result_card(
     draw.rectangle([(0, fy), (W, H)], fill=(10, 10, 16))
     draw.text((16, fy + 8), "ACTUAL FACEIT", font=_font(12, bold=True), fill=GOLD_DIM)
     _text_r(draw, W - 16, fy + 8, f"#{match_code} | {map_name}", _font(11), GRAY)
+
+    buf = io.BytesIO()
+    img.save(buf, format="PNG", optimize=True)
+    buf.seek(0)
+    return buf
+
+
+# ==================== DUO (2v2) LEADERBOARD CARD ====================
+def generate_duo_leaderboard_card(players: list, title: str = "TOP 2v2 ПО ELO") -> io.BytesIO:
+    n      = min(len(players), 10)
+    ROW_H  = 74
+    HEAD_H = 60
+    H      = HEAD_H + ROW_H * n + 8
+    W      = 970
+
+    _BG    = (13, 11, 22)
+    _ROW_A = (20, 16, 34)
+    _ROW_B = (13, 11, 22)
+    _SEP   = (40, 30, 65)
+    _HDR   = (108, 96, 140)
+    _WH    = (232, 230, 248)
+    _GOLD  = (232, 185, 0)
+    _GREEN = (48, 198, 108)
+    _RED   = (210, 52, 52)
+    _PUR   = (108, 78, 228)
+    _PURD  = (62, 42, 148)
+    _GRAY  = (108, 96, 136)
+
+    img  = Image.new("RGB", (W, H), _BG)
+    draw = ImageDraw.Draw(img)
+
+    # ── header ──
+    draw.rectangle([(0, 0), (W, HEAD_H - 1)], fill=(8, 6, 18))
+    draw.line([(0, HEAD_H - 1), (W, HEAD_H - 1)], fill=_SEP, width=1)
+    draw.ellipse([(18, 19), (30, 31)], fill=_PUR)
+    draw.text((38, 17), "ACTUAL FACEIT", font=_font(13, bold=True), fill=_WH)
+
+    bw = _tw(draw, "2V2", _font(11, bold=True)) + 16
+    bx = W - 12 - bw
+    _rr(draw, (bx, 15, bx + bw, 37), 5, fill=_PURD)
+    draw.text((bx + 8, 17), "2V2", font=_font(11, bold=True), fill=_WH)
+
+    for label, x in [("#", 22), ("PLAYER  ELO", 74), ("WINS", 430),
+                      ("LOSSES", 514), ("W/L%", 600), ("K/D", 710)]:
+        draw.text((x, HEAD_H - 22), label, font=_font(11), fill=_HDR)
+
+    # ── rows ──
+    for i, p in enumerate(players[:n]):
+        y  = HEAD_H + i * ROW_H
+        draw.rectangle([(0, y), (W, y + ROW_H)], fill=(_ROW_A if i % 2 == 0 else _ROW_B))
+
+        rank   = p.get("rank", i + 1)
+        rcolor = (_GOLD if rank == 1 else (208, 162, 0) if rank == 2
+                  else (182, 126, 56) if rank == 3 else (112, 96, 148))
+        draw.text((22, y + ROW_H // 2 - 10), str(rank), font=_font(17, bold=True), fill=rcolor)
+
+        elo = p.get("elo", 1000)
+        lv  = p.get("level", get_level(elo))
+        ax, ay, ar = 54, y + ROW_H // 2 - 20, 19
+        draw.ellipse([(ax, ay), (ax + ar*2, ay + ar*2)], fill=_PUR, outline=(52, 34, 80), width=2)
+        _text_c(draw, ax + ar, ay + ar - 10, (p.get("name", "??")[:2]).upper(),
+                _font(12, bold=True), (236, 234, 252))
+
+        name = p.get("name", "Unknown")
+        nx   = 100
+        draw.text((nx, y + 10), name, font=_font(14, bold=True), fill=_WH)
+        bx2 = nx + _tw(draw, name, _font(14, bold=True)) + 8
+
+        if p.get("is_premium"):
+            draw.text((bx2, y + 10), "★", font=_font(14, bold=True), fill=_GOLD)
+            bx2 += _tw(draw, "★", _font(14, bold=True)) + 5
+        if p.get("is_admin"):
+            _rr(draw, (bx2, y + 10, bx2 + 32, y + 25), 3, fill=(154, 24, 24))
+            draw.text((bx2 + 4, y + 11), "ADM", font=_font(10, bold=True), fill=_WH)
+            bx2 += 40
+        if p.get("is_premium"):
+            _rr(draw, (bx2, y + 10, bx2 + 32, y + 25), 3, fill=_PURD)
+            draw.text((bx2 + 4, y + 11), "PRO", font=_font(10, bold=True), fill=_WH)
+
+        uid_val = p.get("uid")
+        if uid_val:
+            draw.text((nx, y + 29), f"#{str(uid_val)[-7:]}", font=_font(10), fill=_GRAY)
+
+        by2 = y + ROW_H - 21
+        _rr(draw, (nx, by2, nx + 20, by2 + 14), 3, fill=_PURD)
+        _text_c(draw, nx + 10, by2 + 2, str(lv), _font(10, bold=True), _WH)
+        draw.text((nx + 24, by2 + 2), str(elo), font=_font(12, bold=True), fill=_WH)
+
+        wins   = p.get("wins",   0)
+        losses = p.get("losses", 0)
+        kills  = p.get("kills",  0)
+        deaths = p.get("deaths", 1)
+        games  = wins + losses
+        wr_pct = f"{round(wins / games * 100)}%" if games > 0 else "0%"
+        kd_str = f"{round(kills / max(deaths, 1), 2):.2f}"
+        cy     = y + ROW_H // 2 - 10
+        draw.text((430, cy), str(wins),  font=_font(15, bold=True), fill=_GREEN)
+        draw.text((514, cy), str(losses),font=_font(15, bold=True), fill=_RED)
+        draw.text((600, cy), wr_pct,     font=_font(15, bold=True), fill=_WH)
+        draw.text((710, cy), kd_str,     font=_font(15, bold=True), fill=_WH)
+
+        if i < n - 1:
+            draw.line([(0, y + ROW_H), (W, y + ROW_H)], fill=_SEP, width=1)
 
     buf = io.BytesIO()
     img.save(buf, format="PNG", optimize=True)

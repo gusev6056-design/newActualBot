@@ -58,7 +58,7 @@ def _auto_delete_loop():
 try:
     from card_generator import (
         generate_profile_card, generate_leaderboard_card,
-        generate_match_result_card,
+        generate_match_result_card, generate_duo_leaderboard_card,
     )
     CARDS_ENABLED = True
 except Exception as _card_err:
@@ -66,7 +66,7 @@ except Exception as _card_err:
 
 def format_league(league) -> str:
     league = (league or "default").lower().strip()
-    return {"quals": "Quals", "default": "Default"}.get(league, league.capitalize())
+    return {"quals": "Quals", "default": "Default", "2v2": "2v2"}.get(league, league.capitalize())
 
 # ==================== FLASK ====================
 app = Flask(__name__)
@@ -159,6 +159,16 @@ PRIVATE_CONFIG = {
     "fade":    {"table": "fade_players", "display": "StandFade",    "emoji": "🔥", "matches_table": "fade_matches"},
     "lite":    {"table": "lite_players", "display": "Fade Lite",    "emoji": "💫", "matches_table": "lite_matches"},
 }
+
+# ==================== ЛОББИ: размеры по режиму ====================
+def _lobby_max_size(league: str) -> int:
+    """Максимальное количество игроков в лобби для данной лиги."""
+    return 4 if league == "2v2" else 10
+
+def _lobby_team_size(league: str) -> int:
+    """Размер одной команды."""
+    return 2 if league == "2v2" else 5
+
 user_private = {}  # uid -> "darling" | "fade" | "lite"
 
 # ==================== ТОВАРЫ МАГАЗИНА ====================
@@ -301,6 +311,12 @@ def init_db():
         ("mvp_count",      "INTEGER DEFAULT 0"),
         ("premium_until",  "BIGINT DEFAULT 0"),
         ("quals_until",    "BIGINT DEFAULT 0"),
+        ("duo_elo",        "INTEGER DEFAULT 1000"),
+        ("duo_wins",       "INTEGER DEFAULT 0"),
+        ("duo_losses",     "INTEGER DEFAULT 0"),
+        ("duo_kills",      "INTEGER DEFAULT 0"),
+        ("duo_deaths",     "INTEGER DEFAULT 0"),
+        ("duo_assists",    "INTEGER DEFAULT 0"),
     ]:
         _add_column_if_missing("players", col, definition)
 
@@ -364,6 +380,12 @@ def init_db():
             ("mvp_count",      "INTEGER DEFAULT 0"),
             ("premium_until",  "BIGINT DEFAULT 0"),
             ("quals_until",    "BIGINT DEFAULT 0"),
+            ("duo_elo",        "INTEGER DEFAULT 1000"),
+            ("duo_wins",       "INTEGER DEFAULT 0"),
+            ("duo_losses",     "INTEGER DEFAULT 0"),
+            ("duo_kills",      "INTEGER DEFAULT 0"),
+            ("duo_deaths",     "INTEGER DEFAULT 0"),
+            ("duo_assists",    "INTEGER DEFAULT 0"),
         ]:
             _add_column_if_missing(priv_table, col, definition)
 
@@ -1016,6 +1038,39 @@ def get_quals_players(table="players"):
     rows = cur.fetchall()
     conn.close()
     return rows
+
+def get_duo_players(table="players"):
+    conn = _db()
+    cur = conn.cursor()
+    cur.execute(f"""
+        SELECT user_id, username, duo_elo, duo_wins, duo_losses, duo_kills, duo_deaths, duo_assists
+        FROM {table} WHERE is_bot=0 AND registered=1
+        ORDER BY duo_elo DESC
+    """)
+    rows = cur.fetchall()
+    conn.close()
+    return rows
+
+def get_player_duo_stats(uid, table="players"):
+    conn = _db()
+    cur = conn.cursor()
+    try:
+        cur.execute(f"""
+            SELECT duo_elo, duo_wins, duo_losses, duo_kills, duo_deaths, duo_assists
+            FROM {table} WHERE user_id=%s
+        """, (uid,))
+        row = cur.fetchone()
+    except Exception:
+        row = None
+    conn.close()
+    if not row:
+        return None
+    deo, dw, dl, dk, dd, da = row
+    has_games = (dw or 0) + (dl or 0) > 0
+    if not has_games:
+        return None
+    return {"elo": deo or 1000, "wins": dw or 0, "losses": dl or 0,
+            "kills": dk or 0, "deaths": dd or 0, "assists": da or 0}
 
 def get_player_quals_stats(uid):
     conn = _db()
@@ -2375,6 +2430,7 @@ def cb_profile(c):
             map_stats   = get_player_map_stats(uid)
             recent      = get_player_recent_matches(uid, limit=5)
             quals_stats = get_player_quals_stats(uid)
+            duo_stats   = get_player_duo_stats(uid, _priv_table)
             lb_data     = [
                 (i+1, row[1], row[2], has_active_premium(row[0]), is_admin(row[0]), is_verified_check(row[0]))
                 for i, row in enumerate(all_p[:3])
@@ -2401,6 +2457,7 @@ def cb_profile(c):
                 quals_stats = quals_stats,
                 mvp_count   = mvp_count,
                 is_verified = is_verified_check(uid),
+                duo_stats   = duo_stats,
             )
 
             # delete old message, send photo with buttons
@@ -2543,6 +2600,7 @@ def cb_top(c):
     kb.add(
         types.InlineKeyboardButton("📊 Default — Топ по ELO",      callback_data="top_default"),
         types.InlineKeyboardButton("⭐ Quals — Топ квалификации",  callback_data="top_quals"),
+        types.InlineKeyboardButton("👥 2v2 — Топ дуэлей",          callback_data="top_2v2"),
         types.InlineKeyboardButton("🔙 Назад",                      callback_data="back"),
     )
     try:
@@ -2567,6 +2625,7 @@ def cb_top_default(c):
     kb = types.InlineKeyboardMarkup(row_width=1)
     kb.add(
         types.InlineKeyboardButton("⭐ Quals топ", callback_data="top_quals"),
+        types.InlineKeyboardButton("👥 2v2 топ",   callback_data="top_2v2"),
         types.InlineKeyboardButton("🔙 Назад",     callback_data="back"),
     )
     if not players:
@@ -2583,7 +2642,7 @@ def cb_top_default(c):
                 lvl = get_faceit_level(elo)
                 lb_players.append({
                     "rank": i, "name": name, "elo": elo, "wins": wins,
-                    "losses": losses, "kd": kd, "level": lvl,
+                    "losses": losses, "kd": kd, "level": lvl, "uid": uid2,
                     "is_premium": has_active_premium(uid2), "is_admin": is_admin(uid2),
                     "is_verified": is_verified_check(uid2),
                 })
@@ -2631,6 +2690,7 @@ def cb_top_quals(c):
     kb = types.InlineKeyboardMarkup(row_width=1)
     kb.add(
         types.InlineKeyboardButton("📊 Default топ", callback_data="top_default"),
+        types.InlineKeyboardButton("👥 2v2 топ",     callback_data="top_2v2"),
         types.InlineKeyboardButton("🔙 Назад",        callback_data="back"),
     )
     if not players:
@@ -2649,7 +2709,7 @@ def cb_top_quals(c):
                 lvl = get_faceit_level(qelo or 1000)
                 lb_players.append({
                     "rank": i, "name": name, "elo": qelo or 1000,
-                    "wins": qw or 0, "losses": ql or 0, "kd": qkd, "level": lvl,
+                    "wins": qw or 0, "losses": ql or 0, "kd": qkd, "level": lvl, "uid": uid2,
                     "is_premium": has_active_premium(uid2), "is_admin": is_admin(uid2),
                     "is_verified": is_verified_check(uid2),
                 })
@@ -2675,6 +2735,91 @@ def cb_top_quals(c):
         kd      = round((qk or 0) / (qd or 1), 2)
         prem    = " 👑" if has_active_premium(uid2) else ""
         text   += f"{medals.get(i, f'{i}.')} <b>{name}</b>{prem}\n   Q.ELO: {qelo or 1000} | {qw}W/{ql}L ({winrate}%) | K/D: {kd}\n\n"
+    try:
+        bot.edit_message_text(text, c.message.chat.id, c.message.message_id,
+                              reply_markup=kb, parse_mode="HTML")
+    except Exception:
+        try:
+            bot.delete_message(c.message.chat.id, c.message.message_id)
+        except Exception:
+            pass
+        bot.send_message(c.message.chat.id, text, reply_markup=kb, parse_mode="HTML")
+    bot.answer_callback_query(c.id)
+
+
+@bot.callback_query_handler(func=lambda c: c.data == "top_2v2")
+def cb_top_2v2(c):
+    uid = c.from_user.id
+    priv_table   = get_user_table(uid)
+    priv_display = get_user_private_display(uid)
+    players = get_duo_players(priv_table)
+    # Фильтруем только тех, кто сыграл хотя бы 1 матч в 2v2
+    players = [p for p in players if (p[3] or 0) + (p[4] or 0) > 0]
+    kb = types.InlineKeyboardMarkup(row_width=1)
+    kb.add(
+        types.InlineKeyboardButton("📊 Default топ", callback_data="top_default"),
+        types.InlineKeyboardButton("⭐ Quals топ",   callback_data="top_quals"),
+        types.InlineKeyboardButton("🔙 Назад",        callback_data="back"),
+    )
+    if not players:
+        try:
+            bot.edit_message_text(
+                f"👥 <b>2v2 ТОП {priv_display}</b>\n\nЕщё нет 2v2 матчей.",
+                c.message.chat.id, c.message.message_id, reply_markup=kb, parse_mode="HTML"
+            )
+        except Exception:
+            bot.send_message(c.message.chat.id,
+                f"👥 <b>2v2 ТОП {priv_display}</b>\n\nЕщё нет 2v2 матчей.",
+                reply_markup=kb, parse_mode="HTML")
+        bot.answer_callback_query(c.id)
+        return
+
+    if CARDS_ENABLED:
+        try:
+            lb_players = []
+            for i, row in enumerate(players[:10], 1):
+                uid2, name, delo, dw, dl, dk, dd, da = row
+                lb_players.append({
+                    "rank":       i,
+                    "name":       name or "Unknown",
+                    "elo":        delo or 1000,
+                    "wins":       dw or 0,
+                    "losses":     dl or 0,
+                    "kills":      dk or 0,
+                    "deaths":     dd or 0,
+                    "uid":        uid2,
+                    "is_premium": has_active_premium(uid2),
+                    "is_admin":   is_admin(uid2),
+                })
+            img_buf = generate_duo_leaderboard_card(
+                lb_players,
+                title=f"👥 {priv_display} 2v2 — TOP ELO",
+            )
+            try:
+                bot.delete_message(c.message.chat.id, c.message.message_id)
+            except Exception:
+                pass
+            bot.send_photo(
+                c.message.chat.id,
+                img_buf,
+                caption=f"👥 <b>2v2 ТОП {priv_display}</b>",
+                reply_markup=kb,
+                parse_mode="HTML",
+            )
+            bot.answer_callback_query(c.id)
+            return
+        except Exception as e:
+            print(f"[card_top_2v2] error: {e}")
+
+    text   = f"👥 <b>2v2 ТОП {priv_display}</b>\n\n"
+    medals = {1: "🥇", 2: "🥈", 3: "🥉"}
+    for i, row in enumerate(players[:10], 1):
+        uid2, name, delo, dw, dl, dk, dd, da = row
+        games   = (dw or 0) + (dl or 0)
+        winrate = round((dw or 0) / games * 100, 1) if games > 0 else 0
+        kd      = round((dk or 0) / (dd or 1), 2)
+        prem    = " 👑" if has_active_premium(uid2) else ""
+        text   += f"{medals.get(i, f'{i}.')} <b>{name}</b>{prem}\n   2v2 ELO: {delo or 1000} | {dw}W/{dl}L ({winrate}%) | K/D: {kd}\n\n"
     try:
         bot.edit_message_text(text, c.message.chat.id, c.message.message_id,
                               reply_markup=kb, parse_mode="HTML")
@@ -2721,7 +2866,7 @@ def build_lobby_text(lobby_id):
     priv_label = f"{priv_cfg['emoji']} {priv_cfg['display']}"
     text = (
         f"🎮 <b>Лобби #{slot} ({priv_label} / {league.upper()}/{device.upper()})</b>\n"
-        f"👥 Игроков: {len(lobby['players'])}/10\n\n"
+        f"👥 Игроков: {len(lobby['players'])}/{_lobby_max_size(league)}\n\n"
     )
     is_quals = (league == "quals")
     priv_table_name = priv_cfg["table"]
@@ -2777,6 +2922,7 @@ def cb_find(c):
     kb.add(
         types.InlineKeyboardButton("🎮 Default", callback_data="lobby_default"),
         types.InlineKeyboardButton("⭐ Quals", callback_data="lobby_quals"),
+        types.InlineKeyboardButton("👥 2v2", callback_data="lobby_2v2"),
         types.InlineKeyboardButton("🔙 Назад", callback_data="back"),
     )
     bot.edit_message_text("🎮 Выбери лигу:", c.message.chat.id, c.message.message_id, reply_markup=kb)
@@ -2792,12 +2938,13 @@ def cb_lobby(c):
     if league == "quals" and not has_quals_access(uid):
         bot.answer_callback_query(c.id, "⭐ Доступ к QUALS закрыт!", show_alert=True)
         return
+    max_size = _lobby_max_size(league)
     text = f"🎮 <b>ЛОББИ {priv_display} — {league.upper()}</b>\n\nPC и Mobile могут играть вместе\n\n"
     kb = types.InlineKeyboardMarkup(row_width=2)
     for slot in range(1, 6):
         m_cnt = len(active_lobbies.get(f"{private_key}_{league}_mobile_{slot}", {}).get("players", []))
         p_cnt = len(active_lobbies.get(f"{private_key}_{league}_pc_{slot}", {}).get("players", []))
-        text += f"Лобби #{slot}: Mobile({m_cnt}/10) | PC({p_cnt}/10)\n"
+        text += f"Лобби #{slot}: Mobile({m_cnt}/{max_size}) | PC({p_cnt}/{max_size})\n"
     for slot in range(1, 6):
         m_cnt = len(active_lobbies.get(f"{private_key}_{league}_mobile_{slot}", {}).get("players", []))
         p_cnt = len(active_lobbies.get(f"{private_key}_{league}_pc_{slot}", {}).get("players", []))
@@ -2852,7 +2999,7 @@ def cb_join(c):
         if lobby["status"] != "waiting":
             bot.answer_callback_query(c.id, "❌ Лобби уже в игре!", show_alert=True)
             return
-        if len(lobby["players"]) >= 10:
+        if len(lobby["players"]) >= _lobby_max_size(league):
             bot.answer_callback_query(c.id, "❌ Лобби полное!", show_alert=True)
             return
         if uid in lobby["players"]:
@@ -2891,7 +3038,7 @@ def cb_join(c):
             pass
         bot.answer_callback_query(c.id, f"✅ Вы вошли в лобби #{slot}!")
         broadcast_lobby_update(lobby_id, exclude_uid=uid)
-        if len(lobby["players"]) >= 10:
+        if len(lobby["players"]) >= _lobby_max_size(league):
             start_accept_phase(lobby_id)
     except Exception as e:
         print(f"Join error: {e}")
@@ -3072,7 +3219,8 @@ def start_accept_phase(lobby_id):
                         pass
             except Exception:
                 pass
-        if len(lobby2["players"]) >= 10:
+        _max_sz = _lobby_max_size(lobby2.get("league", "default"))
+        if len(lobby2["players"]) >= _max_sz:
             lobby2["status"] = "pre_mapban"
             threading.Thread(target=start_map_ban_phase, args=(lobby_id,), daemon=True).start()
         elif not lobby2["players"]:
@@ -3093,7 +3241,7 @@ def start_accept_phase(lobby_id):
                     bot.send_message(
                         uid,
                         f"⚠️ Игрок не принял матч и исключён.\n"
-                        f"Вы остаётесь в очереди ({cnt}/10).",
+                        f"Вы остаётесь в очереди ({cnt}/{_max_sz}).",
                     )
                 except Exception:
                     pass
@@ -3198,6 +3346,25 @@ def start_map_ban_phase(lobby_id):
         return
     if lobby["status"] not in ("accepting", "pre_mapban"):
         return
+
+    league = lobby.get("league", "default")
+    team_sz = _lobby_team_size(league)
+
+    # 2v2: пропускаем бан карт — просто выбираем случайную карту и запускаем
+    if league == "2v2":
+        lobby["status"] = "mapban"
+        players = lobby["players"]
+        delete_match_found(lobby_id)
+        delete_accept_status(lobby_id)
+        delete_lobby_messages(lobby_id)
+        lobby["map_name"] = random.choice(MAPS)
+        lobby["map_bans"] = []
+        lobby["ban_count"] = 0
+        lobby["ct_captain"] = pick_captain(players[:team_sz] if len(players) >= team_sz else players)
+        lobby["t_captain"]  = pick_captain(players[team_sz:] if len(players) > team_sz else players[-1:])
+        threading.Thread(target=lambda: (time.sleep(1), launch_match(lobby_id)), daemon=True).start()
+        return
+
     lobby["status"] = "mapban"
     lobby["maps_remaining"] = list(MAPS)
     lobby["map_bans"] = []
@@ -3397,19 +3564,21 @@ def launch_match(lobby_id):
 
     already_placed = set(team_ct + team_t)
 
+    _team_sz = _lobby_team_size(lobby.get("league", "default"))
+
     for grp in party_groups:
         if all(m in already_placed for m in grp):
             continue
         remaining_grp = [m for m in grp if m not in already_placed]
         if not remaining_grp:
             continue
-        if len(team_ct) + len(remaining_grp) <= 5:
+        if len(team_ct) + len(remaining_grp) <= _team_sz:
             team_ct.extend(remaining_grp)
-        elif len(team_t) + len(remaining_grp) <= 5:
+        elif len(team_t) + len(remaining_grp) <= _team_sz:
             team_t.extend(remaining_grp)
         else:
             for m in remaining_grp:
-                if len(team_ct) < 5:
+                if len(team_ct) < _team_sz:
                     team_ct.append(m)
                 else:
                     team_t.append(m)
@@ -3419,23 +3588,23 @@ def launch_match(lobby_id):
     for uid2 in solo_players:
         if uid2 in already_placed:
             continue
-        if len(team_ct) < 5:
+        if len(team_ct) < _team_sz:
             team_ct.append(uid2)
         else:
             team_t.append(uid2)
 
-    # Гарантируем ровно 5v5
+    # Гарантируем ровно NvN (5v5 или 2v2)
     all_placed_set = set(team_ct + team_t)
     unplaced = [u for u in players if u not in all_placed_set]
     for u in unplaced:
-        if len(team_ct) < 5:
+        if len(team_ct) < _team_sz:
             team_ct.append(u)
         else:
             team_t.append(u)
     # Перебалансируем если нужно
-    while len(team_ct) > 5 and len(team_t) < 5:
+    while len(team_ct) > _team_sz and len(team_t) < _team_sz:
         team_t.insert(0, team_ct.pop())
-    while len(team_t) > 5 and len(team_ct) < 5:
+    while len(team_t) > _team_sz and len(team_ct) < _team_sz:
         team_ct.insert(0, team_t.pop())
 
     lobby["team_ct"] = team_ct
@@ -3670,7 +3839,8 @@ def handle_player_screenshot(msg):
         except Exception as e:
             print(f"Screenshot error: {e}")
     try:
-        bot.reply_to(msg, f"✅ Скриншот принят! Всего: {sc}/10")
+        _sc_max = _lobby_max_size(lobby.get("league", "default"))
+        bot.reply_to(msg, f"✅ Скриншот принят! Всего: {sc}/{_sc_max}")
     except Exception:
         pass
 
@@ -4055,6 +4225,7 @@ def _finalize_match(reg_uid, match_key):
     loser_team  = team_t  if winner == "ct" else team_ct
     all_stats = {}
     is_quals_match = (lobby.get("league") == "quals")
+    is_2v2_match   = (lobby.get("league") == "2v2")
     # Resolve private table for this match
     private_key = lobby.get("private", "darling")
     priv_cfg    = PRIVATE_CONFIG.get(private_key, PRIVATE_CONFIG["darling"])
@@ -4070,26 +4241,52 @@ def _finalize_match(reg_uid, match_key):
             won = _uid in winner_team
             kda = kills_data.get(_uid, {"kills": 0, "deaths": 0, "assists": 0})
             kills = kda["kills"]
-            if won:
-                elo_change = 25 if kills >= 12 else 17
-                coins_reward = 15
+            if is_2v2_match:
+                # 2v2: >9 убийств → +17 ELO, ≤9 → +12 ELO
+                if won:
+                    elo_change = 17 if kills > 9 else 12
+                    coins_reward = 15
+                else:
+                    elo_change = -12 if kills > 9 else -20
+                    coins_reward = 4
             else:
-                elo_change = -15 if kills >= 12 else -23
-                coins_reward = 4
+                # 5v5 (Default / Quals): ≥12 убийств → +25/−15, иначе +17/−23
+                if won:
+                    elo_change = 25 if kills >= 12 else 17
+                    coins_reward = 15
+                else:
+                    elo_change = -15 if kills >= 12 else -23
+                    coins_reward = 4
             p = get_player(_uid)
             if p:
                 try:
                     prem = has_active_premium(_uid)
                     if prem:
-                        if won and kills >= 12:
-                            elo_change = 25
-                        elif won:
+                        if won:
                             elo_change = int(elo_change * 1.5)
                         coins_reward = int(coins_reward * 1.5)
                 except Exception as _pe:
                     print(f"[premium check error] uid={_uid}: {_pe}")
 
-            if is_quals_match:
+            if is_2v2_match:
+                # 2v2 матч: обновляем только duo-колонки + монеты
+                if won:
+                    cur.execute(
+                        f"UPDATE {priv_table} SET duo_wins=duo_wins+1, "
+                        "duo_elo=GREATEST(0, duo_elo+%s), "
+                        "duo_kills=duo_kills+%s, duo_deaths=duo_deaths+%s, "
+                        "duo_assists=duo_assists+%s, coins=coins+%s WHERE user_id=%s",
+                        (elo_change, kda["kills"], kda["deaths"], kda["assists"], coins_reward, _uid),
+                    )
+                else:
+                    cur.execute(
+                        f"UPDATE {priv_table} SET duo_losses=duo_losses+1, "
+                        "duo_elo=GREATEST(0, duo_elo+%s), "
+                        "duo_kills=duo_kills+%s, duo_deaths=duo_deaths+%s, "
+                        "duo_assists=duo_assists+%s, coins=coins+%s WHERE user_id=%s",
+                        (elo_change, kda["kills"], kda["deaths"], kda["assists"], coins_reward, _uid),
+                    )
+            elif is_quals_match:
                 # Quals матч: обновляем только quals-колонки + монеты
                 if won:
                     cur.execute(
@@ -6026,10 +6223,11 @@ def cb_add_bots(c):
         return
     kb = types.InlineKeyboardMarkup(row_width=1)
     for lobby_id, lobby in active_lobbies.items():
-        if lobby.get("status") == "waiting" and len(lobby["players"]) < 10:
-            slots = 10 - len(lobby["players"])
+        _msz = _lobby_max_size(lobby.get("league", "default"))
+        if lobby.get("status") == "waiting" and len(lobby["players"]) < _msz:
+            slots = _msz - len(lobby["players"])
             kb.add(types.InlineKeyboardButton(
-                f"Лобби {lobby_id} ({len(lobby['players'])}/10) — добавить {slots} ботов",
+                f"Лобби {lobby_id} ({len(lobby['players'])}/{_msz}) — добавить {slots} ботов",
                 callback_data=f"fill_bots_{lobby_id}",
             ))
     if not kb.keyboard:
@@ -6052,13 +6250,14 @@ def cb_fill_bots(c):
         bot.answer_callback_query(c.id, "❌ Лобби недоступно")
         return
     bots = get_bots()
-    needed = 10 - len(lobby["players"])
+    _msz_fill = _lobby_max_size(lobby.get("league", "default"))
+    needed = _msz_fill - len(lobby["players"])
     available_bots = [b for b in bots if b[0] not in lobby["players"]]
     fill = random.sample(available_bots, min(needed, len(available_bots)))
     for b_id, _ in fill:
         lobby["players"].append(b_id)
     bot.answer_callback_query(c.id, f"✅ Добавлено {len(fill)} ботов")
-    if len(lobby["players"]) >= 10:
+    if len(lobby["players"]) >= _msz_fill:
         start_accept_phase(lobby_id)
     else:
         broadcast_lobby_update(lobby_id)
