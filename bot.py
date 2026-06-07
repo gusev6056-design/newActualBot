@@ -117,6 +117,13 @@ DATABASE_URL = os.environ.get("DATABASE_URL") or os.environ.get("SUPABASE_URL", 
 
 ACCEPT_TIMEOUT = 60
 MAPS = ["Zone 9", "Rust", "Province", "Sakura", "Sandstone"]
+EIGHT_MAPS = ["Zone 9", "Rust", "Province", "Sakura", "Sandstone", "Brezee"]
+
+def _get_lobby_maps(lobby: dict) -> list:
+    """Возвращает пул карт для лобби в зависимости от приватки."""
+    if lobby and lobby.get("private") == "eight":
+        return list(EIGHT_MAPS)
+    return list(MAPS)
 
 _raw_ids = os.environ.get("ADMIN_IDS", "")
 ADMIN_IDS_LIST: list = [int(x.strip()) for x in _raw_ids.split(",") if x.strip().isdigit()]
@@ -155,10 +162,14 @@ ticket_flow           = {}   # uid -> {step, match_code, reason, evidence_file_i
 
 # ==================== КОНФИГ ПРИВАТОК ====================
 PRIVATE_CONFIG = {
-    "darling": {"table": "players",      "display": "StandDarling", "emoji": "⚡", "matches_table": "darling_matches"},
-    "fade":    {"table": "fade_players", "display": "StandFade",    "emoji": "🔥", "matches_table": "fade_matches"},
-    "lite":    {"table": "lite_players", "display": "Fade Lite",    "emoji": "💫", "matches_table": "lite_matches"},
+    "darling": {"table": "players",       "display": "StandDarling", "emoji": "⚡", "matches_table": "darling_matches"},
+    "fade":    {"table": "fade_players",  "display": "StandFade",    "emoji": "🔥", "matches_table": "fade_matches"},
+    "lite":    {"table": "lite_players",  "display": "Fade Lite",    "emoji": "💫", "matches_table": "lite_matches"},
+    "eight":   {"table": "eight_players", "display": "StandEight",   "emoji": "8️⃣", "matches_table": "eight_matches"},
 }
+
+# Призовые StandEight (в gold)
+EIGHT_SEASON_PRIZES = {1: 50000, 2: 35000, 3: 20000}
 
 # ==================== ЛОББИ: размеры по режиму ====================
 def _lobby_max_size(league: str) -> int:
@@ -320,8 +331,8 @@ def init_db():
     ]:
         _add_column_if_missing("players", col, definition)
 
-    # Создаём таблицы для StandFade и Fade Lite с той же структурой
-    for priv_table in ("fade_players", "lite_players"):
+    # Создаём таблицы для StandFade, Fade Lite и StandEight с той же структурой
+    for priv_table in ("fade_players", "lite_players", "eight_players"):
         cur.execute(f"""
             CREATE TABLE IF NOT EXISTS {priv_table} (
                 user_id BIGINT PRIMARY KEY,
@@ -546,9 +557,10 @@ def init_db():
     _add_column_if_missing("matches", "status",        "TEXT DEFAULT 'registered'")
     _add_column_if_missing("matches", "cancel_reason", "TEXT DEFAULT ''")
     _add_column_if_missing("matches", "started_at",    "BIGINT DEFAULT 0")
+    _add_column_if_missing("matches", "private_key",   "TEXT DEFAULT 'darling'")
 
     # Синяя галочка — верификация игрока
-    for tbl in ("players", "fade_players", "lite_players"):
+    for tbl in ("players", "fade_players", "lite_players", "eight_players"):
         _add_column_if_missing(tbl, "is_verified", "INTEGER DEFAULT 0")
     # UNIQUE-индекс на match_id для ON CONFLICT
     try:
@@ -727,13 +739,14 @@ def restore_active_matches():
     cur = conn.cursor()
     try:
         cur.execute(
-            "SELECT match_id, match_code, league, device, map_name, players_json, started_at "
+            "SELECT match_id, match_code, league, device, map_name, players_json, started_at, "
+            "COALESCE(private_key, 'darling') "
             "FROM matches WHERE status='active'"
         )
         rows = cur.fetchall()
         restored = 0
         for row in rows:
-            match_id, match_code, league, device, map_name, players_json, started_at = row
+            match_id, match_code, league, device, map_name, players_json, started_at, private_key = row
             match_key = f"match_{match_id}"
 
             team_ct, team_t, players = [], [], []
@@ -765,6 +778,7 @@ def restore_active_matches():
                 "reg_taken_by":    None,
                 "match_key":       match_key,
                 "started_at":      started_at or 0,
+                "private":         private_key or "darling",
             }
             running_matches[match_key] = lobby
 
@@ -977,10 +991,19 @@ def register_user(uid, username, game_id, device, tg_username=""):
     conn.commit()
     conn.close()
 
+def get_user_matches_table(uid):
+    """Returns the matches table for the user's current private."""
+    priv_key = get_user_private(uid)
+    return PRIVATE_CONFIG.get(priv_key, PRIVATE_CONFIG["darling"])["matches_table"]
+
 def update_tg_username(uid, tg_username):
     conn = _db()
     cur = conn.cursor()
-    cur.execute("UPDATE players SET tg_username=%s WHERE user_id=%s", (tg_username or "", uid))
+    for _tbl in ("players", "eight_players", "fade_players", "lite_players"):
+        try:
+            cur.execute(f"UPDATE {_tbl} SET tg_username=%s WHERE user_id=%s", (tg_username or "", uid))
+        except Exception:
+            pass
     conn.commit()
     conn.close()
 
@@ -1051,6 +1074,35 @@ def get_duo_players(table="players"):
     conn.close()
     return rows
 
+def get_eight_global_players():
+    """
+    Глобальный топ StandEight: объединяет Default и 2v2.
+    Сортировка по (elo + duo_elo). Возвращает только тех, кто сыграл хотя бы 1 матч.
+    Возвращает список:
+      (user_id, username, elo, wins, losses, kills, deaths,
+       duo_elo, duo_wins, duo_losses, duo_kills, duo_deaths, global_elo)
+    """
+    conn = _db()
+    cur = conn.cursor()
+    cur.execute("""
+        SELECT user_id, username,
+               elo,      wins,     losses,     kills,     deaths,
+               duo_elo,  duo_wins, duo_losses, duo_kills, duo_deaths
+        FROM eight_players
+        WHERE is_bot=0 AND registered=1
+          AND ((wins + losses) > 0 OR (duo_wins + duo_losses) > 0)
+        ORDER BY (elo + duo_elo) DESC
+    """)
+    rows = cur.fetchall()
+    conn.close()
+    result = []
+    for r in rows:
+        uid2, name, elo, w, l, k, d, deo, dw, dl, dk, dd = r
+        global_elo = (elo or 1000) + (deo or 1000)
+        result.append((uid2, name, elo or 1000, w or 0, l or 0, k or 0, d or 0,
+                        deo or 1000, dw or 0, dl or 0, dk or 0, dd or 0, global_elo))
+    return result
+
 def get_player_duo_stats(uid, table="players"):
     conn = _db()
     cur = conn.cursor()
@@ -1072,13 +1124,13 @@ def get_player_duo_stats(uid, table="players"):
     return {"elo": deo or 1000, "wins": dw or 0, "losses": dl or 0,
             "kills": dk or 0, "deaths": dd or 0, "assists": da or 0}
 
-def get_player_quals_stats(uid):
+def get_player_quals_stats(uid, table="players"):
     conn = _db()
     cur = conn.cursor()
     try:
-        cur.execute("""
+        cur.execute(f"""
             SELECT quals_elo, quals_wins, quals_losses, quals_kills, quals_deaths, quals_assists, quals_access
-            FROM players WHERE user_id=%s
+            FROM {table} WHERE user_id=%s
         """, (uid,))
         row = cur.fetchone()
     except Exception:
@@ -1103,10 +1155,11 @@ def get_player_by_game_id(game_id):
     conn.close()
     return row
 
-def add_coins_to_player(uid, amount):
+def add_coins_to_player(uid, amount, table=None):
     conn = _db()
     cur = conn.cursor()
-    cur.execute("UPDATE players SET coins=coins+%s WHERE user_id=%s", (amount, uid))
+    target = table or get_user_table(uid)
+    cur.execute(f"UPDATE {target} SET coins=coins+%s WHERE user_id=%s", (amount, uid))
     conn.commit()
     conn.close()
 
@@ -1279,8 +1332,8 @@ def save_match_start(lobby):
         cur.execute(
             """INSERT INTO matches
                (match_id, match_code, league, device, map_name, status, players_json, started_at,
-                winner, score_w, score_l)
-               VALUES (%s, %s, %s, %s, %s, 'active', %s, %s, '', 0, 0)
+                winner, score_w, score_l, private_key)
+               VALUES (%s, %s, %s, %s, %s, 'active', %s, %s, '', 0, 0, %s)
                ON CONFLICT (match_id) DO NOTHING""",
             (
                 lobby.get("match_id", 0),
@@ -1290,6 +1343,7 @@ def save_match_start(lobby):
                 lobby.get("map_name", ""),
                 players_json_str,
                 int(time.time()),
+                lobby.get("private", "darling"),
             ),
         )
         # Также пишем в unregistered_matches — удалим оттуда при регистрации/отмене
@@ -1520,13 +1574,13 @@ def get_match_history(limit=10):
     return rows
 
 
-def get_player_map_stats(user_id):
+def get_player_map_stats(user_id, matches_table="matches"):
     """Returns list of {"map": str, "wr": float, "kd": float} for each map the player played in current season."""
     season_start = _get_season_start_ts()
     conn = _db()
     cur = conn.cursor()
     cur.execute(
-        "SELECT map_name, players_json FROM matches WHERE status='registered' AND players_json IS NOT NULL AND finished_at >= %s",
+        f"SELECT map_name, players_json FROM {matches_table} WHERE status='registered' AND players_json IS NOT NULL AND finished_at >= %s",
         (season_start,)
     )
     rows = cur.fetchall()
@@ -1577,13 +1631,13 @@ def _get_season_start_ts():
         return 0
 
 
-def get_player_recent_matches(user_id, limit=5):
+def get_player_recent_matches(user_id, limit=5, matches_table="matches"):
     """Returns list of booleans (True=win) for last N Default matches of the player in current season."""
     season_start = _get_season_start_ts()
     conn = _db()
     cur = conn.cursor()
     cur.execute(
-        "SELECT players_json FROM matches WHERE status='registered' AND (league='default' OR league IS NULL) AND players_json IS NOT NULL AND finished_at >= %s ORDER BY finished_at DESC LIMIT 50",
+        f"SELECT players_json FROM {matches_table} WHERE status='registered' AND (league='default' OR league IS NULL) AND players_json IS NOT NULL AND finished_at >= %s ORDER BY finished_at DESC LIMIT 50",
         (season_start,)
     )
     rows = cur.fetchall()
@@ -1604,13 +1658,13 @@ def get_player_recent_matches(user_id, limit=5):
     return recent
 
 
-def get_player_quals_recent_matches(user_id, limit=5):
+def get_player_quals_recent_matches(user_id, limit=5, matches_table="matches"):
     """Returns list of booleans (True=win) for last N Quals matches of the player in current season."""
     season_start = _get_season_start_ts()
     conn = _db()
     cur = conn.cursor()
     cur.execute(
-        "SELECT players_json FROM matches WHERE status='registered' AND league='quals' AND players_json IS NOT NULL AND finished_at >= %s ORDER BY finished_at DESC LIMIT 50",
+        f"SELECT players_json FROM {matches_table} WHERE status='registered' AND league='quals' AND players_json IS NOT NULL AND finished_at >= %s ORDER BY finished_at DESC LIMIT 50",
         (season_start,)
     )
     rows = cur.fetchall()
@@ -1631,13 +1685,13 @@ def get_player_quals_recent_matches(user_id, limit=5):
     return recent
 
 
-def get_player_duo_recent_matches(user_id, limit=5):
+def get_player_duo_recent_matches(user_id, limit=5, matches_table="matches"):
     """Returns list of booleans (True=win) for last N 2v2 matches of the player in current season."""
     season_start = _get_season_start_ts()
     conn = _db()
     cur = conn.cursor()
     cur.execute(
-        "SELECT players_json FROM matches WHERE status='registered' AND league='2v2' AND players_json IS NOT NULL AND finished_at >= %s ORDER BY finished_at DESC LIMIT 50",
+        f"SELECT players_json FROM {matches_table} WHERE status='registered' AND league='2v2' AND players_json IS NOT NULL AND finished_at >= %s ORDER BY finished_at DESC LIMIT 50",
         (season_start,)
     )
     rows = cur.fetchall()
@@ -1658,13 +1712,13 @@ def get_player_duo_recent_matches(user_id, limit=5):
     return recent
 
 
-def get_player_duo_map_stats(user_id):
+def get_player_duo_map_stats(user_id, matches_table="matches"):
     """Returns list of {"map": str, "wr": float, "kd": float} for each map the player played in 2v2."""
     season_start = _get_season_start_ts()
     conn = _db()
     cur = conn.cursor()
     cur.execute(
-        "SELECT map_name, players_json FROM matches WHERE status='registered' AND league='2v2' AND players_json IS NOT NULL AND finished_at >= %s",
+        f"SELECT map_name, players_json FROM {matches_table} WHERE status='registered' AND league='2v2' AND players_json IS NOT NULL AND finished_at >= %s",
         (season_start,)
     )
     rows = cur.fetchall()
@@ -2070,6 +2124,8 @@ def main_menu(uid):
     kb.add(types.InlineKeyboardButton(
         "👥 Моя пати" if in_party else "➕ Создать пати", callback_data="party_menu"
     ))
+    if get_user_private(uid) == "eight":
+        kb.add(types.InlineKeyboardButton("🏅 Сезон StandEight", callback_data="eight_season_info"))
     kb.add(types.InlineKeyboardButton("🔄 Сменить приватку", callback_data="switch_private"))
     if is_admin(uid):
         kb.add(
@@ -2250,6 +2306,40 @@ def cb_switch_private(c):
             reply_markup=_private_select_kb(),
             parse_mode="HTML",
         )
+
+
+@bot.callback_query_handler(func=lambda c: c.data == "eight_season_info")
+def cb_eight_season_info(c):
+    uid = c.from_user.id
+    bot.answer_callback_query(c.id)
+    text = (
+        "🏅 <b>StandEight — Сезон 1</b>\n\n"
+        "Сыграйте матчи, набирайте ELO и попадите в топ сезона, "
+        "чтобы получить призовые!\n\n"
+        "<b>🥇 1 место</b> — <b>50 000 gold</b>\n"
+        "<b>🥈 2 место</b> — <b>35 000 gold</b>\n"
+        "<b>🥉 3 место</b> — <b>20 000 gold</b>\n\n"
+        "<i>Призовые начисляются по итогам сезона. Удачи!</i>"
+    )
+    kb = types.InlineKeyboardMarkup()
+    kb.add(types.InlineKeyboardButton("🏆 Топ сезона", callback_data="top"))
+    kb.add(types.InlineKeyboardButton("🔙 Меню", callback_data="back_main"))
+    try:
+        bot.edit_message_text(text, c.message.chat.id, c.message.message_id,
+                              reply_markup=kb, parse_mode="HTML")
+    except Exception:
+        bot.send_message(uid, text, reply_markup=kb, parse_mode="HTML")
+
+
+@bot.callback_query_handler(func=lambda c: c.data == "back_main")
+def cb_back_main(c):
+    uid = c.from_user.id
+    bot.answer_callback_query(c.id)
+    try:
+        bot.edit_message_text(main_menu_text(uid), c.message.chat.id, c.message.message_id,
+                              reply_markup=main_menu(uid), parse_mode="HTML")
+    except Exception:
+        bot.send_message(uid, main_menu_text(uid), reply_markup=main_menu(uid), parse_mode="HTML")
 
 
 @bot.callback_query_handler(func=lambda c: c.data == "rejoin_lobby")
@@ -2500,9 +2590,10 @@ def cb_profile(c):
             rank    = next((i+1 for i, row in enumerate(all_p) if row[0] == uid), len(all_p))
             league  = "DEFAULT"
 
-            map_stats   = get_player_map_stats(uid)
-            recent      = get_player_recent_matches(uid, limit=5)
-            quals_stats = get_player_quals_stats(uid)
+            _matches_table = get_user_matches_table(uid)
+            map_stats   = get_player_map_stats(uid, _matches_table)
+            recent      = get_player_recent_matches(uid, limit=5, matches_table=_matches_table)
+            quals_stats = get_player_quals_stats(uid, _priv_table)
             duo_stats   = get_player_duo_stats(uid, _priv_table)
             lb_data     = [
                 (i+1, row[1], row[2], has_active_premium(row[0]), is_admin(row[0]), is_verified_check(row[0]))
@@ -2580,12 +2671,13 @@ def cb_profile_quals(c):
     if not has_quals_access(uid):
         bot.answer_callback_query(c.id, "❌ Нет доступа к Quals лиге", show_alert=True)
         return
-    p = get_player(uid)
+    _priv_table_q = get_user_table(uid)
+    p = get_player_from_table(uid, _priv_table_q) or get_player(uid)
     if not p:
         bot.answer_callback_query(c.id)
         return
 
-    qs = get_player_quals_stats(uid)
+    qs = get_player_quals_stats(uid, _priv_table_q)
     q_elo    = qs["elo"]    if qs else 1000
     q_wins   = qs["wins"]   if qs else 0
     q_losses = qs["losses"] if qs else 0
@@ -2606,13 +2698,15 @@ def cb_profile_quals(c):
 
     if CARDS_ENABLED:
         try:
-            quals_list = get_quals_players()
+            _priv_table_quals = get_user_table(uid)
+            _matches_table_quals = get_user_matches_table(uid)
+            quals_list = get_quals_players(_priv_table_quals)
             q_rank     = next((i+1 for i, row in enumerate(quals_list) if row[0] == uid), len(quals_list))
             lb_data    = [
                 (i+1, row[1], row[2], has_active_premium(row[0]), is_admin(row[0]), is_verified_check(row[0]))
                 for i, row in enumerate(quals_list[:3])
             ]
-            quals_recent = get_player_quals_recent_matches(uid, limit=5)
+            quals_recent = get_player_quals_recent_matches(uid, limit=5, matches_table=_matches_table_quals)
             q_mvp_count  = p[31] if len(p) > 31 else 0
             img_buf = generate_profile_card(
                 username    = p[1] or "Unknown",
@@ -2705,7 +2799,8 @@ def cb_profile_duo(c):
                 (i+1, r[1], r[2], has_active_premium(r[0]), is_admin(r[0]), is_verified_check(r[0]))
                 for i, r in enumerate(duo_list[:3])
             ]
-            duo_recent  = get_player_duo_recent_matches(uid, limit=5)
+            _matches_table_duo = get_user_matches_table(uid)
+            duo_recent  = get_player_duo_recent_matches(uid, limit=5, matches_table=_matches_table_duo)
             mvp_count   = p[31] if len(p) > 31 else 0
 
             img_buf = generate_profile_card(
@@ -2722,7 +2817,7 @@ def cb_profile_duo(c):
                 is_admin    = is_admin(uid),
                 global_rank = d_rank,
                 league      = "2V2",
-                map_stats   = get_player_duo_map_stats(uid),
+                map_stats   = get_player_duo_map_stats(uid, _matches_table_duo),
                 recent      = duo_recent,
                 leaderboard = lb_data,
                 quals_stats = None,
@@ -2765,13 +2860,16 @@ def cb_profile_duo(c):
 # ==================== ТОП (меню выбора) ====================
 @bot.callback_query_handler(func=lambda c: c.data == "top")
 def cb_top(c):
+    uid = c.from_user.id
     kb = types.InlineKeyboardMarkup(row_width=1)
     kb.add(
         types.InlineKeyboardButton("📊 Default — Топ по ELO",      callback_data="top_default"),
         types.InlineKeyboardButton("⭐ Quals — Топ квалификации",  callback_data="top_quals"),
         types.InlineKeyboardButton("👥 2v2 — Топ дуэлей",          callback_data="top_2v2"),
-        types.InlineKeyboardButton("🔙 Назад",                      callback_data="back"),
     )
+    if get_user_private(uid) == "eight":
+        kb.add(types.InlineKeyboardButton("🌍 Глобальный топ StandEight", callback_data="top_eight_global"))
+    kb.add(types.InlineKeyboardButton("🔙 Назад", callback_data="back"))
     try:
         bot.edit_message_text("🏆 <b>Выберите таблицу лидеров:</b>", c.message.chat.id,
                               c.message.message_id, reply_markup=kb, parse_mode="HTML")
@@ -3001,6 +3099,63 @@ def cb_top_2v2(c):
     bot.answer_callback_query(c.id)
 
 
+# ==================== ГЛОБАЛЬНЫЙ ТОП STANDEIGHT ====================
+@bot.callback_query_handler(func=lambda c: c.data == "top_eight_global")
+def cb_top_eight_global(c):
+    uid = c.from_user.id
+    if get_user_private(uid) != "eight":
+        bot.answer_callback_query(c.id, "❌ Только для StandEight", show_alert=True)
+        return
+    bot.answer_callback_query(c.id)
+    players = get_eight_global_players()
+    kb = types.InlineKeyboardMarkup(row_width=1)
+    kb.add(
+        types.InlineKeyboardButton("📊 Default топ",  callback_data="top_default"),
+        types.InlineKeyboardButton("👥 2v2 топ",       callback_data="top_2v2"),
+        types.InlineKeyboardButton("🔙 Назад",          callback_data="top"),
+    )
+    if not players:
+        try:
+            bot.edit_message_text(
+                "🌍 <b>Глобальный топ StandEight</b>\n\nПока нет игроков со статистикой.",
+                c.message.chat.id, c.message.message_id, reply_markup=kb, parse_mode="HTML"
+            )
+        except Exception:
+            bot.send_message(c.message.chat.id,
+                "🌍 <b>Глобальный топ StandEight</b>\n\nПока нет игроков со статистикой.",
+                reply_markup=kb, parse_mode="HTML")
+        return
+
+    medals = {1: "🥇", 2: "🥈", 3: "🥉"}
+    text = "🌍 <b>Глобальный топ StandEight</b>\n<i>Default ELO + 2v2 ELO</i>\n\n"
+    for i, row in enumerate(players[:10], 1):
+        uid2, name, elo, w, l, k, d, deo, dw, dl, dk, dd, global_elo = row
+        total_w   = w + dw
+        total_l   = l + dl
+        total_k   = k + dk
+        total_d   = d + dd
+        total_g   = total_w + total_l
+        wr        = round(total_w / total_g * 100, 1) if total_g > 0 else 0
+        kd        = round(total_k / total_d, 2) if total_d > 0 else float(total_k)
+        prem      = " 👑" if has_active_premium(uid2) else ""
+        lvl       = get_faceit_level(elo)
+        text += (
+            f"{medals.get(i, f'{i}.')} <b>{name}</b>{prem} [Lvl {lvl}]\n"
+            f"   🌐 Глоб. ELO: <b>{global_elo}</b>  "
+            f"(Default: {elo} | 2v2: {deo})\n"
+            f"   {total_w}W/{total_l}L ({wr}%) | K/D: {kd}\n\n"
+        )
+    try:
+        bot.edit_message_text(text, c.message.chat.id, c.message.message_id,
+                              reply_markup=kb, parse_mode="HTML")
+    except Exception:
+        try:
+            bot.delete_message(c.message.chat.id, c.message.message_id)
+        except Exception:
+            pass
+        bot.send_message(c.message.chat.id, text, reply_markup=kb, parse_mode="HTML")
+
+
 # ==================== НАЗАД ====================
 @bot.callback_query_handler(func=lambda c: c.data == "back")
 def cb_back(c):
@@ -3075,8 +3230,7 @@ def build_lobby_text(lobby_id):
                 display_elo = get_duo_elo_for_player(pid, priv_table_name)
             else:
                 display_elo = p[4]
-            priv_elo_label = f"{priv_cfg['emoji']} {display_elo}"
-            text += f"{i}. {icon} {p[1]}{prem} [Lvl {get_faceit_level(display_elo)} | {priv_elo_label} ELO]\n"
+            text += f"{i}. {icon} {p[1]}{prem} [Lvl {get_faceit_level(display_elo)} | {display_elo} ELO]\n"
         else:
             text += f"{i}. {pid}\n"
     return text
@@ -3553,7 +3707,7 @@ def start_map_ban_phase(lobby_id):
         delete_match_found(lobby_id)
         delete_accept_status(lobby_id)
         delete_lobby_messages(lobby_id)
-        lobby["map_name"] = random.choice(MAPS)
+        lobby["map_name"] = random.choice(_get_lobby_maps(lobby))
         lobby["map_bans"] = []
         lobby["ban_count"] = 0
         lobby["ct_captain"] = pick_captain(players[:team_sz] if len(players) >= team_sz else players)
@@ -3562,7 +3716,7 @@ def start_map_ban_phase(lobby_id):
         return
 
     lobby["status"] = "mapban"
-    lobby["maps_remaining"] = list(MAPS)
+    lobby["maps_remaining"] = _get_lobby_maps(lobby)
     lobby["map_bans"] = []
     lobby["ban_turn"] = "ct"
     lobby["ban_count"] = 0
@@ -4453,7 +4607,25 @@ def _finalize_match(reg_uid, match_key):
                 else:
                     elo_change = -15 if kills >= 12 else -23
                     coins_reward = 4
-            p = get_player(_uid)
+            # Ensure player row exists in priv_table (defensive upsert for cross-private users)
+            if priv_table != "players":
+                _src = get_player(_uid)
+                if _src:
+                    try:
+                        cur.execute(
+                            f"""INSERT INTO {priv_table}
+                                (user_id, username, game_id, device, registered, coins, elo,
+                                 tg_username, is_admin, is_bot)
+                                VALUES (%s, %s, %s, %s, 1, 100, 1000, %s, %s, %s)
+                                ON CONFLICT (user_id) DO NOTHING""",
+                            (_uid, _src[1], _src[2], _src[3],
+                             _src[21] if len(_src) > 21 else "",
+                             _src[11], _src[13]),
+                        )
+                    except Exception as _ue:
+                        print(f"[upsert player in {priv_table}] {_ue}")
+
+            p = get_player_from_table(_uid, priv_table) or get_player(_uid)
             if p:
                 try:
                     prem = has_active_premium(_uid)
@@ -6588,54 +6760,64 @@ def auto_unban_loop():
                     f"📅 Срок мута истёк."
                 )
 
-            # --- Авто-снятие Premium ---
-            cur.execute(
-                "SELECT user_id, username FROM players WHERE premium_until > 0 AND premium_until <= %s",
-                (now,)
-            )
-            expired_premiums = cur.fetchall()
-            for (uid, uname) in expired_premiums:
-                cur.execute(
-                    "UPDATE players SET premium_until=0 WHERE user_id=%s",
-                    (uid,)
-                )
-                conn.commit()
+            # --- Авто-снятие Premium и Quals по всем приваткам ---
+            total_expired_premiums = 0
+            total_expired_quals    = 0
+            all_priv_tables = list({cfg["table"] for cfg in PRIVATE_CONFIG.values()})
+            for priv_table in all_priv_tables:
                 try:
-                    bot.send_message(
-                        uid,
-                        "👑 <b>Ваш Premium истёк.</b>\n\nВы можете продлить его в 🛒 Магазине.",
-                        parse_mode="HTML"
+                    # Premium
+                    cur.execute(
+                        f"SELECT user_id, username FROM {priv_table} WHERE premium_until > 0 AND premium_until <= %s",
+                        (now,)
                     )
-                except Exception:
-                    pass
+                    expired_premiums = cur.fetchall()
+                    for (puid, puname) in expired_premiums:
+                        cur.execute(
+                            f"UPDATE {priv_table} SET premium_until=0 WHERE user_id=%s",
+                            (puid,)
+                        )
+                        conn.commit()
+                        total_expired_premiums += 1
+                        try:
+                            bot.send_message(
+                                puid,
+                                "👑 <b>Ваш Premium истёк.</b>\n\nВы можете продлить его в 🛒 Магазине.",
+                                parse_mode="HTML"
+                            )
+                        except Exception:
+                            pass
 
-            # --- Авто-снятие Quals ---
-            cur.execute(
-                "SELECT user_id, username FROM players WHERE quals_until > 0 AND quals_until <= %s AND quals_access=1",
-                (now,)
-            )
-            expired_quals = cur.fetchall()
-            for (uid, uname) in expired_quals:
-                cur.execute(
-                    "UPDATE players SET quals_until=0, quals_access=0 WHERE user_id=%s",
-                    (uid,)
-                )
-                conn.commit()
-                try:
-                    bot.send_message(
-                        uid,
-                        "⭐ <b>Ваш доступ к QUALS истёк.</b>\n\nВы можете продлить его в 🛒 Магазине.",
-                        parse_mode="HTML"
+                    # Quals
+                    cur.execute(
+                        f"SELECT user_id, username FROM {priv_table} WHERE quals_until > 0 AND quals_until <= %s AND quals_access=1",
+                        (now,)
                     )
-                except Exception:
-                    pass
+                    expired_quals = cur.fetchall()
+                    for (puid, puname) in expired_quals:
+                        cur.execute(
+                            f"UPDATE {priv_table} SET quals_until=0, quals_access=0 WHERE user_id=%s",
+                            (puid,)
+                        )
+                        conn.commit()
+                        total_expired_quals += 1
+                        try:
+                            bot.send_message(
+                                puid,
+                                "⭐ <b>Ваш доступ к QUALS истёк.</b>\n\nВы можете продлить его в 🛒 Магазине.",
+                                parse_mode="HTML"
+                            )
+                        except Exception:
+                            pass
+                except Exception as _tbl_err:
+                    print(f"[auto_unban] Ошибка таблицы {priv_table}: {_tbl_err}")
 
             conn.close()
 
             if expired_bans or expired_mutes:
                 print(f"[auto_unban] Снято банов: {len(expired_bans)}, мутов: {len(expired_mutes)}")
-            if expired_premiums or expired_quals:
-                print(f"[auto_unban] Premium истёк: {len(expired_premiums)}, Quals истёк: {len(expired_quals)}")
+            if total_expired_premiums or total_expired_quals:
+                print(f"[auto_unban] Premium истёк: {total_expired_premiums}, Quals истёк: {total_expired_quals}")
 
         except Exception as e:
             print(f"[auto_unban] Ошибка: {e}")
