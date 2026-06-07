@@ -2978,6 +2978,30 @@ def cb_back(c):
 
 
 # ==================== ЛОББИ ====================
+def get_duo_elo_for_player(uid, table="players"):
+    """Явно запрашивает duo_elo по имени колонки, без привязки к индексу SELECT *."""
+    try:
+        conn = _db()
+        cur = conn.cursor()
+        cur.execute(f"SELECT duo_elo FROM {table} WHERE user_id=%s", (uid,))
+        row = cur.fetchone()
+        conn.close()
+        return row[0] if row and row[0] is not None else 1000
+    except Exception:
+        return 1000
+
+def get_quals_elo_for_player(uid, table="players"):
+    """Явно запрашивает quals_elo по имени колонки, без привязки к индексу SELECT *."""
+    try:
+        conn = _db()
+        cur = conn.cursor()
+        cur.execute(f"SELECT quals_elo FROM {table} WHERE user_id=%s", (uid,))
+        row = cur.fetchone()
+        conn.close()
+        return row[0] if row and row[0] is not None else 1000
+    except Exception:
+        return 1000
+
 def build_lobby_text(lobby_id):
     lobby = active_lobbies.get(lobby_id)
     if not lobby:
@@ -3002,10 +3026,10 @@ def build_lobby_text(lobby_id):
         if p:
             icon = "🤖" if p[13] else "👤"
             prem = " 👑" if (not p[13] and has_active_premium(pid)) else ""
-            if is_quals and len(p) > 30 and not p[13]:
-                display_elo = p[30] if p[30] is not None else 1000
-            elif is_duo and len(p) > 34 and not p[13]:
-                display_elo = p[34] if p[34] is not None else 1000
+            if is_quals and not p[13]:
+                display_elo = get_quals_elo_for_player(pid, priv_table_name)
+            elif is_duo and not p[13]:
+                display_elo = get_duo_elo_for_player(pid, priv_table_name)
             else:
                 display_elo = p[4]
             priv_elo_label = f"{priv_cfg['emoji']} {display_elo}"
