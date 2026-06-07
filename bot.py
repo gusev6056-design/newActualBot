@@ -3898,16 +3898,27 @@ def cb_ban_map(c):
 
 
 # ==================== ЗАПУСК МАТЧА ====================
-def pline(uid, priv_table=None):
+def _resolve_display_elo(uid, p, priv_table, league):
+    """Возвращает правильный ELO в зависимости от лиги (duo_elo для 2v2, quals_elo для quals, elo для остальных)."""
+    if p and p[13]:  # бот — всегда p[4]
+        return p[4]
+    if league == "2v2":
+        return get_duo_elo_for_player(uid, priv_table or "players")
+    if league == "quals":
+        return get_quals_elo_for_player(uid, priv_table or "players")
+    return p[4] if p else 1000
+
+def pline(uid, priv_table=None, league=None):
     """Строчка игрока без ссылки (для обычных мест)."""
     p = (get_player_from_table(uid, priv_table) or get_player(uid)) if priv_table else get_player(uid)
     if p:
         icon = "🤖" if p[13] else "👤"
         prem = " 👑" if (not p[13] and has_active_premium(uid)) else ""
-        return f"{icon} {p[1]}{prem} [Lvl {get_faceit_level(p[4])} | {p[4]} ELO]"
+        elo  = _resolve_display_elo(uid, p, priv_table, league)
+        return f"{icon} {p[1]}{prem} [Lvl {get_faceit_level(elo)} | {elo} ELO]"
     return str(uid)
 
-def pline_link(uid, priv_table=None):
+def pline_link(uid, priv_table=None, league=None):
     """Строчка игрока с кликабельным именем — ведёт на TG-профиль (без превью ссылки)."""
     p = (get_player_from_table(uid, priv_table) or get_player(uid)) if priv_table else get_player(uid)
     if p:
@@ -3918,7 +3929,8 @@ def pline_link(uid, priv_table=None):
             name_linked = tg_link(uid, name)
         else:
             name_linked = name
-        return f"{icon} {name_linked}{prem} [Lvl {get_faceit_level(p[4])} | {p[4]} ELO]"
+        elo = _resolve_display_elo(uid, p, priv_table, league)
+        return f"{icon} {name_linked}{prem} [Lvl {get_faceit_level(elo)} | {elo} ELO]"
     return str(uid)
 
 def launch_match(lobby_id):
@@ -4039,13 +4051,16 @@ def launch_match(lobby_id):
     lobby["host_uid"]     = host_uid
     lobby["host_game_id"] = host_game_id
 
+    _launch_league = lobby.get("league", "default")
+
     def admin_pline(idx, u):
         p = get_player_from_table(u, _launch_priv_table) or get_player(u)
         num = NUMBER_EMOJI[idx] if idx < len(NUMBER_EMOJI) else f"{idx+1}."
         if p:
             icon = "🤖" if p[13] else ""
             prem = " 👑" if (not p[13] and has_active_premium(u)) else ""
-            return f"{num} {icon}{p[1]}{prem} | ID: <code>{u}</code> | ELO: {p[4]}"
+            elo  = _resolve_display_elo(u, p, _launch_priv_table, _launch_league)
+            return f"{num} {icon}{p[1]}{prem} | ID: <code>{u}</code> | ELO: {elo}"
         return f"{num} <code>{u}</code>"
 
     ct_lines = "\n".join([admin_pline(i, u) for i, u in enumerate(team_ct)])
@@ -4108,9 +4123,9 @@ def launch_match(lobby_id):
             f"👑 Хост: <b>{host_name}</b>\n"
             f"🎮 Game ID хоста: <code>{host_game_id}</code>\n\n"
             f"💙 <b>Команда CT</b>\n"
-            + "\n".join([f"  {i+1}. {pline_link(u, _launch_priv_table)}" for i, u in enumerate(team_ct)])
+            + "\n".join([f"  {i+1}. {pline_link(u, _launch_priv_table, _launch_league)}" for i, u in enumerate(team_ct)])
             + f"\n\n🧡 <b>Команда T</b>\n"
-            + "\n".join([f"  {i+1}. {pline_link(u, _launch_priv_table)}" for i, u in enumerate(team_t)])
+            + "\n".join([f"  {i+1}. {pline_link(u, _launch_priv_table, _launch_league)}" for i, u in enumerate(team_t)])
             + f"\n\n📸 После матча нажми кнопку и отправь скриншот результатов."
         )
         kb_player = types.InlineKeyboardMarkup()
@@ -4469,9 +4484,10 @@ def reg_step_score(msg):
     match_registration[uid]["step"] = "winner"
     match_key = match_registration[uid]["match_key"]
     lobby = running_matches.get(match_key)
-    _rs_priv_table = PRIVATE_CONFIG.get(lobby.get("private", "darling") if lobby else "darling", PRIVATE_CONFIG["darling"])["table"] if lobby else None
-    ct_list = "\n".join([f"  {i+1}. {pline(u, _rs_priv_table)}" for i, u in enumerate((lobby.get("team_ct", []) if lobby else []))])
-    t_list  = "\n".join([f"  {i+1}. {pline(u, _rs_priv_table)}" for i, u in enumerate((lobby.get("team_t",  []) if lobby else []))])
+    _rs_priv_table  = PRIVATE_CONFIG.get(lobby.get("private", "darling") if lobby else "darling", PRIVATE_CONFIG["darling"])["table"] if lobby else None
+    _rs_league      = lobby.get("league", "default") if lobby else "default"
+    ct_list = "\n".join([f"  {i+1}. {pline(u, _rs_priv_table, _rs_league)}" for i, u in enumerate((lobby.get("team_ct", []) if lobby else []))])
+    t_list  = "\n".join([f"  {i+1}. {pline(u, _rs_priv_table, _rs_league)}" for i, u in enumerate((lobby.get("team_t",  []) if lobby else []))])
     kb = types.InlineKeyboardMarkup()
     kb.add(
         types.InlineKeyboardButton("💙 CT победила", callback_data=f"reg_winner_ct|{match_key}"),
