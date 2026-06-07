@@ -1,6 +1,7 @@
 from PIL import Image, ImageDraw, ImageFont, ImageFilter
 import io
 import os
+import math
 
 # ==================== COLORS ====================
 BG           = (18,  17,  12)
@@ -79,6 +80,31 @@ def _text_r(draw, x, y, text, font, fill):
 
 def _text_c(draw, cx, y, text, font, fill):
     draw.text((cx - _tw(draw, text, font) // 2, y), text, font=font, fill=fill)
+
+def _draw_scalloped_badge(draw, cx, cy, size,
+                           badge_color=(29, 155, 240), check_color=(255, 255, 255)):
+    """Draw a Twitter/Meta-style scalloped verified badge without background."""
+    R_outer = size / 2.0
+    R_inner = R_outer * 0.82
+    n_scallops = 12
+    n_pts = n_scallops * 16
+    pts = []
+    for i in range(n_pts):
+        angle = 2 * math.pi * i / n_pts - math.pi / 2
+        modulation = 0.5 + 0.5 * math.cos(n_scallops * angle)
+        r = R_inner + (R_outer - R_inner) * modulation
+        pts.append((cx + r * math.cos(angle), cy + r * math.sin(angle)))
+    draw.polygon(pts, fill=badge_color)
+    s = size * 0.28
+    p1 = (cx - s * 0.65, cy + s * 0.05)
+    p2 = (cx - s * 0.05, cy + s * 0.60)
+    p3 = (cx + s * 0.70, cy - s * 0.55)
+    lw = max(2, int(size * 0.13))
+    draw.line([p1, p2], fill=check_color, width=lw)
+    draw.line([p2, p3], fill=check_color, width=lw)
+    r_cap = max(1, lw // 2)
+    for px, py in [p1, p2, p3]:
+        draw.ellipse([(px - r_cap, py - r_cap), (px + r_cap, py + r_cap)], fill=check_color)
 
 def format_league(league: str) -> str:
     return {"quals": "Quals", "default": "Default"}.get(league, league.capitalize())
@@ -207,8 +233,7 @@ def generate_profile_card(
         draw.text((badge_x + 4, 42), "ADM", font=_font(12, bold=True), fill=_WH)
         badge_x += 48
     if is_verified:
-        _rr(draw, (badge_x, 40, badge_x + 24, 62), 4, fill=(29, 108, 236))
-        draw.text((badge_x + 4, 42), "✓", font=_font(14, bold=True), fill=_WH)
+        _draw_scalloped_badge(draw, badge_x + 11, 51, 22)
 
     draw.text((152, 78), f"ID: {game_id}", font=_font(14), fill=_TEXT_GRAY)
     draw.text((W - 200, 16), "ELO RATING", font=_font(11), fill=_TEXT_GRAY)
@@ -301,8 +326,7 @@ def generate_profile_card(
             draw.text((nx2+3, ly+11), "ADM", font=_font(10, bold=True), fill=_WH)
             nx2 += 38
         if is_vf:
-            _rr(draw, (nx2, ly+10, nx2+22, ly+26), 3, fill=(29, 108, 236))
-            draw.text((nx2+4, ly+11), "✓", font=_font(10, bold=True), fill=_WH)
+            _draw_scalloped_badge(draw, nx2 + 8, ly + 18, 16)
         _text_r(draw, W-20, ly+10, str(p_elo), _font(14, bold=True), _TEXT)
 
     # ===== QUALS STATS SECTION (optional) =====
@@ -455,12 +479,8 @@ def generate_leaderboard_card(players: list, title: str = "TOP ИГРОКОВ П
             _rr(draw, (bx, y + 10, bx + 32, y + 25), 3, fill=(154, 24, 24))
             draw.text((bx + 4, y + 11), "ADM", font=_font(10, bold=True), fill=_WH)
             bx += 40
-        if p.get("is_premium"):
-            _rr(draw, (bx, y + 10, bx + 32, y + 25), 3, fill=_TD)
-            draw.text((bx + 4, y + 11), "PRO", font=_font(10, bold=True), fill=_WH)
         if p.get("is_verified"):
-            _rr(draw, (bx, y + 10, bx + 24, y + 25), 3, fill=(28, 106, 234))
-            draw.text((bx + 4, y + 11), "✓",  font=_font(10, bold=True), fill=_WH)
+            _draw_scalloped_badge(draw, bx + 8, y + 18, 15)
 
         uid_val = p.get("uid")
         if uid_val:
@@ -709,10 +729,6 @@ def generate_duo_leaderboard_card(players: list, title: str = "TOP 2v2 ПО ELO"
             _rr(draw, (bx2, y + 10, bx2 + 32, y + 25), 3, fill=(154, 24, 24))
             draw.text((bx2 + 4, y + 11), "ADM", font=_font(10, bold=True), fill=_WH)
             bx2 += 40
-        if p.get("is_premium"):
-            _rr(draw, (bx2, y + 10, bx2 + 32, y + 25), 3, fill=_PURD)
-            draw.text((bx2 + 4, y + 11), "PRO", font=_font(10, bold=True), fill=_WH)
-
         uid_val = p.get("uid")
         if uid_val:
             draw.text((nx, y + 29), f"#{str(uid_val)[-7:]}", font=_font(10), fill=_GRAY)
