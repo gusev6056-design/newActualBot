@@ -117,12 +117,9 @@ DATABASE_URL = os.environ.get("DATABASE_URL") or os.environ.get("SUPABASE_URL", 
 
 ACCEPT_TIMEOUT = 60
 MAPS = ["Zone 9", "Rust", "Province", "Sakura", "Sandstone"]
-EIGHT_MAPS = ["Zone 9", "Rust", "Province", "Sakura", "Sandstone", "Brezee"]
 
 def _get_lobby_maps(lobby: dict) -> list:
-    """Возвращает пул карт для лобби в зависимости от приватки."""
-    if lobby and lobby.get("private") == "eight":
-        return list(EIGHT_MAPS)
+    """Возвращает пул карт для лобби."""
     return list(MAPS)
 
 _raw_ids = os.environ.get("ADMIN_IDS", "")
@@ -162,14 +159,8 @@ ticket_flow           = {}   # uid -> {step, match_code, reason, evidence_file_i
 
 # ==================== КОНФИГ ПРИВАТОК ====================
 PRIVATE_CONFIG = {
-    "darling": {"table": "players",       "display": "StandDarling", "emoji": "⚡", "matches_table": "darling_matches"},
-    "fade":    {"table": "fade_players",  "display": "StandFade",    "emoji": "🔥", "matches_table": "fade_matches"},
-    "lite":    {"table": "lite_players",  "display": "Fade Lite",    "emoji": "💫", "matches_table": "lite_matches"},
-    "eight":   {"table": "eight_players", "display": "StandEight",   "emoji": "8️⃣", "matches_table": "eight_matches"},
+    "darling": {"table": "players", "display": "StandDarling", "emoji": "⚡", "matches_table": "darling_matches"},
 }
-
-# Призовые StandEight (в gold)
-EIGHT_SEASON_PRIZES = {1: 50000, 2: 35000, 3: 20000}
 
 # ==================== ЛОББИ: размеры по режиму ====================
 def _lobby_max_size(league: str) -> int:
@@ -180,7 +171,7 @@ def _lobby_team_size(league: str) -> int:
     """Размер одной команды."""
     return 2 if league == "2v2" else 5
 
-user_private = {}  # uid -> "darling" | "fade" | "lite"
+user_private = {}  # uid -> "darling"
 
 # ==================== ТОВАРЫ МАГАЗИНА ====================
 SHOP_ITEMS_DEFAULT = [
@@ -330,75 +321,6 @@ def init_db():
         ("duo_assists",    "INTEGER DEFAULT 0"),
     ]:
         _add_column_if_missing("players", col, definition)
-
-    # Создаём таблицы для StandFade, Fade Lite и StandEight с той же структурой
-    for priv_table in ("fade_players", "lite_players", "eight_players"):
-        cur.execute(f"""
-            CREATE TABLE IF NOT EXISTS {priv_table} (
-                user_id BIGINT PRIMARY KEY,
-                username TEXT,
-                game_id TEXT,
-                device TEXT,
-                elo INTEGER DEFAULT 1000,
-                coins INTEGER DEFAULT 100,
-                wins INTEGER DEFAULT 0,
-                losses INTEGER DEFAULT 0,
-                kills INTEGER DEFAULT 0,
-                deaths INTEGER DEFAULT 0,
-                assists INTEGER DEFAULT 0,
-                is_admin INTEGER DEFAULT 0,
-                registered INTEGER DEFAULT 0,
-                is_bot INTEGER DEFAULT 0,
-                is_banned INTEGER DEFAULT 0,
-                warns INTEGER DEFAULT 0,
-                quals_access INTEGER DEFAULT 0,
-                is_game_reg INTEGER DEFAULT 0,
-                is_muted INTEGER DEFAULT 0,
-                mute_until BIGINT DEFAULT 0,
-                is_on_check INTEGER DEFAULT 0,
-                check_admin_id BIGINT DEFAULT 0,
-                tg_username TEXT DEFAULT '',
-                ban_reason TEXT DEFAULT '',
-                ban_until BIGINT DEFAULT 0,
-                quals_wins INTEGER DEFAULT 0,
-                quals_losses INTEGER DEFAULT 0,
-                quals_kills INTEGER DEFAULT 0,
-                quals_deaths INTEGER DEFAULT 0,
-                quals_assists INTEGER DEFAULT 0,
-                quals_elo INTEGER DEFAULT 1000,
-                mvp_count INTEGER DEFAULT 0
-            )
-        """)
-        conn.commit()
-        for col, definition in [
-            ("is_banned",      "INTEGER DEFAULT 0"),
-            ("warns",          "INTEGER DEFAULT 0"),
-            ("quals_access",   "INTEGER DEFAULT 0"),
-            ("is_game_reg",    "INTEGER DEFAULT 0"),
-            ("is_muted",       "INTEGER DEFAULT 0"),
-            ("mute_until",     "BIGINT DEFAULT 0"),
-            ("is_on_check",    "INTEGER DEFAULT 0"),
-            ("check_admin_id", "BIGINT DEFAULT 0"),
-            ("tg_username",    "TEXT DEFAULT ''"),
-            ("ban_reason",     "TEXT DEFAULT ''"),
-            ("ban_until",      "BIGINT DEFAULT 0"),
-            ("quals_wins",     "INTEGER DEFAULT 0"),
-            ("quals_losses",   "INTEGER DEFAULT 0"),
-            ("quals_kills",    "INTEGER DEFAULT 0"),
-            ("quals_deaths",   "INTEGER DEFAULT 0"),
-            ("quals_assists",  "INTEGER DEFAULT 0"),
-            ("quals_elo",      "INTEGER DEFAULT 1000"),
-            ("mvp_count",      "INTEGER DEFAULT 0"),
-            ("premium_until",  "BIGINT DEFAULT 0"),
-            ("quals_until",    "BIGINT DEFAULT 0"),
-            ("duo_elo",        "INTEGER DEFAULT 1000"),
-            ("duo_wins",       "INTEGER DEFAULT 0"),
-            ("duo_losses",     "INTEGER DEFAULT 0"),
-            ("duo_kills",      "INTEGER DEFAULT 0"),
-            ("duo_deaths",     "INTEGER DEFAULT 0"),
-            ("duo_assists",    "INTEGER DEFAULT 0"),
-        ]:
-            _add_column_if_missing(priv_table, col, definition)
 
     # Таблица для хранения выбранной приватки пользователя между перезапусками
     cur.execute("""
@@ -560,8 +482,7 @@ def init_db():
     _add_column_if_missing("matches", "private_key",   "TEXT DEFAULT 'darling'")
 
     # Синяя галочка — верификация игрока
-    for tbl in ("players", "fade_players", "lite_players", "eight_players"):
-        _add_column_if_missing(tbl, "is_verified", "INTEGER DEFAULT 0")
+    _add_column_if_missing("players", "is_verified", "INTEGER DEFAULT 0")
     # UNIQUE-индекс на match_id для ON CONFLICT
     try:
         cur.execute("CREATE UNIQUE INDEX IF NOT EXISTS matches_match_id_uq ON matches (match_id)")
@@ -999,11 +920,10 @@ def get_user_matches_table(uid):
 def update_tg_username(uid, tg_username):
     conn = _db()
     cur = conn.cursor()
-    for _tbl in ("players", "eight_players", "fade_players", "lite_players"):
-        try:
-            cur.execute(f"UPDATE {_tbl} SET tg_username=%s WHERE user_id=%s", (tg_username or "", uid))
-        except Exception:
-            pass
+    try:
+        cur.execute("UPDATE players SET tg_username=%s WHERE user_id=%s", (tg_username or "", uid))
+    except Exception:
+        pass
     conn.commit()
     conn.close()
 
@@ -1074,34 +994,6 @@ def get_duo_players(table="players"):
     conn.close()
     return rows
 
-def get_eight_global_players():
-    """
-    Глобальный топ StandEight: объединяет Default и 2v2.
-    Сортировка по (elo + duo_elo). Возвращает только тех, кто сыграл хотя бы 1 матч.
-    Возвращает список:
-      (user_id, username, elo, wins, losses, kills, deaths,
-       duo_elo, duo_wins, duo_losses, duo_kills, duo_deaths, global_elo)
-    """
-    conn = _db()
-    cur = conn.cursor()
-    cur.execute("""
-        SELECT user_id, username,
-               elo,      wins,     losses,     kills,     deaths,
-               duo_elo,  duo_wins, duo_losses, duo_kills, duo_deaths
-        FROM eight_players
-        WHERE is_bot=0 AND registered=1
-          AND ((wins + losses) > 0 OR (duo_wins + duo_losses) > 0)
-        ORDER BY (elo + duo_elo) DESC
-    """)
-    rows = cur.fetchall()
-    conn.close()
-    result = []
-    for r in rows:
-        uid2, name, elo, w, l, k, d, deo, dw, dl, dk, dd = r
-        global_elo = (elo or 1000) + (deo or 1000)
-        result.append((uid2, name, elo or 1000, w or 0, l or 0, k or 0, d or 0,
-                        deo or 1000, dw or 0, dl or 0, dk or 0, dd or 0, global_elo))
-    return result
 
 def get_player_duo_stats(uid, table="players"):
     conn = _db()
@@ -2127,9 +2019,6 @@ def main_menu(uid):
     kb.add(types.InlineKeyboardButton(
         "👥 Моя пати" if in_party else "➕ Создать пати", callback_data="party_menu"
     ))
-    if get_user_private(uid) == "eight":
-        kb.add(types.InlineKeyboardButton("🏅 Сезон StandEight", callback_data="eight_season_info"))
-    kb.add(types.InlineKeyboardButton("🔄 Сменить приватку", callback_data="switch_private"))
     if is_admin(uid):
         kb.add(
             types.InlineKeyboardButton("🤖 Добавить ботов", callback_data="add_bots_admin"),
@@ -2141,12 +2030,11 @@ def main_menu(uid):
 
 
 def main_menu_text(uid):
-    priv_display = get_user_private_display(uid)
     p = get_player(uid)
     coins = p[7] if p and len(p) > 7 else 0
     return (
         f"⚡ <b>ACTUAL FACEIT</b>\n"
-        f"🏠 Приватка: <b>{priv_display}</b>\n"
+        f"🏠 Приватка: <b>⚡ StandDarling</b>\n"
         f"🪙 Баланс: <b>{coins} AC</b>\n"
         f"🆔 Ваш TG ID: <code>{uid}</code>"
     )
@@ -2212,17 +2100,6 @@ def cmd_topicsettings(msg):
     )
 
 
-def _private_select_kb():
-    """Клавиатура выбора приватки."""
-    kb = types.InlineKeyboardMarkup(row_width=1)
-    for key, cfg in PRIVATE_CONFIG.items():
-        kb.add(types.InlineKeyboardButton(
-            f"{cfg['emoji']} {cfg['display']}",
-            callback_data=f"select_priv_{key}",
-        ))
-    return kb
-
-
 @bot.message_handler(commands=["start"])
 def cmd_start(msg):
     uid = msg.from_user.id
@@ -2234,15 +2111,10 @@ def cmd_start(msg):
         bot.delete_message(uid, rm.message_id)
     except Exception:
         pass
-    # Если приватка не выбрана — показываем экран выбора
+    # Автоматически устанавливаем приватку darling
     if uid not in user_private:
-        bot.send_message(
-            uid,
-            "👋 <b>Добро пожаловать!</b>\n\nВыберите приватку, в которую хотите войти:",
-            reply_markup=_private_select_kb(),
-            parse_mode="HTML",
-        )
-        return
+        user_private[uid] = "darling"
+        save_user_private(uid, "darling")
     err = check_blocked(uid)
     if err:
         bot.send_message(uid, err)
@@ -2259,79 +2131,6 @@ def cmd_start(msg):
     )
 
 
-@bot.callback_query_handler(func=lambda c: c.data.startswith("select_priv_"))
-def cb_select_priv(c):
-    uid = c.from_user.id
-    key = c.data[len("select_priv_"):]
-    if key not in PRIVATE_CONFIG:
-        bot.answer_callback_query(c.id, "❌ Неизвестная приватка")
-        return
-    user_private[uid] = key
-    save_user_private(uid, key)
-    cfg = PRIVATE_CONFIG[key]
-    priv_name = f"{cfg['emoji']} {cfg['display']}"
-    bot.answer_callback_query(c.id, f"✅ Выбрана {priv_name}")
-    try:
-        bot.delete_message(c.message.chat.id, c.message.message_id)
-    except Exception:
-        pass
-    # Проверяем блокировки и регистрацию
-    err = check_blocked(uid)
-    if err:
-        bot.send_message(uid, err)
-        return
-    if is_registered(uid):
-        bot.send_message(uid, main_menu_text(uid), reply_markup=main_menu(uid), parse_mode="HTML")
-        return
-    user_flow[uid] = {"state": "nick"}
-    bot.send_message(
-        uid,
-        f"👋 Добро пожаловать в <b>{priv_name}</b>!\n\n<b>Шаг 1:</b> Введи свой никнейм (2-20 символов):",
-        parse_mode="HTML",
-    )
-
-
-@bot.callback_query_handler(func=lambda c: c.data == "switch_private")
-def cb_switch_private(c):
-    uid = c.from_user.id
-    bot.answer_callback_query(c.id)
-    try:
-        bot.edit_message_text(
-            "🔄 <b>Смена приватки</b>\n\nВыберите приватку:",
-            c.message.chat.id, c.message.message_id,
-            reply_markup=_private_select_kb(),
-            parse_mode="HTML",
-        )
-    except Exception:
-        bot.send_message(
-            uid,
-            "🔄 <b>Смена приватки</b>\n\nВыберите приватку:",
-            reply_markup=_private_select_kb(),
-            parse_mode="HTML",
-        )
-
-
-@bot.callback_query_handler(func=lambda c: c.data == "eight_season_info")
-def cb_eight_season_info(c):
-    uid = c.from_user.id
-    bot.answer_callback_query(c.id)
-    text = (
-        "🏅 <b>StandEight — Сезон 1</b>\n\n"
-        "Сыграйте матчи, набирайте ELO и попадите в топ сезона, "
-        "чтобы получить призовые!\n\n"
-        "<b>🥇 1 место</b> — <b>50 000 gold</b>\n"
-        "<b>🥈 2 место</b> — <b>35 000 gold</b>\n"
-        "<b>🥉 3 место</b> — <b>20 000 gold</b>\n\n"
-        "<i>Призовые начисляются по итогам сезона. Удачи!</i>"
-    )
-    kb = types.InlineKeyboardMarkup()
-    kb.add(types.InlineKeyboardButton("🏆 Топ сезона", callback_data="top"))
-    kb.add(types.InlineKeyboardButton("🔙 Меню", callback_data="back_main"))
-    try:
-        bot.edit_message_text(text, c.message.chat.id, c.message.message_id,
-                              reply_markup=kb, parse_mode="HTML")
-    except Exception:
-        bot.send_message(uid, text, reply_markup=kb, parse_mode="HTML")
 
 
 @bot.callback_query_handler(func=lambda c: c.data == "back_main")
@@ -2870,8 +2669,6 @@ def cb_top(c):
         types.InlineKeyboardButton("⭐ Quals — Топ квалификации",  callback_data="top_quals"),
         types.InlineKeyboardButton("👥 2v2 — Топ дуэлей",          callback_data="top_2v2"),
     )
-    if get_user_private(uid) == "eight":
-        kb.add(types.InlineKeyboardButton("🌍 Глобальный топ StandEight", callback_data="top_eight_global"))
     kb.add(types.InlineKeyboardButton("🔙 Назад", callback_data="back"))
     try:
         bot.edit_message_text("🏆 <b>Выберите таблицу лидеров:</b>", c.message.chat.id,
@@ -3100,63 +2897,6 @@ def cb_top_2v2(c):
             pass
         bot.send_message(c.message.chat.id, text, reply_markup=kb, parse_mode="HTML")
     bot.answer_callback_query(c.id)
-
-
-# ==================== ГЛОБАЛЬНЫЙ ТОП STANDEIGHT ====================
-@bot.callback_query_handler(func=lambda c: c.data == "top_eight_global")
-def cb_top_eight_global(c):
-    uid = c.from_user.id
-    if get_user_private(uid) != "eight":
-        bot.answer_callback_query(c.id, "❌ Только для StandEight", show_alert=True)
-        return
-    bot.answer_callback_query(c.id)
-    players = get_eight_global_players()
-    kb = types.InlineKeyboardMarkup(row_width=1)
-    kb.add(
-        types.InlineKeyboardButton("📊 Default топ",  callback_data="top_default"),
-        types.InlineKeyboardButton("👥 2v2 топ",       callback_data="top_2v2"),
-        types.InlineKeyboardButton("🔙 Назад",          callback_data="top"),
-    )
-    if not players:
-        try:
-            bot.edit_message_text(
-                "🌍 <b>Глобальный топ StandEight</b>\n\nПока нет игроков со статистикой.",
-                c.message.chat.id, c.message.message_id, reply_markup=kb, parse_mode="HTML"
-            )
-        except Exception:
-            bot.send_message(c.message.chat.id,
-                "🌍 <b>Глобальный топ StandEight</b>\n\nПока нет игроков со статистикой.",
-                reply_markup=kb, parse_mode="HTML")
-        return
-
-    medals = {1: "🥇", 2: "🥈", 3: "🥉"}
-    text = "🌍 <b>Глобальный топ StandEight</b>\n<i>Default ELO + 2v2 ELO</i>\n\n"
-    for i, row in enumerate(players[:10], 1):
-        uid2, name, elo, w, l, k, d, deo, dw, dl, dk, dd, global_elo = row
-        total_w   = w + dw
-        total_l   = l + dl
-        total_k   = k + dk
-        total_d   = d + dd
-        total_g   = total_w + total_l
-        wr        = round(total_w / total_g * 100, 1) if total_g > 0 else 0
-        kd        = round(total_k / total_d, 2) if total_d > 0 else float(total_k)
-        prem      = " 👑" if has_active_premium(uid2) else ""
-        lvl       = get_faceit_level(elo)
-        text += (
-            f"{medals.get(i, f'{i}.')} <b>{name}</b>{prem} [Lvl {lvl}]\n"
-            f"   🌐 Глоб. ELO: <b>{global_elo}</b>  "
-            f"(Default: {elo} | 2v2: {deo})\n"
-            f"   {total_w}W/{total_l}L ({wr}%) | K/D: {kd}\n\n"
-        )
-    try:
-        bot.edit_message_text(text, c.message.chat.id, c.message.message_id,
-                              reply_markup=kb, parse_mode="HTML")
-    except Exception:
-        try:
-            bot.delete_message(c.message.chat.id, c.message.message_id)
-        except Exception:
-            pass
-        bot.send_message(c.message.chat.id, text, reply_markup=kb, parse_mode="HTML")
 
 
 # ==================== НАЗАД ====================
@@ -5560,9 +5300,13 @@ def handle_editstat_flow(msg):
     db_field, label = all_fields.get(field, (field, field))
     conn = _db()
     cur = conn.cursor()
-    cur.execute(f"UPDATE players SET {db_field}=%s WHERE user_id=%s", (value, target_id))
+    cur.execute(f"UPDATE players SET {db_field}=%s WHERE user_id=%s AND registered=1", (value, target_id))
+    affected = cur.rowcount
     conn.commit()
     conn.close()
+    if affected == 0:
+        bot.send_message(uid, f"❌ Игрок <code>{target_id}</code> не найден в базе (не зарегистрирован).", parse_mode="HTML")
+        return
     bot.send_message(uid, f"✅ <b>{label}</b> игрока <b>{p[1]}</b> изменено на <b>{value}</b>!", parse_mode="HTML")
     try:
         bot.send_message(target_id, f"✏️ Администратор изменил вашу статистику (<b>{label}</b>: {value}).", parse_mode="HTML")
@@ -6072,9 +5816,13 @@ def handle_admin_action(msg):
             return
         target_id, new_elo = int(parts[0]), int(parts[1])
         conn = _db(); cur = conn.cursor()
-        cur.execute("UPDATE players SET elo=%s WHERE user_id=%s", (new_elo, target_id))
+        cur.execute("UPDATE players SET elo=%s WHERE user_id=%s AND registered=1", (new_elo, target_id))
+        affected = cur.rowcount
         conn.commit(); conn.close()
-        bot.send_message(uid, f"✅ ELO игрока <code>{target_id}</code> изменено на {new_elo}", parse_mode="HTML")
+        if affected == 0:
+            bot.send_message(uid, f"❌ Игрок <code>{target_id}</code> не найден в базе (не зарегистрирован).", parse_mode="HTML")
+        else:
+            bot.send_message(uid, f"✅ ELO игрока <code>{target_id}</code> изменено на <b>{new_elo}</b>", parse_mode="HTML")
 
     elif action == "change_nick":
         p = find_player_by_input(text)
