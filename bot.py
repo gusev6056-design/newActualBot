@@ -847,12 +847,16 @@ def get_user_private_display(uid):
 
 def get_player(user_id):
     """Получает игрока из таблицы players (StandSare) — используется в admin и общих проверках."""
-    conn = _db()
-    cur = conn.cursor()
-    cur.execute("SELECT * FROM players WHERE user_id=%s", (user_id,))
-    row = cur.fetchone()
-    conn.close()
-    return row
+    try:
+        conn = _db()
+        cur = conn.cursor()
+        cur.execute("SELECT * FROM players WHERE user_id=%s", (user_id,))
+        row = cur.fetchone()
+        conn.close()
+        return row
+    except Exception as e:
+        print(f"[get_player] Ошибка: {e}")
+        return None
 
 def get_player_from_table(user_id, table):
     """Получает игрока из указанной таблицы приватки."""
@@ -868,13 +872,17 @@ def get_player_from_table(user_id, table):
 
 def get_current_player(uid):
     """Получает игрока из таблицы текущей приватки пользователя."""
-    table = get_user_table(uid)
-    conn = _db()
-    cur = conn.cursor()
-    cur.execute(f"SELECT * FROM {table} WHERE user_id=%s", (uid,))
-    row = cur.fetchone()
-    conn.close()
-    return row
+    try:
+        table = get_user_table(uid)
+        conn = _db()
+        cur = conn.cursor()
+        cur.execute(f"SELECT * FROM {table} WHERE user_id=%s", (uid,))
+        row = cur.fetchone()
+        conn.close()
+        return row
+    except Exception as e:
+        print(f"[get_current_player] Ошибка: {e}")
+        return None
 
 def get_player_in_lobby(uid, lobby):
     """Получает игрока из таблицы приватки лобби/матча (не из user_private)."""
@@ -1050,14 +1058,14 @@ def get_user_matches_table(uid):
     return PRIVATE_CONFIG.get(priv_key, PRIVATE_CONFIG["darling"])["matches_table"]
 
 def update_tg_username(uid, tg_username):
-    conn = _db()
-    cur = conn.cursor()
     try:
+        conn = _db()
+        cur = conn.cursor()
         cur.execute("UPDATE players SET tg_username=%s WHERE user_id=%s", (tg_username or "", uid))
-    except Exception:
-        pass
-    conn.commit()
-    conn.close()
+        conn.commit()
+        conn.close()
+    except Exception as e:
+        print(f"[update_tg_username] Ошибка: {e}")
 
 def nick_taken(nick, uid=None, exclude_uid=None):
     table = get_user_table(uid) if uid else "players"
@@ -2289,38 +2297,45 @@ def cmd_topicsettings(msg):
 @bot.message_handler(commands=["start"])
 def cmd_start(msg):
     uid = msg.from_user.id
-    if msg.from_user.username:
-        update_tg_username(uid, msg.from_user.username)
-    # Проверка обязательной подписки на каналы
-    not_subbed = check_subACriptions(uid)
-    if not_subbed:
-        send_subACribe_message(uid)
-        return
-    # Убираем любую ReplyKeyboard
     try:
-        rm = bot.send_message(uid, "…", reply_markup=types.ReplyKeyboardRemove())
-        bot.delete_message(uid, rm.message_id)
-    except Exception:
-        pass
-    # Автоматически устанавливаем приватку darling
-    if uid not in user_private:
-        user_private[uid] = "darling"
-        save_user_private(uid, "darling")
-    err = check_blocked(uid)
-    if err:
-        bot.send_message(uid, err)
-        return
-    if is_registered(uid):
-        bot.send_message(uid, main_menu_text(uid), reply_markup=main_menu(uid), parse_mode="HTML")
-        return
-    user_flow[uid] = {"state": "nick", "bot_msgs": []}
-    priv_name = get_user_private_display(uid)
-    m = bot.send_message(
-        uid,
-        f"👋 Добро пожаловать в <b>{priv_name}</b>!\n\n<b>Шаг 1:</b> Введи свой никнейм (2-20 символов):",
-        parse_mode="HTML",
-    )
-    user_flow[uid]["bot_msgs"].append(m.message_id)
+        if msg.from_user.username:
+            update_tg_username(uid, msg.from_user.username)
+        # Проверка обязательной подписки на каналы
+        not_subbed = check_subACriptions(uid)
+        if not_subbed:
+            send_subACribe_message(uid)
+            return
+        # Убираем любую ReplyKeyboard
+        try:
+            rm = bot.send_message(uid, "…", reply_markup=types.ReplyKeyboardRemove())
+            bot.delete_message(uid, rm.message_id)
+        except Exception:
+            pass
+        # Автоматически устанавливаем приватку darling
+        if uid not in user_private:
+            user_private[uid] = "darling"
+            save_user_private(uid, "darling")
+        err = check_blocked(uid)
+        if err:
+            bot.send_message(uid, err, parse_mode="HTML")
+            return
+        if is_registered(uid):
+            bot.send_message(uid, main_menu_text(uid), reply_markup=main_menu(uid), parse_mode="HTML")
+            return
+        user_flow[uid] = {"state": "nick", "bot_msgs": []}
+        priv_name = get_user_private_display(uid)
+        m = bot.send_message(
+            uid,
+            f"👋 Добро пожаловать в <b>{priv_name}</b>!\n\n<b>Шаг 1:</b> Введи свой никнейм (2-20 символов):",
+            parse_mode="HTML",
+        )
+        user_flow[uid]["bot_msgs"].append(m.message_id)
+    except Exception as e:
+        print(f"[cmd_start] Критическая ошибка uid={uid}: {e}")
+        try:
+            bot.send_message(uid, "⚠️ Произошла ошибка. Попробуй ещё раз через несколько секунд.")
+        except Exception:
+            pass
 
 
 @bot.callback_query_handler(func=lambda c: c.data == "check_sub")
@@ -5626,52 +5641,60 @@ def handle_editstat_flow(msg):
 @bot.callback_query_handler(func=lambda c: c.data == "admin_panel")
 def cb_admin_panel(c):
     uid = c.from_user.id
-    if not is_admin(uid):
-        bot.answer_callback_query(c.id, "❌ Нет доступа")
-        return
-    players = get_all_players()
-    active_count = sum(1 for l in running_matches.values() if l.get("status") == "active")
-    text = (
-        f"⚙️ <b>АДМИН ПАНЕЛЬ</b>\n\n"
-        f"👥 Игроков: <b>{len(players)}</b>\n🎮 Лобби: <b>{len(active_lobbies)}</b>\n"
-        f"🔴 Матчей: <b>{active_count}</b>\n\nВыберите действие:"
-    )
-    kb = types.InlineKeyboardMarkup(row_width=1)
-
-    def _btn(label, cb, restrict_key=None):
-        if restrict_key and is_admin_restricted(uid, restrict_key):
+    try:
+        if not is_admin(uid):
+            bot.answer_callback_query(c.id, "❌ Нет доступа")
             return
-        kb.add(types.InlineKeyboardButton(label, callback_data=cb))
+        players = get_all_players()
+        active_count = sum(1 for l in running_matches.values() if l.get("status") == "active")
+        text = (
+            f"⚙️ <b>АДМИН ПАНЕЛЬ</b>\n\n"
+            f"👥 Игроков: <b>{len(players)}</b>\n🎮 Лобби: <b>{len(active_lobbies)}</b>\n"
+            f"🔴 Матчей: <b>{active_count}</b>\n\nВыберите действие:"
+        )
+        kb = types.InlineKeyboardMarkup(row_width=1)
 
-    kb.add(types.InlineKeyboardButton("👥 Список игроков",       callback_data="admin_players"))
-    kb.add(types.InlineKeyboardButton("🔍 Поиск по нику/ID",    callback_data="admin_search"))
-    kb.add(types.InlineKeyboardButton("🔍 Поиск по Game ID",    callback_data="admin_search_gameid"))
-    _btn("💰 Выдать монеты",        "admin_give_coins",     "give_coins")
-    _btn("📊 Изменить ELO",         "admin_set_elo",        "set_elo")
-    kb.add(types.InlineKeyboardButton("✏️ Изм. ник игрока",     callback_data="admin_change_nick"))
-    kb.add(types.InlineKeyboardButton("🎮 Изм. Game ID игрока", callback_data="admin_change_gid"))
-    _btn("📈 Редактировать стату",  "admin_edit_stats",     "edit_stats")
-    _btn("⚠️ Выдать варн",          "admin_warn",           "warn")
-    _btn("➖ Снять варн",           "admin_unwarn",         "warn")
-    _btn("🔇 Мут",                  "admin_mute",           "mute")
-    _btn("🔊 Размутить",            "admin_unmute",         "mute")
-    _btn("🔎 Вызвать на проверку",  "admin_check",          "check")
-    _btn("✅ Снять проверку",       "admin_uncheck",        "check")
-    _btn("🚫 Бан / Разбан",         "admin_ban",            "ban")
-    _btn("👑 Выдать/Снять админку", "admin_give_admin",     "give_admin")
-    _btn("🎮 Роль Гейм Рег",       "admin_give_game_reg",  "give_game_reg")
-    _btn("⭐ Quals доступ",         "admin_quals_access",   "quals_access")
-    _btn("🎁 Промокоды",            "admin_promos",         "promos")
-    _btn("🎮 Управление матчами",   "admin_matches",        "matches")
-    _btn("📋 История матчей",       "admin_match_history",  "matches")
-    _btn("📢 Рассылка",             "admin_broadcast",      "broadcast")
-    kb.add(types.InlineKeyboardButton("🎟 Открытые тикеты",     callback_data="admin_tickets"))
-    _btn("✅ Синяя галочка",        "admin_give_verified",  "give_verified")
-    _btn("🏆 Управление сезонами",  "admin_seasons",        "seasons")
-    kb.add(types.InlineKeyboardButton("🔙 Назад",               callback_data="back"))
+        def _btn(label, cb, restrict_key=None):
+            if restrict_key and is_admin_restricted(uid, restrict_key):
+                return
+            kb.add(types.InlineKeyboardButton(label, callback_data=cb))
 
-    bot.edit_message_text(text, c.message.chat.id, c.message.message_id, reply_markup=kb)
-    bot.answer_callback_query(c.id)
+        kb.add(types.InlineKeyboardButton("👥 Список игроков",       callback_data="admin_players"))
+        kb.add(types.InlineKeyboardButton("🔍 Поиск по нику/ID",    callback_data="admin_search"))
+        kb.add(types.InlineKeyboardButton("🔍 Поиск по Game ID",    callback_data="admin_search_gameid"))
+        _btn("💰 Выдать монеты",        "admin_give_coins",     "give_coins")
+        _btn("📊 Изменить ELO",         "admin_set_elo",        "set_elo")
+        kb.add(types.InlineKeyboardButton("✏️ Изм. ник игрока",     callback_data="admin_change_nick"))
+        kb.add(types.InlineKeyboardButton("🎮 Изм. Game ID игрока", callback_data="admin_change_gid"))
+        _btn("📈 Редактировать стату",  "admin_edit_stats",     "edit_stats")
+        _btn("⚠️ Выдать варн",          "admin_warn",           "warn")
+        _btn("➖ Снять варн",           "admin_unwarn",         "warn")
+        _btn("🔇 Мут",                  "admin_mute",           "mute")
+        _btn("🔊 Размутить",            "admin_unmute",         "mute")
+        _btn("🔎 Вызвать на проверку",  "admin_check",          "check")
+        _btn("✅ Снять проверку",       "admin_uncheck",        "check")
+        _btn("🚫 Бан / Разбан",         "admin_ban",            "ban")
+        _btn("👑 Выдать/Снять админку", "admin_give_admin",     "give_admin")
+        _btn("🎮 Роль Гейм Рег",       "admin_give_game_reg",  "give_game_reg")
+        _btn("⭐ Quals доступ",         "admin_quals_access",   "quals_access")
+        _btn("🎁 Промокоды",            "admin_promos",         "promos")
+        _btn("🎮 Управление матчами",   "admin_matches",        "matches")
+        _btn("📋 История матчей",       "admin_match_history",  "matches")
+        _btn("📢 Рассылка",             "admin_broadcast",      "broadcast")
+        kb.add(types.InlineKeyboardButton("🎟 Открытые тикеты",     callback_data="admin_tickets"))
+        _btn("✅ Синяя галочка",        "admin_give_verified",  "give_verified")
+        _btn("🏆 Управление сезонами",  "admin_seasons",        "seasons")
+        kb.add(types.InlineKeyboardButton("🔙 Назад",               callback_data="back"))
+
+        bot.edit_message_text(text, c.message.chat.id, c.message.message_id,
+                              reply_markup=kb, parse_mode="HTML")
+        bot.answer_callback_query(c.id)
+    except Exception as e:
+        print(f"[cb_admin_panel] Ошибка uid={uid}: {e}")
+        try:
+            bot.answer_callback_query(c.id, "⚠️ Ошибка. Попробуй ещё раз.", show_alert=True)
+        except Exception:
+            pass
 
 
 # ==================== ПРОМОКОДЫ (АДМИН) ====================
