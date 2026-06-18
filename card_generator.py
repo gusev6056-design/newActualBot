@@ -134,6 +134,30 @@ def _apply_glow(img: Image.Image, xy, r: int, color, strength: int = 18, layers:
     return base.convert("RGB")
 
 
+# ==================== AVATAR PASTE ====================
+def _paste_avatar(img: Image.Image, avatar_bytes: bytes, x: int, y: int, size: int,
+                  border_color=None, border_width: int = 2) -> Image.Image:
+    """Paste a circular avatar image at (x, y) with given size."""
+    try:
+        av_img = Image.open(io.BytesIO(avatar_bytes)).convert("RGBA")
+        av_img = av_img.resize((size, size), Image.LANCZOS)
+        mask = Image.new("L", (size, size), 0)
+        md = ImageDraw.Draw(mask)
+        md.ellipse([(0, 0), (size - 1, size - 1)], fill=255)
+        output = Image.new("RGBA", img.size, (0, 0, 0, 0))
+        output.paste(av_img, (x, y), mask)
+        result = Image.alpha_composite(img.convert("RGBA"), output).convert("RGB")
+        if border_color:
+            d = ImageDraw.Draw(result)
+            bw = border_width
+            d.ellipse([(x - bw, y - bw), (x + size + bw - 1, y + size + bw - 1)],
+                      outline=border_color, width=bw)
+        return result
+    except Exception as e:
+        print(f"[_paste_avatar] {e}")
+        return img
+
+
 # ==================== LEVEL HELPER ====================
 def get_level(elo: int) -> int:
     thresholds = [0, 801, 951, 1101, 1251, 1401, 1551, 1701, 1851, 2001]
@@ -145,26 +169,27 @@ def get_level(elo: int) -> int:
 
 # ==================== PROFILE CARD ====================
 def generate_profile_card(
-    username:    str,
-    game_id:     str,
-    user_id:     int,
-    elo:         int,
-    wins:        int,
-    losses:      int,
-    kills:       int,
-    deaths:      int,
-    assists:     int,
-    is_premium:  bool,
-    is_admin:    bool,
-    global_rank: int,
-    league:      str,
-    map_stats:   list,
-    recent:      list,
-    leaderboard: list,
-    quals_stats: dict = None,
-    mvp_count:   int  = 0,
-    is_verified: bool = False,
-    duo_stats:   dict = None,
+    username:     str,
+    game_id:      str,
+    user_id:      int,
+    elo:          int,
+    wins:         int,
+    losses:       int,
+    kills:        int,
+    deaths:       int,
+    assists:      int,
+    is_premium:   bool,
+    is_admin:     bool,
+    global_rank:  int,
+    league:       str,
+    map_stats:    list,
+    recent:       list,
+    leaderboard:  list,
+    quals_stats:  dict  = None,
+    mvp_count:    int   = 0,
+    is_verified:  bool  = False,
+    duo_stats:    dict  = None,
+    avatar_bytes: bytes = None,
 ) -> io.BytesIO:
 
     QUALS_H = 70 if quals_stats else 0
@@ -217,9 +242,15 @@ def generate_profile_card(
     AX, AY, AS = 20, 18, 118
     img = _apply_glow(img, (AX, AY, AX+AS, AY+AS), r=8, color=_GOLD, strength=10, layers=6)
     draw = ImageDraw.Draw(img)
-    _rr(draw, (AX, AY, AX+AS, AY+AS), 8, fill=(22, 16, 44), outline=_GOLD, width=2)
-    initials = (username[:2]).upper() if username else "??"
-    _text_c(draw, AX + AS//2, AY + AS//2 - 22, initials, _font(38, bold=True), _GOLD)
+    if avatar_bytes:
+        _rr(draw, (AX, AY, AX+AS, AY+AS), 8, fill=(22, 16, 44), outline=_GOLD, width=2)
+        img = _paste_avatar(img, avatar_bytes, AX + 3, AY + 3, AS - 6,
+                            border_color=_GOLD, border_width=2)
+        draw = ImageDraw.Draw(img)
+    else:
+        _rr(draw, (AX, AY, AX+AS, AY+AS), 8, fill=(22, 16, 44), outline=_GOLD, width=2)
+        initials = (username[:2]).upper() if username else "??"
+        _text_c(draw, AX + AS//2, AY + AS//2 - 22, initials, _font(38, bold=True), _GOLD)
 
     draw.text((152, 20), f"#{user_id}", font=_font(13), fill=_TEXT_GRAY)
     fname = _font(30, bold=True)
@@ -391,7 +422,8 @@ def generate_profile_card(
 
 
 # ==================== LEADERBOARD CARD ====================
-def generate_leaderboard_card(players: list, title: str = "TOP ИГРОКОВ ПО ELO") -> io.BytesIO:
+def generate_leaderboard_card(players: list, title: str = "TOP ИГРОКОВ ПО ELO",
+                              avatars: dict = None) -> io.BytesIO:
     n      = min(len(players), 10)
     ROW_H  = 74
     HEAD_H = 60
@@ -463,9 +495,16 @@ def generate_leaderboard_card(players: list, title: str = "TOP ИГРОКОВ П
         lv  = p.get("level", get_level(elo))
         av  = LVL_COLORS.get(lv, (130, 125, 105))
         ax, ay, ar = 54, y + ROW_H // 2 - 20, 19
-        draw.ellipse([(ax, ay), (ax + ar*2, ay + ar*2)], fill=av, outline=(190, 186, 172), width=2)
-        _text_c(draw, ax + ar, ay + ar - 10, (p.get("name", "??")[:2]).upper(),
-                _font(12, bold=True), _WH)
+        uid_av   = p.get("uid")
+        av_bytes = (avatars or {}).get(uid_av) if uid_av else None
+        if av_bytes:
+            draw.ellipse([(ax, ay), (ax + ar*2, ay + ar*2)], fill=av, outline=(190, 186, 172), width=2)
+            img  = _paste_avatar(img, av_bytes, ax, ay, ar * 2, border_color=(190, 186, 172), border_width=2)
+            draw = ImageDraw.Draw(img)
+        else:
+            draw.ellipse([(ax, ay), (ax + ar*2, ay + ar*2)], fill=av, outline=(190, 186, 172), width=2)
+            _text_c(draw, ax + ar, ay + ar - 10, (p.get("name", "??")[:2]).upper(),
+                    _font(12, bold=True), _WH)
 
         name = p.get("name", "Unknown")
         nx   = 100
@@ -662,7 +701,8 @@ def generate_match_result_card(
 
 
 # ==================== DUO (2v2) LEADERBOARD CARD ====================
-def generate_duo_leaderboard_card(players: list, title: str = "TOP 2v2 ПО ELO") -> io.BytesIO:
+def generate_duo_leaderboard_card(players: list, title: str = "TOP 2v2 ПО ELO",
+                                  avatars: dict = None) -> io.BytesIO:
     n      = min(len(players), 10)
     ROW_H  = 74
     HEAD_H = 60
@@ -713,9 +753,16 @@ def generate_duo_leaderboard_card(players: list, title: str = "TOP 2v2 ПО ELO"
         elo = p.get("elo", 1000)
         lv  = p.get("level", get_level(elo))
         ax, ay, ar = 54, y + ROW_H // 2 - 20, 19
-        draw.ellipse([(ax, ay), (ax + ar*2, ay + ar*2)], fill=_PUR, outline=(52, 34, 80), width=2)
-        _text_c(draw, ax + ar, ay + ar - 10, (p.get("name", "??")[:2]).upper(),
-                _font(12, bold=True), (236, 234, 252))
+        uid_av2   = p.get("uid")
+        av_bytes2 = (avatars or {}).get(uid_av2) if uid_av2 else None
+        if av_bytes2:
+            draw.ellipse([(ax, ay), (ax + ar*2, ay + ar*2)], fill=_PUR, outline=(52, 34, 80), width=2)
+            img  = _paste_avatar(img, av_bytes2, ax, ay, ar * 2, border_color=(52, 34, 80), border_width=2)
+            draw = ImageDraw.Draw(img)
+        else:
+            draw.ellipse([(ax, ay), (ax + ar*2, ay + ar*2)], fill=_PUR, outline=(52, 34, 80), width=2)
+            _text_c(draw, ax + ar, ay + ar - 10, (p.get("name", "??")[:2]).upper(),
+                    _font(12, bold=True), (236, 234, 252))
 
         name = p.get("name", "Unknown")
         nx   = 100
