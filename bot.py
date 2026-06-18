@@ -147,7 +147,7 @@ REQUIRED_CHANNELS = [
     {
         "id": os.environ.get("REQUIRED_CHANNEL_2_ID", ""),
         "url": "https://t.me/+CVI-8ZnLk0ZkMDcy",
-        "name": "Паблик StandSare",
+        "name": "Паблик StandDarling",
     },
 ]
 
@@ -180,8 +180,8 @@ def send_subACribe_message(chat_id: int, message_to_delete_id: int = None):
     bot.send_message(
         chat_id,
         "⚠️ <b>Для использования бота необходимо подписаться на наши каналы:</b>\n\n"
-        "1. 📢 <b>Официальный канал</b> — @sarefaceit\n"
-        "2. 📢 <b>Паблик StandSare</b>\n\n"
+        "1. 📢 <b>Официальный канал</b> — @actualfaceito\n"
+        "2. 📢 <b>Паблик StandDarling</b>\n\n"
         "Подпишитесь на оба канала, затем нажмите кнопку ниже.",
         reply_markup=kb,
         parse_mode="HTML",
@@ -218,7 +218,7 @@ creator_flow          = {}   # uid -> {step, ...}
 
 # ==================== КОНФИГ ПРИВАТОК ====================
 PRIVATE_CONFIG = {
-    "darling": {"table": "players", "display": "StandSare", "emoji": "⚡", "matches_table": "darling_matches"},
+    "darling": {"table": "players", "display": "StandDarling", "emoji": "⚡", "matches_table": "darling_matches"},
 }
 
 # ==================== ЛОББИ: размеры по режиму ====================
@@ -848,7 +848,7 @@ def get_user_private_display(uid):
 
 
 def get_player(user_id):
-    """Получает игрока из таблицы players (StandSare) — используется в admin и общих проверках."""
+    """Получает игрока из таблицы players (StandDarling) — используется в admin и общих проверках."""
     try:
         conn = _db()
         cur = conn.cursor()
@@ -2239,7 +2239,7 @@ def main_menu_text(uid):
     coins = p[7] if p and len(p) > 7 else 0
     return (
         f"⚡ <b>Actual FACEIT</b>\n"
-        f"🏠 Приватка: <b>⚡ StandSare</b>\n"
+        f"🏠 Приватка: <b>⚡ StandDarling</b>\n"
         f"🪙 Кошелёк: <b>{coins} AC</b>\n"
         f"🆔 Ваш TG ID: <code>{uid}</code>"
     )
