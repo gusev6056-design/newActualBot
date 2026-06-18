@@ -2201,7 +2201,7 @@ def main_menu(uid):
         "👥 Моя пати" if in_party else "➕ Создать пати", callback_data="party_menu"
     ))
     kb.add(types.InlineKeyboardButton(
-        "📜 Правила", url="https://telegra.ph/Pravila-Sare-Faceit-06-13"
+        "📜 Правила", url=""
     ))
     if is_admin(uid):
         kb.add(
