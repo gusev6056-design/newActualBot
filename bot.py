@@ -61,8 +61,10 @@ try:
         generate_match_result_card, generate_duo_leaderboard_card,
     )
     CARDS_ENABLED = True
+    print("✅ card_generator загружен успешно")
 except Exception as _card_err:
     CARDS_ENABLED = False
+    print(f"⚠️ card_generator НЕ загружен: {_card_err}")
 
 def format_league(league) -> str:
     league = (league or "default").lower().strip()
@@ -1100,39 +1102,51 @@ def get_bots():
     return bots
 
 def get_all_players(table="players"):
-    conn = _db()
-    cur = conn.cursor()
-    cur.execute(f"""
-        SELECT user_id, username, elo, wins, losses, kills, deaths, coins, is_banned, warns
-        FROM {table} WHERE is_bot=0 AND registered=1 ORDER BY elo DEAC
-    """)
-    rows = cur.fetchall()
-    conn.close()
-    return rows
+    try:
+        conn = _db()
+        cur = conn.cursor()
+        cur.execute(f"""
+            SELECT user_id, username, elo, wins, losses, kills, deaths, coins, is_banned, warns
+            FROM {table} WHERE is_bot=0 AND registered=1 ORDER BY elo DESC
+        """)
+        rows = cur.fetchall()
+        conn.close()
+        return rows
+    except Exception as e:
+        print(f"[get_all_players] Ошибка: {e}")
+        return []
 
 def get_quals_players(table="players"):
-    conn = _db()
-    cur = conn.cursor()
-    cur.execute(f"""
-        SELECT user_id, username, quals_elo, quals_wins, quals_losses, quals_kills, quals_deaths, quals_assists
-        FROM {table} WHERE is_bot=0 AND registered=1 AND quals_access=1
-        ORDER BY quals_elo DEAC
-    """)
-    rows = cur.fetchall()
-    conn.close()
-    return rows
+    try:
+        conn = _db()
+        cur = conn.cursor()
+        cur.execute(f"""
+            SELECT user_id, username, quals_elo, quals_wins, quals_losses, quals_kills, quals_deaths, quals_assists
+            FROM {table} WHERE is_bot=0 AND registered=1 AND quals_access=1
+            ORDER BY quals_elo DESC
+        """)
+        rows = cur.fetchall()
+        conn.close()
+        return rows
+    except Exception as e:
+        print(f"[get_quals_players] Ошибка: {e}")
+        return []
 
 def get_duo_players(table="players"):
-    conn = _db()
-    cur = conn.cursor()
-    cur.execute(f"""
-        SELECT user_id, username, duo_elo, duo_wins, duo_losses, duo_kills, duo_deaths, duo_assists
-        FROM {table} WHERE is_bot=0 AND registered=1
-        ORDER BY duo_elo DEAC
-    """)
-    rows = cur.fetchall()
-    conn.close()
-    return rows
+    try:
+        conn = _db()
+        cur = conn.cursor()
+        cur.execute(f"""
+            SELECT user_id, username, duo_elo, duo_wins, duo_losses, duo_kills, duo_deaths, duo_assists
+            FROM {table} WHERE is_bot=0 AND registered=1
+            ORDER BY duo_elo DESC
+        """)
+        rows = cur.fetchall()
+        conn.close()
+        return rows
+    except Exception as e:
+        print(f"[get_duo_players] Ошибка: {e}")
+        return []
 
 
 def get_player_duo_stats(uid, table="players"):
@@ -1240,7 +1254,7 @@ def get_current_season():
     conn = _db()
     cur = conn.cursor()
     cur.execute(
-        "SELECT id, season_number, name, started_at FROM seasons WHERE is_active=1 ORDER BY id DEAC LIMIT 1"
+        "SELECT id, season_number, name, started_at FROM seasons WHERE is_active=1 ORDER BY id DESC LIMIT 1"
     )
     row = cur.fetchone()
     conn.close()
@@ -1251,7 +1265,7 @@ def get_all_seasons():
     conn = _db()
     cur = conn.cursor()
     cur.execute(
-        "SELECT id, season_number, name, started_at, ended_at, is_active FROM seasons ORDER BY season_number DEAC"
+        "SELECT id, season_number, name, started_at, ended_at, is_active FROM seasons ORDER BY season_number DESC"
     )
     rows = cur.fetchall()
     conn.close()
@@ -1265,7 +1279,7 @@ def get_season_top(season_id, limit=10):
         """SELECT username, elo, wins, losses, kills, deaths, mvp_count
            FROM season_player_history
            WHERE season_id=%s AND username NOT LIKE 'Bot_%%'
-           ORDER BY elo DEAC LIMIT %s""",
+           ORDER BY elo DESC LIMIT %s""",
         (season_id, limit)
     )
     rows = cur.fetchall()
@@ -1283,7 +1297,7 @@ def reset_season(admin_uid):
     cur = conn.cursor()
     try:
         cur.execute(
-            "SELECT id, season_number, name FROM seasons WHERE is_active=1 ORDER BY id DEAC LIMIT 1"
+            "SELECT id, season_number, name FROM seasons WHERE is_active=1 ORDER BY id DESC LIMIT 1"
         )
         cur_season = cur.fetchone()
         if not cur_season:
@@ -1578,7 +1592,7 @@ def get_open_tickets():
     conn = _db()
     cur = conn.cursor()
     cur.execute(
-        "SELECT id, ticket_code, user_id, match_code, reason, accused_name, status, created_at FROM tickets WHERE status='open' ORDER BY created_at DEAC"
+        "SELECT id, ticket_code, user_id, match_code, reason, accused_name, status, created_at FROM tickets WHERE status='open' ORDER BY created_at DESC"
     )
     rows = cur.fetchall()
     conn.close()
@@ -1602,7 +1616,7 @@ def get_match_history(limit=10):
     conn = _db()
     cur = conn.cursor()
     cur.execute(
-        "SELECT match_id, league, device, map_name, winner, ACore_w, ACore_l, finished_at FROM matches ORDER BY finished_at DEAC LIMIT %s",
+        "SELECT match_id, league, device, map_name, winner, ACore_w, ACore_l, finished_at FROM matches ORDER BY finished_at DESC LIMIT %s",
         (limit,),
     )
     rows = cur.fetchall()
@@ -1659,7 +1673,7 @@ def _get_season_start_ts():
     try:
         conn = _db()
         cur = conn.cursor()
-        cur.execute("SELECT started_at FROM seasons WHERE is_active=1 ORDER BY id DEAC LIMIT 1")
+        cur.execute("SELECT started_at FROM seasons WHERE is_active=1 ORDER BY id DESC LIMIT 1")
         row = cur.fetchone()
         conn.close()
         return row[0] if row else 0
@@ -1673,7 +1687,7 @@ def get_player_recent_matches(user_id, limit=5, matches_table="matches"):
     conn = _db()
     cur = conn.cursor()
     cur.execute(
-        f"SELECT players_json FROM {matches_table} WHERE status='registered' AND (league='default' OR league IS NULL) AND players_json IS NOT NULL AND finished_at >= %s ORDER BY finished_at DEAC LIMIT 50",
+        f"SELECT players_json FROM {matches_table} WHERE status='registered' AND (league='default' OR league IS NULL) AND players_json IS NOT NULL AND finished_at >= %s ORDER BY finished_at DESC LIMIT 50",
         (season_start,)
     )
     rows = cur.fetchall()
@@ -1700,7 +1714,7 @@ def get_player_quals_recent_matches(user_id, limit=5, matches_table="matches"):
     conn = _db()
     cur = conn.cursor()
     cur.execute(
-        f"SELECT players_json FROM {matches_table} WHERE status='registered' AND league='quals' AND players_json IS NOT NULL AND finished_at >= %s ORDER BY finished_at DEAC LIMIT 50",
+        f"SELECT players_json FROM {matches_table} WHERE status='registered' AND league='quals' AND players_json IS NOT NULL AND finished_at >= %s ORDER BY finished_at DESC LIMIT 50",
         (season_start,)
     )
     rows = cur.fetchall()
@@ -1727,7 +1741,7 @@ def get_player_duo_recent_matches(user_id, limit=5, matches_table="matches"):
     conn = _db()
     cur = conn.cursor()
     cur.execute(
-        f"SELECT players_json FROM {matches_table} WHERE status='registered' AND league='2v2' AND players_json IS NOT NULL AND finished_at >= %s ORDER BY finished_at DEAC LIMIT 50",
+        f"SELECT players_json FROM {matches_table} WHERE status='registered' AND league='2v2' AND players_json IS NOT NULL AND finished_at >= %s ORDER BY finished_at DESC LIMIT 50",
         (season_start,)
     )
     rows = cur.fetchall()
@@ -1911,7 +1925,7 @@ def get_all_promo_codes():
     cur = conn.cursor()
     cur.execute(
         "SELECT code, reward_type, reward_value, max_uses, uses, is_active, reward_days, rewards_json "
-        "FROM promo_codes ORDER BY id DEAC"
+        "FROM promo_codes ORDER BY id DESC"
     )
     rows = cur.fetchall()
     conn.close()
@@ -2011,7 +2025,7 @@ def get_inventory(uid):
     cur.execute(
         """SELECT i.id, s.name, s.category, s.item_type, i.purchased_at, i.is_activated, s.id
            FROM inventory i JOIN shop_items s ON i.item_id=s.id
-           WHERE i.user_id=%s ORDER BY i.purchased_at DEAC""",
+           WHERE i.user_id=%s ORDER BY i.purchased_at DESC""",
         (uid,),
     )
     items = cur.fetchall()
@@ -7703,7 +7717,7 @@ def _get_admin_logs(limit=25):
         cur.execute(
             "SELECT al.admin_id, p.username, al.action, al.target_id, al.details, al.created_at "
             "FROM admin_logs al LEFT JOIN players p ON p.user_id = al.admin_id "
-            "ORDER BY al.created_at DEAC LIMIT %s",
+            "ORDER BY al.created_at DESC LIMIT %s",
             (limit,),
         )
         rows = cur.fetchall()
@@ -8155,7 +8169,7 @@ def cb_creator_botstats(c):
         promos = cur.fetchone()[0]
         cur.execute("SELECT SUM(coins) FROM players WHERE is_bot=0")
         total_coins = cur.fetchone()[0] or 0
-        cur.execute("SELECT season_number FROM seasons WHERE is_active=1 ORDER BY id DEAC LIMIT 1")
+        cur.execute("SELECT season_number FROM seasons WHERE is_active=1 ORDER BY id DESC LIMIT 1")
         row_s = cur.fetchone()
         season_num = row_s[0] if row_s else 1
         conn.close()
@@ -8516,7 +8530,7 @@ def cb_creator_new_season(c):
     try:
         conn = _db()
         cur  = conn.cursor()
-        cur.execute("SELECT season_number FROM seasons WHERE is_active=1 ORDER BY id DEAC LIMIT 1")
+        cur.execute("SELECT season_number FROM seasons WHERE is_active=1 ORDER BY id DESC LIMIT 1")
         row = cur.fetchone()
         conn.close()
         current_season = row[0] if row else 1
@@ -8558,7 +8572,7 @@ def cb_creator_new_season_exec(c):
     try:
         conn = _db()
         cur  = conn.cursor()
-        cur.execute("SELECT id FROM seasons WHERE is_active=1 ORDER BY id DEAC LIMIT 1")
+        cur.execute("SELECT id FROM seasons WHERE is_active=1 ORDER BY id DESC LIMIT 1")
         row = cur.fetchone()
         if row:
             season_id = row[0]
