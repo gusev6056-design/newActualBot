@@ -2208,9 +2208,6 @@ def main_menu(uid):
     kb.add(types.InlineKeyboardButton(
         "👥 Моя пати" if in_party else "➕ Создать пати", callback_data="party_menu"
     ))
-    kb.add(types.InlineKeyboardButton(
-        "📜 Правила", url=""
-    ))
     if is_admin(uid):
         kb.add(
             types.InlineKeyboardButton("🤖 Добавить ботов", callback_data="add_bots_admin"),
