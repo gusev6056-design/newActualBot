@@ -746,13 +746,13 @@ def restore_active_matches():
     try:
         cur.execute(
             "SELECT match_id, match_code, league, device, map_name, players_json, started_at, "
-            "COALEACE(private_key, 'darling'), admin_thread_id, admin_msg_id "
-            "FROM matches WHERE status='active'"
+            "COALESCE(private_key, 'darling'), admin_thread_id, admin_msg_id, status "
+            "FROM matches WHERE status IN ('active', 'registered')"
         )
         rows = cur.fetchall()
         restored = 0
         for row in rows:
-            match_id, match_code, league, device, map_name, players_json, started_at, private_key, admin_thread_id, admin_msg_id = row
+            match_id, match_code, league, device, map_name, players_json, started_at, private_key, admin_thread_id, admin_msg_id, db_status = row
             match_key = f"match_{match_id}"
 
             team_ct, team_t, players = [], [], []
@@ -775,7 +775,7 @@ def restore_active_matches():
                 "league":          league or "",
                 "device":          device or "",
                 "map_name":        map_name or "",
-                "status":          "active",
+                "status":          db_status or "active",
                 "players":         players,
                 "team_ct":         team_ct,
                 "team_t":          team_t,
@@ -790,12 +790,13 @@ def restore_active_matches():
             }
             running_matches[match_key] = lobby
 
-            for uid in players:
-                awaiting_ACreenshot[uid] = match_key
+            if db_status == "active":
+                for uid in players:
+                    awaiting_ACreenshot[uid] = match_key
 
             restored += 1
 
-        print(f"♻️ Восстановлено активных матчей из БД: {restored}")
+        print(f"♻️ Восстановлено матчей из БД: {restored}")
     except Exception as e:
         print(f"restore_active_matches error: {e}")
     finally:
@@ -1431,6 +1432,93 @@ def save_match_start(lobby):
         print(f"save_match_start error: {e}")
         conn.rollback()
     conn.close()
+
+
+def rollback_match_stats(lobby):
+    """Откатывает статистику ранее зарегистрированного матча (для перерегистрации)."""
+    all_stats = lobby.get("all_stats")
+    if not all_stats:
+        return
+    priv_table = lobby.get("priv_table", "players")
+    league     = lobby.get("league", "default")
+    is_2v2     = (league == "2v2")
+    is_quals   = (league == "quals")
+    mvp_uid    = lobby.get("mvp_uid")
+    conn = _db()
+    cur  = conn.cursor()
+    try:
+        for uid, s in all_stats.items():
+            won          = s["won"]
+            elo_change   = s["elo_change"]
+            kills        = s["kills"]
+            deaths       = s["deaths"]
+            assists      = s["assists"]
+            coins_reward = s["coins_reward"]
+            if is_2v2:
+                if won:
+                    cur.execute(
+                        f"UPDATE {priv_table} SET duo_wins=GREATEST(0,duo_wins-1),"
+                        "duo_elo=GREATEST(0,duo_elo-%s),"
+                        "duo_kills=GREATEST(0,duo_kills-%s),duo_deaths=GREATEST(0,duo_deaths-%s),"
+                        "duo_assists=GREATEST(0,duo_assists-%s),coins=GREATEST(0,coins-%s) WHERE user_id=%s",
+                        (elo_change, kills, deaths, assists, coins_reward, uid),
+                    )
+                else:
+                    cur.execute(
+                        f"UPDATE {priv_table} SET duo_losses=GREATEST(0,duo_losses-1),"
+                        "duo_elo=GREATEST(0,duo_elo-%s),"
+                        "duo_kills=GREATEST(0,duo_kills-%s),duo_deaths=GREATEST(0,duo_deaths-%s),"
+                        "duo_assists=GREATEST(0,duo_assists-%s),coins=GREATEST(0,coins-%s) WHERE user_id=%s",
+                        (elo_change, kills, deaths, assists, coins_reward, uid),
+                    )
+            elif is_quals:
+                if won:
+                    cur.execute(
+                        f"UPDATE {priv_table} SET quals_wins=GREATEST(0,quals_wins-1),"
+                        "quals_elo=GREATEST(0,quals_elo-%s),"
+                        "quals_kills=GREATEST(0,quals_kills-%s),quals_deaths=GREATEST(0,quals_deaths-%s),"
+                        "quals_assists=GREATEST(0,quals_assists-%s),coins=GREATEST(0,coins-%s) WHERE user_id=%s",
+                        (elo_change, kills, deaths, assists, coins_reward, uid),
+                    )
+                else:
+                    cur.execute(
+                        f"UPDATE {priv_table} SET quals_losses=GREATEST(0,quals_losses-1),"
+                        "quals_elo=GREATEST(0,quals_elo-%s),"
+                        "quals_kills=GREATEST(0,quals_kills-%s),quals_deaths=GREATEST(0,quals_deaths-%s),"
+                        "quals_assists=GREATEST(0,quals_assists-%s),coins=GREATEST(0,coins-%s) WHERE user_id=%s",
+                        (elo_change, kills, deaths, assists, coins_reward, uid),
+                    )
+            else:
+                if won:
+                    cur.execute(
+                        f"UPDATE {priv_table} SET wins=GREATEST(0,wins-1),"
+                        "elo=GREATEST(0,elo-%s),"
+                        "kills=GREATEST(0,kills-%s),deaths=GREATEST(0,deaths-%s),"
+                        "assists=GREATEST(0,assists-%s),coins=GREATEST(0,coins-%s) WHERE user_id=%s",
+                        (elo_change, kills, deaths, assists, coins_reward, uid),
+                    )
+                else:
+                    cur.execute(
+                        f"UPDATE {priv_table} SET losses=GREATEST(0,losses-1),"
+                        "elo=GREATEST(0,elo-%s),"
+                        "kills=GREATEST(0,kills-%s),deaths=GREATEST(0,deaths-%s),"
+                        "assists=GREATEST(0,assists-%s),coins=GREATEST(0,coins-%s) WHERE user_id=%s",
+                        (elo_change, kills, deaths, assists, coins_reward, uid),
+                    )
+        if mvp_uid:
+            cur.execute(
+                f"UPDATE {priv_table} SET mvp_count=GREATEST(0,mvp_count-1) WHERE user_id=%s",
+                (mvp_uid,),
+            )
+        conn.commit()
+        lobby.pop("all_stats", None)
+        lobby.pop("mvp_uid",   None)
+        lobby.pop("priv_table_saved", None)
+    except Exception as e:
+        conn.rollback()
+        print(f"[rollback_match_stats] Ошибка: {e}")
+    finally:
+        conn.close()
 
 
 def save_match_to_history(lobby, data, all_stats):
@@ -4894,6 +4982,10 @@ def _finalize_match(reg_uid, match_key):
 
     _cleanup_match_messages(lobby)
     save_match_to_history(lobby, {"winner": winner, "ACore_w": ACore_w, "ACore_l": ACore_l}, all_stats)
+    # Сохраняем данные для возможного отката при перерегистрации
+    lobby["all_stats"]  = all_stats
+    lobby["priv_table"] = priv_table
+    lobby["mvp_uid"]    = mvp_uid
     # Оставляем лобби в running_matches со статусом "registered",
     # чтобы кнопка "🔄 Перерегать" могла найти матч и сбросить регистрацию.
     lobby["status"] = "registered"
@@ -5072,10 +5164,21 @@ def cb_reregister_match(c):
         return
     lobby["reg_taken_by"] = None
     match_registration.pop(uid, None)
-    lobby["status"] = "active"  # Возобновляем
+    # Откатываем ранее начисленную статистику (ELO, wins/losses, kills, coins, MVP)
+    rollback_match_stats(lobby)
+    lobby["status"] = "active"
     match_id   = lobby.get("match_id", "?")
     match_code = lobby.get("match_code", str(match_id))
-    bot.answer_callback_query(c.id, "🔄 Регистрация сброшена")
+    # Сбрасываем статус в БД чтобы после рестарта бота матч восстановился корректно
+    try:
+        _rconn = _db()
+        _rcur  = _rconn.cursor()
+        _rcur.execute("UPDATE matches SET status='active' WHERE match_id=%s", (match_id,))
+        _rconn.commit()
+        _rconn.close()
+    except Exception as _re:
+        print(f"[reregister status reset] {_re}")
+    bot.answer_callback_query(c.id, "🔄 Регистрация сброшена, статистика откатана")
 
     # Переоткрываем тему если была закрыта
     thread_id = lobby.get("admin_thread_id")
