@@ -1823,28 +1823,45 @@ def _rewards_to_str(rewards: list) -> str:
     return " + ".join(parts) if parts else "—"
 
 def create_promo_code(code, rewards: list, max_uses):
-    """rewards = [{"type": "coins"|"premium"|"quals", "value": int, "days": int}, ...]"""
+    """rewards = [{"type": "coins"|"premium"|"quals", "value": int, "days": int}, ...]
+    Returns (True, "created") / (True, "reactivated") / (False, "exists_active") / (False, "error")
+    """
     conn = _db()
     cur = conn.cursor()
     try:
+        code_upper = code.upper()
         r0 = rewards[0] if rewards else {}
-        cur.execute(
-            "INSERT INTO promo_codes (code, reward_type, reward_value, max_uses, reward_days, rewards_json) "
-            "VALUES (%s, %s, %s, %s, %s, %s)",
-            (
-                code.upper(),
-                r0.get("type", "coins"),
-                r0.get("value", 0),
-                max_uses,
-                r0.get("days", 30),
-                json.dumps(rewards, ensure_aACii=False),
-            ),
-        )
-        conn.commit()
-        return True
-    except Exception:
+        rtype = r0.get("type", "coins")
+        rvalue = r0.get("value", 0)
+        rdays = r0.get("days", 30)
+        rjson = json.dumps(rewards, ensure_ascii=False)
+
+        cur.execute("SELECT id, is_active FROM promo_codes WHERE code=%s", (code_upper,))
+        existing = cur.fetchone()
+
+        if existing:
+            ex_id, ex_active = existing
+            if ex_active:
+                return False, "exists_active"
+            cur.execute(
+                "UPDATE promo_codes SET reward_type=%s, reward_value=%s, max_uses=%s, uses=0, "
+                "is_active=1, reward_days=%s, rewards_json=%s WHERE id=%s",
+                (rtype, rvalue, max_uses, rdays, rjson, ex_id),
+            )
+            conn.commit()
+            return True, "reactivated"
+        else:
+            cur.execute(
+                "INSERT INTO promo_codes (code, reward_type, reward_value, max_uses, reward_days, rewards_json) "
+                "VALUES (%s, %s, %s, %s, %s, %s)",
+                (code_upper, rtype, rvalue, max_uses, rdays, rjson),
+            )
+            conn.commit()
+            return True, "created"
+    except Exception as e:
         conn.rollback()
-        return False
+        print(f"[create_promo_code] Ошибка: {e}")
+        return False, "error"
     finally:
         conn.close()
 
@@ -5973,20 +5990,23 @@ def handle_promo_admin_flow(msg):
         code = data["code"]
         rewards = data.get("rewards", [])
         promo_admin_flow.pop(uid, None)
-        ok = create_promo_code(code, rewards, max_uses)
+        ok, reason = create_promo_code(code, rewards, max_uses)
         if ok:
             max_str = f"{max_uses}" if max_uses > 0 else "неограничено"
             reward_str = _rewards_to_str(rewards)
+            label = "♻️ <b>Промокод переактивирован!</b>" if reason == "reactivated" else "✅ <b>Промокод создан!</b>"
             bot.send_message(
                 uid,
-                f"✅ <b>Промокод создан!</b>\n\n"
+                f"{label}\n\n"
                 f"Код: <code>{code}</code>\n"
                 f"Награды: {reward_str}\n"
                 f"Использований: {max_str}",
                 parse_mode="HTML",
             )
+        elif reason == "exists_active":
+            bot.send_message(uid, f"❌ Промокод <code>{code}</code> уже существует и активен!", parse_mode="HTML")
         else:
-            bot.send_message(uid, f"❌ Промокод <code>{code}</code> уже существует!", parse_mode="HTML")
+            bot.send_message(uid, f"❌ Ошибка при создании промокода <code>{code}</code>. Проверьте логи.", parse_mode="HTML")
 
     elif step == "deactivate":
         _promo_delete_prev(uid, msg.message_id)
