@@ -1309,10 +1309,10 @@ def reset_season(admin_uid):
 
         cur.execute(
             """SELECT user_id, username, elo, wins, losses, kills, deaths, assists,
-                      COALEACE(quals_wins,0), COALEACE(quals_losses,0),
-                      COALEACE(quals_kills,0), COALEACE(quals_deaths,0),
-                      COALEACE(quals_assists,0), COALEACE(quals_elo,1000),
-                      COALEACE(mvp_count,0)
+                      COALESCE(quals_wins,0), COALESCE(quals_losses,0),
+                      COALESCE(quals_kills,0), COALESCE(quals_deaths,0),
+                      COALESCE(quals_assists,0), COALESCE(quals_elo,1000),
+                      COALESCE(mvp_count,0)
                FROM players WHERE is_bot=0"""
         )
         players = cur.fetchall()
@@ -1370,9 +1370,9 @@ def save_match_start(lobby):
             "name": p[1] if p else str(uid),
             "team": "ct" if uid in lobby.get("team_ct", []) else "t",
         })
-    players_json_str = json.dumps(players_info, ensure_aACii=False)
-    team_ct_json_str = json.dumps(lobby.get("team_ct", []), ensure_aACii=False)
-    team_t_json_str  = json.dumps(lobby.get("team_t",  []), ensure_aACii=False)
+    players_json_str = json.dumps(players_info, ensure_ascii=False)
+    team_ct_json_str = json.dumps(lobby.get("team_ct", []), ensure_ascii=False)
+    team_t_json_str  = json.dumps(lobby.get("team_t",  []), ensure_ascii=False)
     conn = _db()
     cur = conn.cursor()
     try:
@@ -1557,7 +1557,7 @@ def save_match_to_history(lobby, data, all_stats):
                 data.get("winner", ""),
                 data.get("ACore_w", 0),
                 data.get("ACore_l", 0),
-                json.dumps(players_info, ensure_aACii=False),
+                json.dumps(players_info, ensure_ascii=False),
                 int(time.time()),
             ),
         )
@@ -1577,7 +1577,7 @@ def save_match_to_history(lobby, data, all_stats):
             (lobby.get("match_id", 0), lobby.get("match_code", ""), lobby.get("league", ""),
              lobby.get("device", ""), lobby.get("map_name", ""), data.get("winner", ""),
              data.get("ACore_w", 0), data.get("ACore_l", 0),
-             json.dumps(players_info, ensure_aACii=False), int(time.time())),
+             json.dumps(players_info, ensure_ascii=False), int(time.time())),
         )
         conn.commit()
     except Exception as e:
@@ -1626,7 +1626,7 @@ def save_match_cancelled(lobby, reason=""):
                 lobby.get("device", ""),
                 lobby.get("map_name", ""),
                 reason,
-                json.dumps(players_info, ensure_aACii=False),
+                json.dumps(players_info, ensure_ascii=False),
                 int(time.time()),
             ),
         )
@@ -1646,7 +1646,7 @@ def save_match_cancelled(lobby, reason=""):
                    status='cancelled', cancel_reason=EXCLUDED.cancel_reason""",
             (lobby.get("match_id", 0), lobby.get("match_code", ""), lobby.get("league", ""),
              lobby.get("device", ""), lobby.get("map_name", ""),
-             lobby.get("cancel_reason", ""), json.dumps(players_info, ensure_aACii=False),
+             lobby.get("cancel_reason", ""), json.dumps(players_info, ensure_ascii=False),
              int(time.time())),
         )
         conn.commit()
