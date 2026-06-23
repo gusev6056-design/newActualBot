@@ -6,7 +6,7 @@ services:
     plan: free
     runtime: python
     pythonVersion: "3.11.9"
-    buildCommand: pip install -r requirements.txt
+    buildCommand: pip install -r requirements.txt && playwright install chromium && playwright install-deps chromium
     startCommand: python bot.py
     healthCheckPath: /
     envVars:

@@ -135,6 +135,67 @@ def _apply_glow(img: Image.Image, xy, r: int, color, strength: int = 18, layers:
 
 
 # ==================== AVATAR PASTE ====================
+def _draw_frame_border(img: Image.Image, draw: ImageDraw.ImageDraw,
+                       ax: int, ay: int, size: int, frame_name: str) -> tuple:
+    """Draw a decorative frame border around the avatar based on frame_name."""
+    fn = (frame_name or "").lower()
+    cx, cy, r = ax + size // 2, ay + size // 2, size // 2
+
+    if "gold" in fn or "золот" in fn:
+        COLORS = [(232, 185, 0), (255, 215, 60), (200, 150, 0)]
+        for i, col in enumerate(COLORS):
+            bw = 5 - i
+            offset = i * 3
+            draw.ellipse(
+                [(ax - offset - bw, ay - offset - bw),
+                 (ax + size + offset + bw, ay + size + offset + bw)],
+                outline=col, width=bw,
+            )
+        for angle_deg in range(0, 360, 45):
+            angle = math.radians(angle_deg)
+            sx = int(cx + (r + 10) * math.cos(angle))
+            sy = int(cy + (r + 10) * math.sin(angle))
+            draw.ellipse([(sx - 3, sy - 3), (sx + 3, sy + 3)], fill=(255, 215, 60))
+
+    elif "diamond" in fn or "алмаз" in fn:
+        COLORS = [(0, 220, 230), (80, 240, 255), (0, 160, 180)]
+        for i, col in enumerate(COLORS):
+            bw = 5 - i
+            offset = i * 3
+            draw.ellipse(
+                [(ax - offset - bw, ay - offset - bw),
+                 (ax + size + offset + bw, ay + size + offset + bw)],
+                outline=col, width=bw,
+            )
+        for angle_deg in range(0, 360, 60):
+            angle = math.radians(angle_deg)
+            sx = int(cx + (r + 11) * math.cos(angle))
+            sy = int(cy + (r + 11) * math.sin(angle))
+            s = 5
+            draw.polygon(
+                [(sx, sy - s), (sx + s//2, sy), (sx, sy + s), (sx - s//2, sy)],
+                fill=(130, 245, 255),
+            )
+
+    elif "elite" in fn or "элит" in fn:
+        COLORS = [(148, 0, 211), (180, 60, 255), (100, 0, 160)]
+        for i, col in enumerate(COLORS):
+            bw = 5 - i
+            offset = i * 3
+            draw.ellipse(
+                [(ax - offset - bw, ay - offset - bw),
+                 (ax + size + offset + bw, ay + size + offset + bw)],
+                outline=col, width=bw,
+            )
+        for angle_deg in range(0, 360, 30):
+            angle = math.radians(angle_deg)
+            sx = int(cx + (r + 10) * math.cos(angle))
+            sy = int(cy + (r + 10) * math.sin(angle))
+            draw.ellipse([(sx - 2, sy - 2), (sx + 2, sy + 2)], fill=(200, 100, 255))
+
+    return img, draw
+
+
 def _paste_avatar(img: Image.Image, avatar_bytes: bytes, x: int, y: int, size: int,
                   border_color=None, border_width: int = 2) -> Image.Image:
     """Paste a circular avatar image at (x, y) with given size."""
@@ -190,6 +251,8 @@ def generate_profile_card(
     is_verified:  bool  = False,
     duo_stats:    dict  = None,
     avatar_bytes: bytes = None,
+    active_frame: str   = None,
+    active_banner: str  = None,
 ) -> io.BytesIO:
 
     QUALS_H = 70 if quals_stats else 0
@@ -232,6 +295,25 @@ def generate_profile_card(
     impact = round((kills + assists) / games, 2) if games > 0 else 0.0
     rating = round(kd * (wr / 100) * 2, 2)       if games > 0 else 0.0
 
+    # ===== BANNER STRIP (behind header) =====
+    fn_banner = (active_banner or "").lower()
+    if "gold" in fn_banner or "золот" in fn_banner:
+        _banner_col = (80, 55, 0)
+        _banner_line = (232, 185, 0)
+    elif "diamond" in fn_banner or "алмаз" in fn_banner:
+        _banner_col = (0, 40, 55)
+        _banner_line = (0, 210, 225)
+    elif "elite" in fn_banner or "элит" in fn_banner:
+        _banner_col = (35, 0, 60)
+        _banner_line = (160, 60, 230)
+    else:
+        _banner_col = None
+        _banner_line = None
+    if _banner_col:
+        draw.rectangle([(8, 8), (W - 8, 148)], fill=_banner_col)
+        draw.line([(8, 8), (W - 8, 8)], fill=_banner_line, width=3)
+        draw.line([(8, 148), (W - 8, 148)], fill=_banner_line, width=3)
+
     # ===== HEADER PANEL =====
     glow_color = _GOLD if is_premium else _GOLD_DIM
     img = _apply_glow(img, (8, 8, W-8, 148), r=10, color=glow_color, strength=12, layers=6)
@@ -240,17 +322,31 @@ def generate_profile_card(
     _rr(draw, (8, 8, W-8, 148), 10, fill=_HEADER, outline=_GOLD_DIM, width=1)
 
     AX, AY, AS = 20, 18, 118
-    img = _apply_glow(img, (AX, AY, AX+AS, AY+AS), r=8, color=_GOLD, strength=10, layers=6)
+    # choose glow color based on active frame
+    fn_frame = (active_frame or "").lower()
+    if "gold" in fn_frame or "золот" in fn_frame:
+        _av_glow = (232, 185, 0)
+    elif "diamond" in fn_frame or "алмаз" in fn_frame:
+        _av_glow = (0, 210, 225)
+    elif "elite" in fn_frame or "элит" in fn_frame:
+        _av_glow = (160, 60, 230)
+    else:
+        _av_glow = _GOLD
+    img = _apply_glow(img, (AX, AY, AX+AS, AY+AS), r=8, color=_av_glow, strength=14, layers=8)
     draw = ImageDraw.Draw(img)
     if avatar_bytes:
-        _rr(draw, (AX, AY, AX+AS, AY+AS), 8, fill=(22, 16, 44), outline=_GOLD, width=2)
+        _rr(draw, (AX, AY, AX+AS, AY+AS), 8, fill=(22, 16, 44), outline=_av_glow, width=2)
         img = _paste_avatar(img, avatar_bytes, AX + 3, AY + 3, AS - 6,
-                            border_color=_GOLD, border_width=2)
+                            border_color=_av_glow, border_width=2)
         draw = ImageDraw.Draw(img)
     else:
-        _rr(draw, (AX, AY, AX+AS, AY+AS), 8, fill=(22, 16, 44), outline=_GOLD, width=2)
+        _rr(draw, (AX, AY, AX+AS, AY+AS), 8, fill=(22, 16, 44), outline=_av_glow, width=2)
         initials = (username[:2]).upper() if username else "??"
         _text_c(draw, AX + AS//2, AY + AS//2 - 22, initials, _font(38, bold=True), _GOLD)
+
+    # ===== FRAME BORDER OVER AVATAR =====
+    if active_frame:
+        img, draw = _draw_frame_border(img, draw, AX, AY, AS, active_frame)
 
     draw.text((152, 20), f"#{user_id}", font=_font(13), fill=_TEXT_GRAY)
     fname = _font(30, bold=True)
