@@ -118,7 +118,7 @@ _dynamic_results_thread_id = RESULTS_THREAD_ID
 DATABASE_URL = os.environ.get("DATABASE_URL") or os.environ.get("SUPABASE_URL", "")
 
 ACCEPT_TIMEOUT = 60
-MAPS = ["Zone 9", "Rust", "Province", "Sandstone"]
+MAPS = ["Zone 9", "Rust", "Province", "Sandstone", "Sakura"]
 
 def _get_lobby_maps(lobby: dict) -> list:
     """Возвращает пул карт для лобби."""
@@ -1373,65 +1373,89 @@ def save_match_start(lobby):
     players_json_str = json.dumps(players_info, ensure_ascii=False)
     team_ct_json_str = json.dumps(lobby.get("team_ct", []), ensure_ascii=False)
     team_t_json_str  = json.dumps(lobby.get("team_t",  []), ensure_ascii=False)
+    match_id    = lobby.get("match_id", 0)
+    match_code  = lobby.get("match_code", "")
+    league      = lobby.get("league", "")
+    device      = lobby.get("device", "")
+    map_name    = lobby.get("map_name", "")
+    private_key = lobby.get("private", "darling")
+    admin_thread_id = lobby.get("admin_thread_id")
+    admin_msg_id    = lobby.get("admin_msg_id")
+    host_game_id    = lobby.get("host_game_id", "")
+    now = int(time.time())
+
     conn = _db()
     cur = conn.cursor()
     try:
-        cur.execute(
-            """INSERT INTO matches
-               (match_id, match_code, league, device, map_name, status, players_json, started_at,
-                winner, ACore_w, ACore_l, private_key, admin_thread_id, admin_msg_id)
-               VALUES (%s, %s, %s, %s, %s, 'active', %s, %s, '', 0, 0, %s, %s, %s)
-               ON CONFLICT (match_id) DO UPDATE SET
-                   admin_thread_id = EXCLUDED.admin_thread_id,
-                   admin_msg_id    = EXCLUDED.admin_msg_id""",
-            (
-                lobby.get("match_id", 0),
-                lobby.get("match_code", ""),
-                lobby.get("league", ""),
-                lobby.get("device", ""),
-                lobby.get("map_name", ""),
-                players_json_str,
-                int(time.time()),
-                lobby.get("private", "darling"),
-                lobby.get("admin_thread_id"),
-                lobby.get("admin_msg_id"),
-            ),
-        )
-        # Также пишем в unregistered_matches — удалим оттуда при регистрации/отмене
-        cur.execute(
-            """INSERT INTO unregistered_matches
-               (match_id, match_code, league, device, map_name, players_json,
-                team_ct_json, team_t_json, host_game_id, ACreenshots_count, started_at)
-               VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, 0, %s)
-               ON CONFLICT (match_id) DO NOTHING""",
-            (
-                lobby.get("match_id", 0),
-                lobby.get("match_code", ""),
-                lobby.get("league", ""),
-                lobby.get("device", ""),
-                lobby.get("map_name", ""),
-                players_json_str,
-                team_ct_json_str,
-                team_t_json_str,
-                lobby.get("host_game_id", ""),
-                int(time.time()),
-            ),
-        )
-        # Пишем в таблицу матчей конкретной приватки
-        _pmt = PRIVATE_CONFIG.get(lobby.get("private", "darling"), PRIVATE_CONFIG["darling"])["matches_table"]
-        cur.execute(
-            f"""INSERT INTO {_pmt}
-               (match_id, match_code, league, device, map_name, status, players_json, started_at, winner, ACore_w, ACore_l)
-               VALUES (%s, %s, %s, %s, %s, 'active', %s, %s, '', 0, 0)
-               ON CONFLICT (match_id) DO NOTHING""",
-            (lobby.get("match_id", 0), lobby.get("match_code", ""), lobby.get("league", ""),
-             lobby.get("device", ""), lobby.get("map_name", ""), players_json_str, int(time.time())),
-        )
+        # ── matches ──────────────────────────────────────────────────────────
+        cur.execute("SELECT id FROM matches WHERE match_id=%s", (match_id,))
+        if cur.fetchone():
+            cur.execute(
+                """UPDATE matches SET
+                       match_code=%s, league=%s, device=%s, map_name=%s,
+                       status='active', players_json=%s, started_at=%s,
+                       winner='', ACore_w=0, ACore_l=0,
+                       private_key=%s, admin_thread_id=%s, admin_msg_id=%s
+                   WHERE match_id=%s""",
+                (match_code, league, device, map_name,
+                 players_json_str, now,
+                 private_key, admin_thread_id, admin_msg_id,
+                 match_id),
+            )
+        else:
+            cur.execute(
+                """INSERT INTO matches
+                   (match_id, match_code, league, device, map_name, status, players_json,
+                    started_at, winner, ACore_w, ACore_l, private_key, admin_thread_id, admin_msg_id)
+                   VALUES (%s, %s, %s, %s, %s, 'active', %s, %s, '', 0, 0, %s, %s, %s)""",
+                (match_id, match_code, league, device, map_name,
+                 players_json_str, now,
+                 private_key, admin_thread_id, admin_msg_id),
+            )
         conn.commit()
+
+        # ── unregistered_matches ─────────────────────────────────────────────
+        try:
+            cur.execute("SELECT id FROM unregistered_matches WHERE match_id=%s", (match_id,))
+            if not cur.fetchone():
+                cur.execute(
+                    """INSERT INTO unregistered_matches
+                       (match_id, match_code, league, device, map_name, players_json,
+                        team_ct_json, team_t_json, host_game_id, ACreenshots_count, started_at)
+                       VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, 0, %s)""",
+                    (match_id, match_code, league, device, map_name,
+                     players_json_str, team_ct_json_str, team_t_json_str,
+                     host_game_id, now),
+                )
+            conn.commit()
+        except Exception as e2:
+            conn.rollback()
+            print(f"[save_match_start] unregistered_matches error: {e2}")
+
+        # ── приватка-специфичная таблица ─────────────────────────────────────
+        try:
+            _pmt = PRIVATE_CONFIG.get(private_key, PRIVATE_CONFIG["darling"])["matches_table"]
+            cur.execute(f"SELECT id FROM {_pmt} WHERE match_id=%s", (match_id,))
+            if not cur.fetchone():
+                cur.execute(
+                    f"""INSERT INTO {_pmt}
+                       (match_id, match_code, league, device, map_name, status,
+                        players_json, started_at, winner, ACore_w, ACore_l)
+                       VALUES (%s, %s, %s, %s, %s, 'active', %s, %s, '', 0, 0)""",
+                    (match_id, match_code, league, device, map_name,
+                     players_json_str, now),
+                )
+            conn.commit()
+        except Exception as e3:
+            conn.rollback()
+            print(f"[save_match_start] {_pmt} error: {e3}")
+
     except Exception as e:
-        print(f"save_match_start error: {e}")
+        print(f"[save_match_start] ГЛАВНАЯ ОШИБКА: {e}")
+        import traceback; traceback.print_exc()
         conn.rollback()
-    conn.close()
+    finally:
+        conn.close()
 
 
 def rollback_match_stats(lobby):
@@ -3866,24 +3890,6 @@ def _start_map_ban_phase_inner(lobby_id):
 
     print(f"[mapban] карты: {lobby['maps_remaining']}")
 
-    # Добиваем ботами до полного размера лобби если нужно
-    if len(players) < max_sz:
-        try:
-            _conn_b = _db()
-            _cur_b  = _conn_b.cursor()
-            _cur_b.execute("SELECT user_id FROM players WHERE is_bot=1")
-            all_bot_ids  = [r[0] for r in _cur_b.fetchall()]
-            _conn_b.close()
-            already_in   = set(players)
-            available_b  = [b for b in all_bot_ids if b not in already_in]
-            needed_cnt   = max_sz - len(players)
-            fill_bots    = random.sample(available_b, min(needed_cnt, len(available_b)))
-            for b in fill_bots:
-                players.append(b)
-            print(f"[mapban] добавлено ботов: {len(fill_bots)}, итого игроков: {len(players)}")
-        except Exception as _e:
-            print(f"[fill_bots] {_e}")
-
     delete_match_found(lobby_id)
     delete_accept_status(lobby_id)
     delete_lobby_messages(lobby_id)
@@ -4391,6 +4397,9 @@ def cb_send_result(c):
 @bot.message_handler(content_types=["photo", "document"])
 def handle_player_ACreenshot(msg):
     uid = msg.from_user.id
+    # Принимаем скриншоты только из личных сообщений бота
+    if msg.chat.type != "private":
+        return
     # Если пользователь в процессе создания тикета — передаём туда
     if uid in ticket_flow and ticket_flow[uid].get("step") == "evidence":
         ticket_step_evidence(msg)
@@ -4584,6 +4593,7 @@ def cb_reg_release(c):
         bot.answer_callback_query(c.id, "❌ Матч не найден")
         return
     lobby["reg_taken_by"] = None
+    match_registration.pop(uid, None)
     match_id   = lobby.get("match_id", "?")
     match_code = lobby.get("match_code", str(match_id))
     AC = lobby.get("ACreenshots_count", 0)
@@ -4647,7 +4657,11 @@ def cb_reg_abandon(c):
         pass
 
 
-@bot.message_handler(func=lambda m: m.from_user.id in match_registration and match_registration[m.from_user.id].get("step") == "ACore")
+@bot.message_handler(func=lambda m: (
+    m.from_user.id in match_registration
+    and match_registration[m.from_user.id].get("step") == "ACore"
+    and m.chat.id == match_registration[m.from_user.id].get("reply_chat_id", m.from_user.id)
+))
 def reg_step_ACore(msg):
     uid = msg.from_user.id
     if not is_game_reg_check(uid):
@@ -4768,7 +4782,11 @@ def _parse_all_kda(text, all_players):
     return result, None
 
 
-@bot.message_handler(func=lambda m: m.from_user.id in match_registration and match_registration[m.from_user.id].get("step") == "all_kills")
+@bot.message_handler(func=lambda m: (
+    m.from_user.id in match_registration
+    and match_registration[m.from_user.id].get("step") == "all_kills"
+    and m.chat.id == match_registration[m.from_user.id].get("reply_chat_id", m.from_user.id)
+))
 def reg_step_all_kills(msg):
     uid = msg.from_user.id
     if not is_game_reg_check(uid):
