@@ -16,7 +16,10 @@ from typing import Optional
 try:
     import fitz as _fitz_test  # noqa: F401
     from weasyprint import HTML as _wp_test  # noqa: F401
-    del _fitz_test, _wp_test
+    # Реальный тест рендера — импорт может пройти, но Cairo/Pango могут отсутствовать
+    _pdf_test = _wp_test(string="<p>test</p>").write_pdf()
+    _doc_test = _fitz_test.open(stream=_pdf_test, filetype="pdf")
+    del _fitz_test, _wp_test, _pdf_test, _doc_test
 except Exception as _dep_err:
     raise ImportError(f"weasyprint/PyMuPDF недоступны, используем PIL: {_dep_err}")
 
