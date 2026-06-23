@@ -1786,7 +1786,13 @@ def get_player_map_stats(user_id, matches_table="matches"):
     for map_name, s in stats.items():
         wr = s["wins"] / s["total"] if s["total"] > 0 else 0.0
         kd = round(s["kills"] / max(s["deaths"], 1), 2)
-        result.append({"map": map_name, "wr": wr, "kd": kd})
+        result.append({
+            "map":    map_name,
+            "wins":   s["wins"],
+            "losses": s["total"] - s["wins"],
+            "wr":     wr,
+            "kd":     kd,
+        })
 
     # Sort by matches played deAC, pad with zeroes for default maps
     for default_map in MAPS:
@@ -1924,7 +1930,13 @@ def get_player_duo_map_stats(user_id, matches_table="matches"):
     for map_name, s in stats.items():
         wr = s["wins"] / s["total"] if s["total"] > 0 else 0.0
         kd = round(s["kills"] / max(s["deaths"], 1), 2)
-        result.append({"map": map_name, "wr": wr, "kd": kd})
+        result.append({
+            "map":    map_name,
+            "wins":   s["wins"],
+            "losses": s["total"] - s["wins"],
+            "wr":     wr,
+            "kd":     kd,
+        })
 
     for default_map in MAPS:
         if not any(r["map"] == default_map for r in result):
@@ -2351,6 +2363,34 @@ def send_result_log(text):
         bot.send_message(LOG_CHAT_ID, text, **kw)
     except Exception as e:
         print(f"Result log error: {e}")
+
+def send_error_log(context: str, error: Exception):
+    """Отправляет лог ошибки администраторам и в LOG_CHAT."""
+    import traceback as _tb
+    tb_text = _tb.format_exc()
+    short_tb = tb_text[-800:] if len(tb_text) > 800 else tb_text
+    msg = (
+        f"🔴 <b>Ошибка бота</b>\n"
+        f"📍 <b>Место:</b> <code>{context}</code>\n"
+        f"❗ <b>Ошибка:</b> <code>{type(error).__name__}: {str(error)[:300]}</code>\n"
+        f"📋 <b>Трейс:</b>\n<pre>{short_tb}</pre>"
+    )
+    # Отправляем всем администраторам
+    for _aid in ADMIN_IDS_LIST:
+        try:
+            bot.send_message(_aid, msg, parse_mode="HTML", disable_web_page_preview=True)
+        except Exception:
+            pass
+    # Дублируем в лог-чат если настроен
+    if LOG_CHAT_ID:
+        try:
+            kw = {"parse_mode": "HTML", "disable_web_page_preview": True}
+            if _dynamic_log_thread_id:
+                kw["message_thread_id"] = _dynamic_log_thread_id
+            bot.send_message(LOG_CHAT_ID, msg, **kw)
+        except Exception:
+            pass
+    print(f"[ERROR][{context}] {type(error).__name__}: {error}")
 
 def kick_from_lobby_if_present(uid):
     """Кикает игрока из лобби/фазы принятия если он там есть."""
@@ -2919,7 +2959,7 @@ def cb_profile(c):
             bot.answer_callback_query(c.id)
             return
         except Exception as e:
-            print(f"[card_profile] error: {e}")
+            send_error_log("card_profile (Default)", e)
 
     # fallback text profile
     text = (
@@ -3024,7 +3064,7 @@ def cb_profile_quals(c):
             bot.answer_callback_query(c.id)
             return
         except Exception as e:
-            print(f"[card_quals] error: {e}")
+            send_error_log("card_profile (Quals)", e)
 
     # fallback text
     q_games = q_wins + q_losses
@@ -3125,7 +3165,7 @@ def cb_profile_duo(c):
             bot.answer_callback_query(c.id)
             return
         except Exception as e:
-            print(f"[card_duo] error: {e}")
+            send_error_log("card_profile (2v2)", e)
 
     # fallback text
     d_games = d_wins + d_losses
@@ -5053,7 +5093,6 @@ def _finalize_match(reg_uid, match_key):
                 conn.rollback()
         except Exception:
             pass
-        raise
     finally:
         try:
             if conn:

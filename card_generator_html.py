@@ -184,11 +184,17 @@ def _build_html(
     svr_label, svr_col = _stat_label(svr / 3.0)
 
     # ── leaderboard places ──
+    # entry may be a dict {"username":..., "avatar_bytes":...}
+    # or a tuple (rank, username, elo, is_premium, is_admin, is_verified)
     places_html = ""
     user_rank_html = ""
     for i, entry in enumerate(leaderboard[:3]):
-        name = entry.get("username", "?")
-        av = entry.get("avatar_bytes", None)
+        if isinstance(entry, dict):
+            name = entry.get("username", "?")
+            av = entry.get("avatar_bytes", None)
+        else:
+            name = entry[1] if len(entry) > 1 else "?"
+            av = None
         av_src = _avatar_b64(av) if av else ""
         places_html += f"""
         <div class="place-row">

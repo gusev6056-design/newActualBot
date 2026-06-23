@@ -6,7 +6,17 @@ services:
     plan: free
     runtime: python
     pythonVersion: "3.11.9"
-    buildCommand: pip install -r requirements.txt && playwright install chromium && playwright install-deps chromium
+    buildCommand: >
+      apt-get update -y &&
+      apt-get install -y
+        libcairo2
+        libpango-1.0-0
+        libpangocairo-1.0-0
+        libgdk-pixbuf2.0-0
+        libffi-dev
+        shared-mime-info
+        fonts-dejavu-core &&
+      pip install -r requirements.txt
     startCommand: python bot.py
     healthCheckPath: /
     envVars:
