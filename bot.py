@@ -1249,8 +1249,15 @@ def add_warn_to_player(uid):
 def get_next_match_id():
     conn = _db()
     cur = conn.cursor()
+    # Ensure the counter row always exists before incrementing
+    cur.execute("INSERT INTO match_counter (id, value) VALUES (1, 0) ON CONFLICT (id) DO NOTHING")
     cur.execute("UPDATE match_counter SET value=value+1 WHERE id=1 RETURNING value")
-    val = cur.fetchone()[0]
+    row = cur.fetchone()
+    if row is None:
+        # Failsafe: counter row still missing — seed it now
+        cur.execute("INSERT INTO match_counter (id, value) VALUES (1, 1) RETURNING value")
+        row = cur.fetchone()
+    val = row[0]
     conn.commit()
     conn.close()
     return val
@@ -3976,7 +3983,57 @@ def delete_lobby_messages(lobby_id):
         except Exception:
             pass
 
-BAN_TURN_TIMEOUT = 40  # секунды на бан карты для живого капитана
+BAN_TURN_TIMEOUT = 40    # секунды на бан карты для живого капитана
+DRAFT_TURN_TIMEOUT = 45  # секунды на выбор игрока в драфте
+
+def _assign_preliminary_teams_for_captain(players, team_sz):
+    """Preliminary team split for captain selection.
+    Spreads distinct party groups across CT/T so 2 parties don't end up in the same team.
+    """
+    player_set = set(players)
+    placed = set()
+    party_groups = []
+    solos = []
+    for uid in players:
+        if uid in placed:
+            continue
+        party = get_party_of(uid)
+        if party and len(party["members"]) > 1:
+            grp = [m for m in party["members"] if m in player_set and m not in placed]
+            if len(grp) > 1:
+                party_groups.append(grp)
+                for m in grp:
+                    placed.add(m)
+                continue
+        solos.append(uid)
+        placed.add(uid)
+
+    random.shuffle(solos)
+    ct_team, t_team = [], []
+
+    # Alternate parties between CT and T to avoid both parties landing in one team
+    for i, grp in enumerate(party_groups):
+        dest = ct_team if i % 2 == 0 else t_team
+        other = t_team if dest is ct_team else ct_team
+        if len(dest) + len(grp) <= team_sz:
+            dest.extend(grp)
+        elif len(other) + len(grp) <= team_sz:
+            other.extend(grp)
+        else:
+            for m in grp:
+                if len(ct_team) < team_sz:
+                    ct_team.append(m)
+                elif len(t_team) < team_sz:
+                    t_team.append(m)
+
+    for uid in solos:
+        if len(ct_team) < team_sz:
+            ct_team.append(uid)
+        elif len(t_team) < team_sz:
+            t_team.append(uid)
+
+    return ct_team, t_team
+
 
 def start_map_ban_phase(lobby_id):
     try:
@@ -4033,9 +4090,7 @@ def _start_map_ban_phase_inner(lobby_id):
                 placed.add(uid)
         return grouped
 
-    players_grouped = _group_by_party(players)
-    ct_team = players_grouped[:team_sz] if len(players_grouped) >= team_sz else players_grouped
-    t_team  = players_grouped[team_sz:] if len(players_grouped) > team_sz else players_grouped[-1:]
+    ct_team, t_team = _assign_preliminary_teams_for_captain(players, team_sz)
     lobby["ct_captain"] = pick_captain(ct_team)
     lobby["t_captain"]  = pick_captain(t_team)
 
@@ -4148,7 +4203,7 @@ def _apply_ban(lobby_id, banner_uid, map_name):
     if len(lobby["maps_remaining"]) == 1:
         lobby["map_name"] = lobby["maps_remaining"][0]
         send_ban_status_to_all(lobby_id)
-        threading.Thread(target=lambda: (time.sleep(2), launch_match(lobby_id)), daemon=True).start()
+        threading.Thread(target=lambda: (time.sleep(2), start_draft_phase(lobby_id)), daemon=True).start()
     else:
         lobby["ban_turn"] = "t" if turn == "ct" else "ct"
         send_ban_status_to_all(lobby_id)
@@ -4181,6 +4236,547 @@ def cb_ban_map(c):
         pass
     ban_turn_messages.pop(lobby_id, None)
     _apply_ban(lobby_id, uid, map_name)
+
+
+# ==================== ДРАФТ ИГРОКОВ ====================
+
+def _player_draft_label(uid, lobby):
+    """Short one-line label for a draft pick button: Name [ELO | KD]."""
+    priv_table = PRIVATE_CONFIG.get(lobby.get("private", "darling"), PRIVATE_CONFIG["darling"])["table"]
+    league = lobby.get("league", "default")
+    p = get_player_from_table(uid, priv_table) or get_player(uid)
+    if not p:
+        return str(uid)
+    elo = _resolve_display_elo(uid, p, priv_table, league)
+    lvl = get_faceit_level(elo)
+    kills = p[8] if len(p) > 8 else 0
+    deaths = p[9] if len(p) > 9 else 1
+    kd = round(kills / max(deaths, 1), 2)
+    return f"{p[1]} [Lv{lvl} | {elo} ELO | K/D {kd}]"
+
+
+def _build_draft_units(lobby):
+    """
+    Return (units, ct_auto_uids, t_auto_uids).
+
+    units: list of pick-units, each unit is a list of UIDs.
+           A unit is a solo player OR an entire non-captain party group.
+    ct_auto_uids: UIDs that auto-join CT (captain's own party members).
+    t_auto_uids:  UIDs that auto-join T  (captain's own party members).
+    """
+    players = lobby["players"]
+    player_set = set(players)
+    ct_captain = lobby.get("ct_captain")
+    t_captain  = lobby.get("t_captain")
+
+    auto_assigned = set()
+    if ct_captain:
+        auto_assigned.add(ct_captain)
+    if t_captain:
+        auto_assigned.add(t_captain)
+
+    ct_auto, t_auto = set(), set()
+    for cap, auto_set in ((ct_captain, ct_auto), (t_captain, t_auto)):
+        if not cap:
+            continue
+        party = get_party_of(cap)
+        if party and len(party["members"]) > 1:
+            for m in party["members"]:
+                if m in player_set and m != cap:
+                    auto_set.add(m)
+                    auto_assigned.add(m)
+
+    # Build pick units from the remaining (non-auto-assigned) players
+    available = [u for u in players if u not in auto_assigned]
+    placed = set()
+    units = []
+    for uid in available:
+        if uid in placed:
+            continue
+        party = get_party_of(uid)
+        if party and len(party["members"]) > 1:
+            grp = [m for m in party["members"] if m in player_set and m not in auto_assigned and m not in placed]
+            if len(grp) > 1:
+                units.append(grp)
+                for m in grp:
+                    placed.add(m)
+                continue
+        units.append([uid])
+        placed.add(uid)
+
+    return units, ct_auto, t_auto
+
+
+def _build_draft_status_text(lobby_id):
+    lobby = active_lobbies.get(lobby_id)
+    if not lobby:
+        return ""
+    draft = lobby.get("draft", {})
+    ct_cap_uid = lobby.get("ct_captain")
+    t_cap_uid  = lobby.get("t_captain")
+    priv_table = PRIVATE_CONFIG.get(lobby.get("private", "darling"), PRIVATE_CONFIG["darling"])["table"]
+
+    def pname(uid):
+        p = get_player_from_table(uid, priv_table) or get_player(uid)
+        return p[1] if p else str(uid)
+
+    ct_team = draft.get("ct_team", [])
+    t_team  = draft.get("t_team",  [])
+    ct_lines = "\n".join(f"  {'👑 ' if u == ct_cap_uid else ''}{pname(u)}" for u in ct_team)
+    t_lines  = "\n".join(f"  {'👑 ' if u == t_cap_uid  else ''}{pname(u)}" for u in t_team)
+
+    turn = draft.get("turn", "ct")
+    turn_cap  = ct_cap_uid if turn == "ct" else t_cap_uid
+    turn_name = pname(turn_cap) if turn_cap else "?"
+
+    units = draft.get("units", [])
+    avail_parts = []
+    for unit in units:
+        if len(unit) == 1:
+            avail_parts.append(f"  • {pname(unit[0])}")
+        else:
+            avail_parts.append(f"  • {'  +  '.join(pname(u) for u in unit)} (пати)")
+    avail_text = "\n".join(avail_parts) if avail_parts else "  —"
+
+    text = (
+        f"👥 <b>Выбор игроков</b>\n\n"
+        f"💙 <b>CT ({len(ct_team)})</b>:\n{ct_lines or '  (пусто)'}\n\n"
+        f"🧡 <b>T ({len(t_team)})</b>:\n{t_lines or '  (пусто)'}\n\n"
+    )
+    if units:
+        text += f"📋 <b>Доступны:</b>\n{avail_text}\n\n"
+        text += f"⏳ Ход: {'💙' if turn == 'ct' else '🧡'} <b>{turn_name}</b>"
+    else:
+        text += "✅ Выбор завершён!"
+    return text
+
+
+def _send_draft_status_to_all(lobby_id):
+    lobby = active_lobbies.get(lobby_id)
+    if not lobby:
+        return
+    text = _build_draft_status_text(lobby_id)
+    if "draft_status_msgs" not in lobby:
+        lobby["draft_status_msgs"] = {}
+    for uid in lobby["players"]:
+        if is_bot_player(uid):
+            continue
+        existing = lobby["draft_status_msgs"].get(uid)
+        if existing:
+            cid, mid = existing
+            try:
+                bot.edit_message_text(text, cid, mid, parse_mode="HTML")
+                continue
+            except Exception:
+                pass
+        try:
+            sent = bot.send_message(uid, text, parse_mode="HTML")
+            lobby["draft_status_msgs"][uid] = (sent.chat.id, sent.message_id)
+        except Exception:
+            pass
+
+
+def start_draft_phase(lobby_id):
+    """Begin captain-pick draft after map ban."""
+    try:
+        _start_draft_phase_inner(lobby_id)
+    except Exception as exc:
+        print(f"[start_draft_phase] ОШИБКА lobby={lobby_id}: {exc}")
+        import traceback; traceback.print_exc()
+        # Fallback: just launch the match normally
+        threading.Thread(target=lambda: launch_match(lobby_id), daemon=True).start()
+
+
+def _start_draft_phase_inner(lobby_id):
+    lobby = active_lobbies.get(lobby_id)
+    if not lobby:
+        return
+    if lobby.get("status") not in ("mapban",):
+        return
+
+    lobby["status"] = "draft"
+
+    players = lobby["players"]
+    league  = lobby.get("league", "default")
+    team_sz = _lobby_team_size(league)
+
+    ct_captain = lobby.get("ct_captain")
+    t_captain  = lobby.get("t_captain")
+
+    units, ct_auto, t_auto = _build_draft_units(lobby)
+
+    ct_team = ([ct_captain] if ct_captain else []) + list(ct_auto)
+    t_team  = ([t_captain]  if t_captain  else []) + list(t_auto)
+
+    ct_needs = team_sz - len(ct_team)
+    t_needs  = team_sz - len(t_team)
+
+    # The team that already has fewer members picks first (catch-up)
+    if len(ct_team) <= len(t_team):
+        first_turn = "ct"
+    else:
+        first_turn = "t"
+
+    lobby["draft"] = {
+        "units":      units,
+        "ct_team":    ct_team,
+        "t_team":     t_team,
+        "ct_needs":   ct_needs,
+        "t_needs":    t_needs,
+        "turn":       first_turn,
+        "turn_count": 0,
+        "lock":       threading.Lock(),   # guards concurrent pick application
+        "finished":   False,              # idempotency guard for _finish_draft
+    }
+    lobby["draft_status_msgs"] = {}
+    lobby["draft_kb_msgs"]     = {}
+
+    # Inform all players
+    priv_table = PRIVATE_CONFIG.get(lobby.get("private", "darling"), PRIVATE_CONFIG["darling"])["table"]
+
+    def pname(uid):
+        p = get_player_from_table(uid, priv_table) or get_player(uid)
+        return p[1] if p else str(uid)
+
+    ct_cap_name = pname(ct_captain) if ct_captain else "?"
+    t_cap_name  = pname(t_captain)  if t_captain  else "?"
+
+    for uid in players:
+        if is_bot_player(uid):
+            continue
+        try:
+            bot.send_message(
+                uid,
+                f"👥 <b>Фаза выбора игроков!</b>\n"
+                f"🗺 Карта: <b>{lobby.get('map_name', '?')}</b>\n\n"
+                f"💙 CT капитан: <b>{ct_cap_name}</b>\n"
+                f"🧡 T  капитан: <b>{t_cap_name}</b>\n\n"
+                f"Капитаны по очереди выбирают состав.",
+                parse_mode="HTML",
+            )
+        except Exception:
+            pass
+
+    _do_draft_turn(lobby_id)
+
+
+def _send_draft_pick_keyboard(lobby_id, captain_uid, turn):
+    lobby = active_lobbies.get(lobby_id)
+    if not lobby:
+        return
+    draft = lobby.get("draft", {})
+    units = draft.get("units", [])
+    priv_table = PRIVATE_CONFIG.get(lobby.get("private", "darling"), PRIVATE_CONFIG["darling"])["table"]
+    league     = lobby.get("league", "default")
+
+    turn_count = draft.get("turn_count", 0)
+    kb = types.InlineKeyboardMarkup(row_width=1)
+    for i, unit in enumerate(units):
+        if len(unit) == 1:
+            label = _player_draft_label(unit[0], lobby)
+        else:
+            # Party group
+            parts_l = []
+            elos = []
+            for uid2 in unit:
+                p = get_player_from_table(uid2, priv_table) or get_player(uid2)
+                if p:
+                    e = _resolve_display_elo(uid2, p, priv_table, league)
+                    elos.append(e)
+                    parts_l.append(p[1])
+                else:
+                    parts_l.append(str(uid2))
+            avg_elo = round(sum(elos) / len(elos)) if elos else 1000
+            label = f"👥 {' + '.join(parts_l)} [ELO ср. {avg_elo}]"
+        # Embed turn_count nonce so stale keyboards from previous turns are rejected
+        kb.add(types.InlineKeyboardButton(
+            f"✅ {label}",
+            callback_data=f"draftpick_{lobby_id}_{turn_count}_{i}",
+        ))
+
+    try:
+        sent = bot.send_message(
+            captain_uid,
+            f"{'💙' if turn == 'ct' else '🧡'} <b>Твой ход — выбери игрока:</b>",
+            reply_markup=kb,
+            parse_mode="HTML",
+        )
+        lobby["draft_kb_msgs"][captain_uid] = (sent.chat.id, sent.message_id)
+    except Exception as e:
+        print(f"[draft keyboard error] {e}")
+
+
+def _do_draft_turn(lobby_id):
+    lobby = active_lobbies.get(lobby_id)
+    if not lobby or lobby.get("status") != "draft":
+        return
+
+    draft     = lobby.get("draft", {})
+    units     = draft.get("units", [])
+    ct_needs  = draft.get("ct_needs", 0)
+    t_needs   = draft.get("t_needs",  0)
+
+    # Nothing left to draft
+    if not units or (ct_needs <= 0 and t_needs <= 0):
+        _finish_draft(lobby_id)
+        return
+
+    turn        = draft.get("turn", "ct")
+    captain_uid = lobby.get("ct_captain") if turn == "ct" else lobby.get("t_captain")
+
+    _send_draft_status_to_all(lobby_id)
+
+    # --- Bot captain: auto-pick best unit by avg ELO ---
+    if captain_uid and is_bot_player(captain_uid):
+        def _bot_pick():
+            time.sleep(random.uniform(2, 4))
+            l2 = active_lobbies.get(lobby_id)
+            if not l2 or l2.get("status") != "draft":
+                return
+            d2 = l2.get("draft", {})
+            u2 = d2.get("units", [])
+            if not u2:
+                return
+            priv_t = PRIVATE_CONFIG.get(l2.get("private","darling"), PRIVATE_CONFIG["darling"])["table"]
+            league2 = l2.get("league", "default")
+
+            def _unit_avg_elo(unit):
+                s = 0
+                for uid3 in unit:
+                    p3 = get_player_from_table(uid3, priv_t) or get_player(uid3)
+                    s += _resolve_display_elo(uid3, p3, priv_t, league2) if p3 else 1000
+                return s / len(unit)
+
+            best = max(u2, key=_unit_avg_elo)
+            _apply_draft_pick(lobby_id, d2.get("turn", turn), best)
+        threading.Thread(target=_bot_pick, daemon=True).start()
+
+    # --- Human captain: send keyboard + AFK timer ---
+    elif captain_uid:
+        _send_draft_pick_keyboard(lobby_id, captain_uid, turn)
+        snap_count = draft.get("turn_count", 0)
+
+        def _afk_timeout(snap=snap_count, cap=captain_uid, t=turn):
+            time.sleep(DRAFT_TURN_TIMEOUT)
+            l2 = active_lobbies.get(lobby_id)
+            if not l2 or l2.get("status") != "draft":
+                return
+            d2 = l2.get("draft", {})
+            if d2.get("turn_count", 0) != snap:
+                return  # someone already picked
+            u2 = d2.get("units", [])
+            if not u2:
+                return
+            chosen = random.choice(u2)
+            try:
+                bot.send_message(cap, f"⏰ Время вышло ({DRAFT_TURN_TIMEOUT} сек)! Игрок выбран автоматически.")
+            except Exception:
+                pass
+            _apply_draft_pick(lobby_id, d2.get("turn", t), chosen)
+        threading.Thread(target=_afk_timeout, daemon=True).start()
+
+    # --- No captain: auto-fill ---
+    else:
+        if units:
+            _apply_draft_pick(lobby_id, turn, units[0])
+
+
+def _apply_draft_pick(lobby_id, team, unit):
+    """Register a pick, advance the draft. Thread-safe via per-draft lock."""
+    lobby = active_lobbies.get(lobby_id)
+    if not lobby or lobby.get("status") != "draft":
+        return
+
+    draft = lobby.get("draft", {})
+    lock  = draft.get("lock")
+
+    # Acquire the per-draft lock (non-blocking: second concurrent pick loses)
+    if lock is not None:
+        acquired = lock.acquire(blocking=False)
+        if not acquired:
+            return  # another thread is mid-pick; discard this one
+    try:
+        # Re-validate state under lock
+        if not lobby or lobby.get("status") != "draft":
+            return
+        if draft.get("finished"):
+            return
+
+        unit_set = set(unit)
+
+        # Verify the unit still exists (concurrent AFK + callback race)
+        current_units = draft.get("units", [])
+        if not any(set(u) == unit_set for u in current_units):
+            return  # already picked by another thread
+
+        # Remove chosen unit
+        draft["units"] = [u for u in current_units if set(u) != unit_set]
+
+        # Add to team
+        if team == "ct":
+            draft["ct_team"].extend(unit)
+            draft["ct_needs"] = draft.get("ct_needs", 0) - len(unit)
+        else:
+            draft["t_team"].extend(unit)
+            draft["t_needs"] = draft.get("t_needs", 0) - len(unit)
+
+        draft["turn_count"] = draft.get("turn_count", 0) + 1
+
+        # Delete the pick keyboard for the captain who just picked
+        cap_uid = lobby.get("ct_captain") if team == "ct" else lobby.get("t_captain")
+        kb_msg  = lobby.get("draft_kb_msgs", {}).pop(cap_uid, None)
+
+        remaining_units = draft["units"]
+        ct_needs = draft.get("ct_needs", 0)
+        t_needs  = draft.get("t_needs",  0)
+
+        do_finish = not remaining_units or (ct_needs <= 0 and t_needs <= 0)
+
+        if not do_finish:
+            # Advance turn (skip if that team is full)
+            next_turn = "t" if team == "ct" else "ct"
+            if next_turn == "ct" and ct_needs <= 0:
+                next_turn = "t"
+            elif next_turn == "t" and t_needs <= 0:
+                next_turn = "ct"
+            draft["turn"] = next_turn
+
+    finally:
+        if lock is not None:
+            lock.release()
+
+    # Perform side-effects outside the lock
+    if kb_msg:
+        try:
+            bot.delete_message(kb_msg[0], kb_msg[1])
+        except Exception:
+            pass
+
+    if do_finish:
+        _finish_draft(lobby_id)
+    else:
+        _do_draft_turn(lobby_id)
+
+
+def _finish_draft(lobby_id):
+    """All picks done — send result, then launch the match. Idempotent."""
+    lobby = active_lobbies.get(lobby_id)
+    if not lobby:
+        return
+
+    draft = lobby.get("draft", {})
+    # Guard against double-call from concurrent threads
+    if draft.get("finished"):
+        return
+    draft["finished"] = True
+    ct_team = list(draft.get("ct_team", []))
+    t_team  = list(draft.get("t_team",  []))
+
+    # Overflow safety: put leftover units anywhere they fit
+    league  = lobby.get("league", "default")
+    team_sz = _lobby_team_size(league)
+    for unit in draft.get("units", []):
+        for uid in unit:
+            if len(ct_team) < team_sz:
+                ct_team.append(uid)
+            elif len(t_team) < team_sz:
+                t_team.append(uid)
+
+    # Store final teams so launch_match uses them
+    lobby["draft_ct_team"] = ct_team
+    lobby["draft_t_team"]  = t_team
+
+    # Delete live-status messages
+    for uid, (cid, mid) in list(lobby.get("draft_status_msgs", {}).items()):
+        try:
+            bot.delete_message(cid, mid)
+        except Exception:
+            pass
+    lobby["draft_status_msgs"] = {}
+
+    # Announce final rosters
+    priv_table = PRIVATE_CONFIG.get(lobby.get("private", "darling"), PRIVATE_CONFIG["darling"])["table"]
+
+    def pname(uid):
+        p = get_player_from_table(uid, priv_table) or get_player(uid)
+        return p[1] if p else str(uid)
+
+    ct_lines = "\n".join(f"  {pname(u)}" for u in ct_team)
+    t_lines  = "\n".join(f"  {pname(u)}" for u in t_team)
+
+    for uid in lobby["players"]:
+        if is_bot_player(uid):
+            continue
+        try:
+            bot.send_message(
+                uid,
+                f"✅ <b>Команды выбраны!</b>\n\n"
+                f"💙 <b>CT:</b>\n{ct_lines}\n\n"
+                f"🧡 <b>T:</b>\n{t_lines}\n\n"
+                f"🗺 Карта: <b>{lobby.get('map_name', '?')}</b>",
+                parse_mode="HTML",
+            )
+        except Exception:
+            pass
+
+    lobby["status"] = "pre_launch"
+    threading.Thread(
+        target=lambda: (time.sleep(2), launch_match(lobby_id)),
+        daemon=True,
+    ).start()
+
+
+@bot.callback_query_handler(func=lambda c: c.data.startswith("draftpick_"))
+def cb_draft_pick(c):
+    uid = c.from_user.id
+    raw = c.data[len("draftpick_"):]
+    # Format: draftpick_{lobby_id}_{turn_count}_{unit_index}
+    # lobby_id contains underscores → rsplit from right for the last 2 tokens
+    parts = raw.rsplit("_", 2)
+    if len(parts) < 3:
+        bot.answer_callback_query(c.id, "❌ Ошибка формата")
+        return
+    lobby_id = parts[0]
+    try:
+        nonce    = int(parts[1])   # turn_count at the time keyboard was sent
+        unit_idx = int(parts[2])
+    except ValueError:
+        bot.answer_callback_query(c.id, "❌ Ошибка")
+        return
+
+    lobby = active_lobbies.get(lobby_id)
+    if not lobby or lobby.get("status") != "draft":
+        bot.answer_callback_query(c.id, "❌ Фаза выбора уже завершена")
+        return
+
+    draft   = lobby.get("draft", {})
+    turn    = draft.get("turn", "ct")
+    cap_uid = lobby.get("ct_captain") if turn == "ct" else lobby.get("t_captain")
+
+    if uid != cap_uid:
+        bot.answer_callback_query(c.id, "❌ Сейчас не ваш ход!", show_alert=True)
+        return
+
+    # Reject stale keyboard from a previous turn
+    if nonce != draft.get("turn_count", 0):
+        bot.answer_callback_query(c.id, "⏰ Эта клавиатура устарела — ход уже был сделан")
+        return
+
+    units = draft.get("units", [])
+    if unit_idx >= len(units):
+        bot.answer_callback_query(c.id, "❌ Игрок уже был выбран — список обновился")
+        return
+
+    chosen = units[unit_idx]
+    bot.answer_callback_query(c.id, "✅ Выбрано!")
+
+    try:
+        bot.delete_message(c.message.chat.id, c.message.message_id)
+    except Exception:
+        pass
+    lobby.get("draft_kb_msgs", {}).pop(uid, None)
+
+    _apply_draft_pick(lobby_id, turn, chosen)
 
 
 # ==================== ЗАПУСК МАТЧА ====================
@@ -4220,8 +4816,23 @@ def pline_link(uid, priv_table=None, league=None):
     return str(uid)
 
 def launch_match(lobby_id):
+    try:
+        _launch_match_inner(lobby_id)
+    except Exception as _lm_exc:
+        print(f"[launch_match] КРИТИЧЕСКАЯ ОШИБКА lobby={lobby_id}: {_lm_exc}")
+        import traceback; traceback.print_exc()
+        # Notify admins so the crash is not silent
+        try:
+            for _aid in ADMIN_IDS_LIST:
+                bot.send_message(_aid, f"🚨 <b>launch_match ОШИБКА</b>\nЛобби: <code>{lobby_id}</code>\nОшибка: {_lm_exc}", parse_mode="HTML")
+        except Exception:
+            pass
+
+def _launch_match_inner(lobby_id):
     lobby = active_lobbies.get(lobby_id)
-    if not lobby or lobby["status"] not in ("accepting", "waiting", "mapban", "pre_mapban"):
+    if not lobby or lobby["status"] not in (
+        "accepting", "waiting", "mapban", "pre_mapban", "draft", "pre_launch"
+    ):
         return
     lobby["status"] = "active"
     if not lobby.get("map_name"):
@@ -4240,105 +4851,117 @@ def launch_match(lobby_id):
     ct_cap = lobby.get("ct_captain")
     t_cap  = lobby.get("t_captain")
 
-    placed, party_groups, solo_players = set(), [], []
-    for uid2 in players:
-        if uid2 in placed:
-            continue
-        p_obj = get_party_of(uid2)
-        if p_obj and len(p_obj["members"]) > 1:
-            grp = [m for m in p_obj["members"] if m in players and m not in placed]
-            if grp:
-                party_groups.append(grp)
-                for m in grp:
-                    placed.add(m)
-        else:
-            solo_players.append(uid2)
-            placed.add(uid2)
-
-    random.shuffle(party_groups)
-    random.shuffle(solo_players)
-
-    team_ct, team_t = [], []
-
-    if ct_cap and ct_cap in players:
-        team_ct.append(ct_cap)
-        for grp in party_groups:
-            if ct_cap in grp:
-                for m in grp:
-                    if m != ct_cap and m not in team_ct:
-                        team_ct.append(m)
-                break
-    if t_cap and t_cap in players and t_cap not in team_ct:
-        team_t.append(t_cap)
-        for grp in party_groups:
-            if t_cap in grp:
-                for m in grp:
-                    if m != t_cap and m not in team_t and m not in team_ct:
-                        team_t.append(m)
-                break
-
-    already_placed = set(team_ct + team_t)
-
     _team_sz = _lobby_team_size(lobby.get("league", "default"))
 
-    for grp in party_groups:
-        if all(m in already_placed for m in grp):
-            continue
-        remaining_grp = [m for m in grp if m not in already_placed]
-        if not remaining_grp:
-            continue
-        if len(team_ct) + len(remaining_grp) <= _team_sz:
-            team_ct.extend(remaining_grp)
-        elif len(team_t) + len(remaining_grp) <= _team_sz:
-            team_t.extend(remaining_grp)
-        else:
-            # Не разбиваем пати — кидаем всю группу в команду с большим запасом мест
-            ct_free = _team_sz - len(team_ct)
-            t_free  = _team_sz - len(team_t)
-            if ct_free >= t_free:
-                team_ct.extend(remaining_grp)
+    # If the draft phase already determined teams, use them directly
+    if lobby.get("draft_ct_team") and lobby.get("draft_t_team"):
+        team_ct = list(lobby["draft_ct_team"])
+        team_t  = list(lobby["draft_t_team"])
+        # Safety: add any player not yet placed
+        all_placed = set(team_ct + team_t)
+        for u in players:
+            if u not in all_placed:
+                if len(team_ct) < _team_sz:
+                    team_ct.append(u)
+                else:
+                    team_t.append(u)
+    else:
+        # ---- Fallback: original auto-assignment (no draft phase) ----
+        placed, party_groups, solo_players = set(), [], []
+        for uid2 in players:
+            if uid2 in placed:
+                continue
+            p_obj = get_party_of(uid2)
+            if p_obj and len(p_obj["members"]) > 1:
+                grp = [m for m in p_obj["members"] if m in players and m not in placed]
+                if grp:
+                    party_groups.append(grp)
+                    for m in grp:
+                        placed.add(m)
             else:
+                solo_players.append(uid2)
+                placed.add(uid2)
+
+        random.shuffle(party_groups)
+        random.shuffle(solo_players)
+
+        team_ct, team_t = [], []
+
+        if ct_cap and ct_cap in players:
+            team_ct.append(ct_cap)
+            for grp in party_groups:
+                if ct_cap in grp:
+                    for m in grp:
+                        if m != ct_cap and m not in team_ct:
+                            team_ct.append(m)
+                    break
+        if t_cap and t_cap in players and t_cap not in team_ct:
+            team_t.append(t_cap)
+            for grp in party_groups:
+                if t_cap in grp:
+                    for m in grp:
+                        if m != t_cap and m not in team_t and m not in team_ct:
+                            team_t.append(m)
+                    break
+
+        already_placed = set(team_ct + team_t)
+
+        for grp in party_groups:
+            if all(m in already_placed for m in grp):
+                continue
+            remaining_grp = [m for m in grp if m not in already_placed]
+            if not remaining_grp:
+                continue
+            if len(team_ct) + len(remaining_grp) <= _team_sz:
+                team_ct.extend(remaining_grp)
+            elif len(team_t) + len(remaining_grp) <= _team_sz:
                 team_t.extend(remaining_grp)
-        for m in remaining_grp:
-            already_placed.add(m)
+            else:
+                ct_free = _team_sz - len(team_ct)
+                t_free  = _team_sz - len(team_t)
+                if ct_free >= t_free:
+                    team_ct.extend(remaining_grp)
+                else:
+                    team_t.extend(remaining_grp)
+            for m in remaining_grp:
+                already_placed.add(m)
 
-    for uid2 in solo_players:
-        if uid2 in already_placed:
-            continue
-        if len(team_ct) < _team_sz:
-            team_ct.append(uid2)
-        else:
-            team_t.append(uid2)
+        for uid2 in solo_players:
+            if uid2 in already_placed:
+                continue
+            if len(team_ct) < _team_sz:
+                team_ct.append(uid2)
+            else:
+                team_t.append(uid2)
 
-    # Гарантируем ровно NvN (5v5 или 2v2)
-    all_placed_set = set(team_ct + team_t)
-    unplaced = [u for u in players if u not in all_placed_set]
-    for u in unplaced:
-        if len(team_ct) < _team_sz:
-            team_ct.append(u)
-        else:
-            team_t.append(u)
+        # Гарантируем ровно NvN (5v5 или 2v2)
+        all_placed_set = set(team_ct + team_t)
+        unplaced = [u for u in players if u not in all_placed_set]
+        for u in unplaced:
+            if len(team_ct) < _team_sz:
+                team_ct.append(u)
+            else:
+                team_t.append(u)
 
-    # Перебалансируем если нужно, не разбивая пати
-    def _party_safe_move(src, dst, max_sz):
-        """Перекидывает игроков из src в dst пока src > max_sz, не разбивая пати."""
-        while len(src) > max_sz and len(dst) < max_sz:
-            moved = False
-            for candidate in reversed(src):
-                p_obj = get_party_of(candidate)
-                if p_obj and len(p_obj["members"]) > 1:
-                    party_in_src = [m for m in p_obj["members"] if m in src]
-                    if len(party_in_src) > 1:
-                        continue  # Нельзя — разобьёт пати
-                src.remove(candidate)
-                dst.insert(0, candidate)
-                moved = True
-                break
-            if not moved:
-                break  # Невозможно перебалансировать без разбивки пати
+        # Перебалансируем если нужно, не разбивая пати
+        def _party_safe_move(src, dst, max_sz):
+            while len(src) > max_sz and len(dst) < max_sz:
+                moved = False
+                for candidate in reversed(src):
+                    p_obj = get_party_of(candidate)
+                    if p_obj and len(p_obj["members"]) > 1:
+                        party_in_src = [m for m in p_obj["members"] if m in src]
+                        if len(party_in_src) > 1:
+                            continue
+                    src.remove(candidate)
+                    dst.insert(0, candidate)
+                    moved = True
+                    break
+                if not moved:
+                    break
 
-    _party_safe_move(team_ct, team_t, _team_sz)
-    _party_safe_move(team_t, team_ct, _team_sz)
+        _party_safe_move(team_ct, team_t, _team_sz)
+        _party_safe_move(team_t, team_ct, _team_sz)
 
     lobby["team_ct"] = team_ct
     lobby["team_t"]  = team_t
@@ -4446,10 +5069,30 @@ def launch_match(lobby_id):
 
     running_matches[match_key] = lobby
     # Сохраняем матч в БД при старте (статус 'active')
-    try:
-        save_match_start(lobby)
-    except Exception as e:
-        print(f"save_match_start error: {e}")
+    # Retry up to 3 times with a short pause; notify admin on persistent failure
+    _db_saved = False
+    for _db_attempt in range(3):
+        try:
+            save_match_start(lobby)
+            _db_saved = True
+            break
+        except Exception as _db_e:
+            print(f"[save_match_start] попытка {_db_attempt+1}/3 ошибка: {_db_e}")
+            if _db_attempt < 2:
+                time.sleep(1)
+    if not _db_saved:
+        try:
+            for _aid in ADMIN_IDS_LIST:
+                bot.send_message(
+                    _aid,
+                    f"🚨 <b>Матч не сохранён в БД!</b>\n"
+                    f"Матч: <code>{match_code}</code>\n"
+                    f"Lobby: <code>{lobby_id}</code>\n"
+                    f"Проверьте подключение к базе данных.",
+                    parse_mode="HTML",
+                )
+        except Exception:
+            pass
     parts = lobby_id.split("_")
     if len(parts) >= 4:
         # Format: private_league_device_slot
