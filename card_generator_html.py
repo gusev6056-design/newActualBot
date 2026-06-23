@@ -856,10 +856,25 @@ def generate_profile_card(
         playtime_hours=playtime_hours, join_date=join_date, games=games,
     )
 
-    png_bytes = _html_to_png(html, width=1055)
-    buf = io.BytesIO(png_bytes)
-    buf.seek(0)
-    return buf
+    try:
+        png_bytes = _html_to_png(html, width=1055)
+        buf = io.BytesIO(png_bytes)
+        buf.seek(0)
+        return buf
+    except Exception as e:
+        print(f"⚠️ weasyprint/PyMuPDF недоступен, фоллбэк на Pillow: {e}")
+        from card_generator import generate_profile_card as _pil_card
+        return _pil_card(
+            username=username, game_id=game_id, user_id=user_id,
+            elo=elo, wins=wins, losses=losses, kills=kills,
+            deaths=deaths, assists=assists, is_premium=is_premium,
+            is_admin=is_admin, global_rank=global_rank, league=league,
+            map_stats=map_stats or [], recent=recent or [],
+            leaderboard=leaderboard or [], quals_stats=quals_stats,
+            mvp_count=mvp_count, is_verified=is_verified,
+            duo_stats=duo_stats, avatar_bytes=avatar_bytes,
+            active_frame=active_frame, active_banner=active_banner,
+        )
 
 
 # ──────────────────────────────────────────────────────────────────────────────
