@@ -12,6 +12,14 @@ import math
 import os
 from typing import Optional
 
+# Проверяем зависимости при импорте — если недоступны, бот переключится на PIL
+try:
+    import fitz as _fitz_test  # noqa: F401
+    from weasyprint import HTML as _wp_test  # noqa: F401
+    del _fitz_test, _wp_test
+except Exception as _dep_err:
+    raise ImportError(f"weasyprint/PyMuPDF недоступны, используем PIL: {_dep_err}")
+
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Helpers
