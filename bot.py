@@ -4394,6 +4394,18 @@ def _start_draft_phase_inner(lobby_id):
     if lobby.get("status") not in ("mapban",):
         return
 
+    # ── Чистим сообщения фазы бана ──────────────────────────────────────────
+    # Статус-сообщения бана (у всех игроков)
+    delete_ban_status(lobby_id)
+    # Клавиатура бана (у текущего капитана)
+    _ban_kb = ban_turn_messages.pop(lobby_id, None)
+    if _ban_kb:
+        try:
+            bot.delete_message(_ban_kb[0], _ban_kb[1])
+        except Exception:
+            pass
+    # ────────────────────────────────────────────────────────────────────────
+
     lobby["status"] = "draft"
 
     players = lobby["players"]
@@ -5990,7 +6002,10 @@ def cb_shop(c):
         return
     kb = types.InlineKeyboardMarkup(row_width=1)
     for cat, name in CATEGORY_NAMES.items():
-        kb.add(types.InlineKeyboardButton(name, callback_data=f"shop_cat_{cat}"))
+        if cat == "decor":
+            kb.add(types.InlineKeyboardButton("🔧 Декор (Тех. работы)", callback_data="shop_cat_decor"))
+        else:
+            kb.add(types.InlineKeyboardButton(name, callback_data=f"shop_cat_{cat}"))
     kb.add(types.InlineKeyboardButton("🔙 Назад", callback_data="back"))
     bot.edit_message_text("🛒 <b>МАГАЗИН</b>\n\nВыберите категорию:", c.message.chat.id, c.message.message_id, reply_markup=kb)
     bot.answer_callback_query(c.id)
@@ -6000,6 +6015,18 @@ def cb_shop(c):
 def cb_shop_category(c):
     uid = c.from_user.id
     category = c.data.split("shop_cat_")[1]
+    # ДЕКОР — технические работы
+    if category == "decor":
+        kb = types.InlineKeyboardMarkup()
+        kb.add(types.InlineKeyboardButton("🔙 Назад", callback_data="shop"))
+        bot.edit_message_text(
+            "🔧 <b>Декор — Технические работы</b>\n\n"
+            "⚙️ Раздел временно недоступен.\n"
+            "Приносим извинения за неудобства!",
+            c.message.chat.id, c.message.message_id, reply_markup=kb, parse_mode="HTML",
+        )
+        bot.answer_callback_query(c.id)
+        return
     items = get_shop_items_by_category(category)
     p = get_player(uid)
     coins = p[5] if p else 0
@@ -6049,6 +6076,11 @@ def cb_shop_item(c):
 def cb_shop_buy(c):
     uid = c.from_user.id
     item_id = int(c.data.split("shop_buy_")[1])
+    # Блокируем покупку декора — раздел на тех. работах
+    _item_check = get_shop_item(item_id)
+    if _item_check and _item_check[3] == "decor":
+        bot.answer_callback_query(c.id, "🔧 Декор временно недоступен (тех. работы)", show_alert=True)
+        return
     ok, msg = buy_item(uid, item_id)
     bot.answer_callback_query(c.id, msg[:200], show_alert=not ok)
     if ok:
