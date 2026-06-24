@@ -20,6 +20,13 @@ TEAL_DIM     = (  0, 110, 115)
 CT_BLUE      = ( 60, 130, 210)
 T_ORANGE     = (215, 120,  25)
 
+# Blue Lock palette
+BL_WHITE     = (245, 245, 250)
+BL_BLACK     = ( 12,  10,  18)
+BL_BLUE      = (  0,  80, 220)
+BL_BLUE_LT   = ( 30, 130, 255)
+BL_NAVY      = (  8,  18,  52)
+
 LVL_COLORS = {
     1:  ( 90,  90,  90), 2:  (110, 110, 110), 3:  (  0, 160, 160),
     4:  (  0, 160, 160), 5:  ( 30, 130, 210), 6:  ( 30, 130, 210),
@@ -134,85 +141,273 @@ def _apply_glow(img: Image.Image, xy, r: int, color, strength: int = 18, layers:
     return base.convert("RGB")
 
 
-# ==================== AVATAR PASTE ====================
+# ==================== BLUE LOCK DECORATIONS ====================
+
+def _draw_bl_anime_eye(draw, cx: int, cy: int, w: int = 28, h: int = 14,
+                        color=(0, 80, 220), highlight=(255, 255, 255)):
+    """Draw a sharp anime-style eye (Blue Lock motif)."""
+    # Outer sharp almond shape
+    pts = [
+        (cx - w,      cy),
+        (cx - w // 3, cy - h),
+        (cx + w // 3, cy - h),
+        (cx + w,      cy),
+        (cx + w // 3, cy + h // 2),
+        (cx - w // 3, cy + h // 2),
+    ]
+    draw.polygon(pts, fill=color)
+    # Pupil (dark)
+    pr = int(h * 0.62)
+    draw.ellipse([(cx - pr, cy - pr), (cx + pr, cy + pr)], fill=(6, 4, 12))
+    # Iris ring
+    ir = int(pr * 0.75)
+    draw.ellipse([(cx - ir, cy - ir), (cx + ir, cy + ir)], fill=color)
+    # Pupil center
+    pc = int(ir * 0.45)
+    draw.ellipse([(cx - pc, cy - pc), (cx + pc, cy + pc)], fill=(6, 4, 12))
+    # Sharp highlight (top-left star)
+    hs = max(3, int(h * 0.38))
+    hx, hy = cx - ir // 2, cy - ir // 2
+    draw.ellipse([(hx - hs, hy - hs), (hx + hs, hy + hs)], fill=highlight)
+    # Small secondary highlight
+    draw.ellipse([(cx + ir // 3, cy - ir // 3 - 1),
+                  (cx + ir // 3 + hs // 2, cy - ir // 3 + hs // 2 - 1)], fill=highlight)
+
+
+def _draw_bl_corner_bracket(draw, x: int, y: int, size: int, color,
+                              corner: str = "tl", width: int = 3):
+    """Draw an L-shaped bracket at a corner. corner = tl/tr/bl/br."""
+    L = size
+    if corner == "tl":
+        draw.line([(x, y), (x + L, y)], fill=color, width=width)
+        draw.line([(x, y), (x, y + L)], fill=color, width=width)
+    elif corner == "tr":
+        draw.line([(x - L, y), (x, y)], fill=color, width=width)
+        draw.line([(x, y), (x, y + L)], fill=color, width=width)
+    elif corner == "bl":
+        draw.line([(x, y - L), (x, y)], fill=color, width=width)
+        draw.line([(x, y), (x + L, y)], fill=color, width=width)
+    elif corner == "br":
+        draw.line([(x, y - L), (x, y)], fill=color, width=width)
+        draw.line([(x - L, y), (x, y)], fill=color, width=width)
+
+
+def _draw_bl_banner(draw, img: Image.Image, x1: int, y1: int, x2: int, y2: int):
+    """Render a Blue Lock–style banner overlay on the header strip."""
+    W = x2 - x1
+    H = y2 - y1
+
+    # White base
+    draw.rectangle([(x1, y1), (x2, y2)], fill=BL_WHITE)
+
+    # Dark navy stripe on left (where avatar sits)
+    draw.rectangle([(x1, y1), (x1 + 148, y2)], fill=BL_NAVY)
+
+    # Bold diagonal slash: black triangle on right half
+    slash_pts = [
+        (x1 + W // 2 - 40, y1),
+        (x1 + W // 2 + 30, y1),
+        (x1 + W // 2 - 30, y2),
+        (x1 + W // 2 - 100, y2),
+    ]
+    draw.polygon(slash_pts, fill=(12, 10, 18))
+
+    # Thin electric-blue accent lines on the slash
+    for offset in (0, 6, 12):
+        pts = [
+            (x1 + W // 2 - 40 + offset, y1),
+            (x1 + W // 2 - 40 + offset + 4, y1),
+            (x1 + W // 2 - 30 + offset + 4, y2),
+            (x1 + W // 2 - 30 + offset, y2),
+        ]
+        draw.polygon(pts, fill=BL_BLUE_LT)
+
+    # Bottom border accent line (blue)
+    draw.rectangle([(x1, y2 - 3), (x2, y2)], fill=BL_BLUE)
+
+    # Top-right "BL" branding mark
+    bx, by = x2 - 48, y1 + 6
+    draw.rectangle([(bx, by), (bx + 40, by + 18)], fill=BL_BLUE)
+    draw.text((bx + 4, by + 2), "BL", font=_font(12, bold=True), fill=BL_WHITE)
+
+    # Two anime eyes on the right side of header
+    eye_y = y1 + H // 2
+    _draw_bl_anime_eye(draw, x2 - 110, eye_y, w=22, h=10, color=BL_BLUE, highlight=BL_WHITE)
+    _draw_bl_anime_eye(draw, x2 - 55,  eye_y, w=22, h=10, color=BL_BLUE, highlight=BL_WHITE)
+
+    return draw
+
+
+def _draw_bl_background(img: Image.Image) -> Image.Image:
+    """Apply a Blue Lock–style geometric background pattern to the card."""
+    W, H = img.size
+    overlay = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+    od = ImageDraw.Draw(overlay)
+
+    # Diagonal grid lines (thin, low opacity)
+    step = 48
+    for i in range(-H, W + H, step):
+        od.line([(i, 0), (i + H, H)], fill=(*BL_BLUE, 18), width=1)
+    for i in range(-H, W + H, step * 3):
+        od.line([(i, 0), (i + H, H)], fill=(*BL_BLUE, 35), width=2)
+
+    # Sporadic triangle accents (corners)
+    tri_size = 60
+    # Top-right triangle
+    od.polygon([
+        (W - tri_size, 0), (W, 0), (W, tri_size)
+    ], fill=(*BL_BLUE, 55))
+    # Bottom-left triangle
+    od.polygon([
+        (0, H - tri_size), (tri_size, H), (0, H)
+    ], fill=(*BL_BLUE, 55))
+
+    overlay = overlay.filter(ImageFilter.GaussianBlur(radius=0))
+    base = img.convert("RGBA")
+    base = Image.alpha_composite(base, overlay)
+    return base.convert("RGB")
+
+
+# ==================== FRAME BORDER (SQUARE) ====================
+
 def _draw_frame_border(img: Image.Image, draw: ImageDraw.ImageDraw,
                        ax: int, ay: int, size: int, frame_name: str) -> tuple:
-    """Draw a decorative frame border around the avatar based on frame_name."""
+    """Draw a square decorative frame border around the avatar based on frame_name.
+    All frames are square (matching the square avatar shape).
+    """
     fn = (frame_name or "").lower()
-    cx, cy, r = ax + size // 2, ay + size // 2, size // 2
 
+    # ── Gold frame ──────────────────────────────────────────────────────────
     if "gold" in fn or "золот" in fn:
         COLORS = [(232, 185, 0), (255, 215, 60), (200, 150, 0)]
         for i, col in enumerate(COLORS):
-            bw = 5 - i
-            offset = i * 3
-            draw.ellipse(
-                [(ax - offset - bw, ay - offset - bw),
-                 (ax + size + offset + bw, ay + size + offset + bw)],
+            bw = 4 - i
+            off = i * 3
+            draw.rectangle(
+                [(ax - off - bw, ay - off - bw),
+                 (ax + size + off + bw, ay + size + off + bw)],
                 outline=col, width=bw,
             )
-        for angle_deg in range(0, 360, 45):
-            angle = math.radians(angle_deg)
-            sx = int(cx + (r + 10) * math.cos(angle))
-            sy = int(cy + (r + 10) * math.sin(angle))
-            draw.ellipse([(sx - 3, sy - 3), (sx + 3, sy + 3)], fill=(255, 215, 60))
+        # Corner diamond accents
+        for cx2, cy2 in [
+            (ax, ay), (ax + size, ay),
+            (ax, ay + size), (ax + size, ay + size)
+        ]:
+            s = 5
+            draw.polygon(
+                [(cx2, cy2 - s), (cx2 + s, cy2), (cx2, cy2 + s), (cx2 - s, cy2)],
+                fill=(255, 215, 60),
+            )
 
+    # ── Diamond frame ────────────────────────────────────────────────────────
     elif "diamond" in fn or "алмаз" in fn:
         COLORS = [(0, 220, 230), (80, 240, 255), (0, 160, 180)]
         for i, col in enumerate(COLORS):
-            bw = 5 - i
-            offset = i * 3
-            draw.ellipse(
-                [(ax - offset - bw, ay - offset - bw),
-                 (ax + size + offset + bw, ay + size + offset + bw)],
+            bw = 4 - i
+            off = i * 3
+            draw.rectangle(
+                [(ax - off - bw, ay - off - bw),
+                 (ax + size + off + bw, ay + size + off + bw)],
                 outline=col, width=bw,
             )
-        for angle_deg in range(0, 360, 60):
-            angle = math.radians(angle_deg)
-            sx = int(cx + (r + 11) * math.cos(angle))
-            sy = int(cy + (r + 11) * math.sin(angle))
-            s = 5
-            draw.polygon(
-                [(sx, sy - s), (sx + s//2, sy), (sx, sy + s), (sx - s//2, sy)],
-                fill=(130, 245, 255),
-            )
+        # Corner bracket accents
+        bsz = 12
+        for cx2, cy2, corner in [
+            (ax - 6, ay - 6, "tl"), (ax + size + 6, ay - 6, "tr"),
+            (ax - 6, ay + size + 6, "bl"), (ax + size + 6, ay + size + 6, "br"),
+        ]:
+            _draw_bl_corner_bracket(draw, cx2, cy2, bsz, (130, 245, 255),
+                                    corner=corner, width=2)
 
+    # ── Elite frame ──────────────────────────────────────────────────────────
     elif "elite" in fn or "элит" in fn:
         COLORS = [(148, 0, 211), (180, 60, 255), (100, 0, 160)]
         for i, col in enumerate(COLORS):
-            bw = 5 - i
-            offset = i * 3
-            draw.ellipse(
-                [(ax - offset - bw, ay - offset - bw),
-                 (ax + size + offset + bw, ay + size + offset + bw)],
+            bw = 4 - i
+            off = i * 3
+            draw.rectangle(
+                [(ax - off - bw, ay - off - bw),
+                 (ax + size + off + bw, ay + size + off + bw)],
                 outline=col, width=bw,
             )
-        for angle_deg in range(0, 360, 30):
-            angle = math.radians(angle_deg)
-            sx = int(cx + (r + 10) * math.cos(angle))
-            sy = int(cy + (r + 10) * math.sin(angle))
-            draw.ellipse([(sx - 2, sy - 2), (sx + 2, sy + 2)], fill=(200, 100, 255))
+        # Small dot accents along edges
+        edge_step = size // 4
+        for k in range(1, 4):
+            for px2, py2 in [
+                (ax + k * edge_step, ay - 8),
+                (ax + k * edge_step, ay + size + 8),
+                (ax - 8, ay + k * edge_step),
+                (ax + size + 8, ay + k * edge_step),
+            ]:
+                draw.ellipse([(px2 - 2, py2 - 2), (px2 + 2, py2 + 2)],
+                             fill=(200, 100, 255))
+
+    # ── Blue Lock frame ──────────────────────────────────────────────────────
+    elif "blue lock" in fn or "блю лок" in fn or "bluelock" in fn or "bl" == fn:
+        # Outer white border
+        draw.rectangle(
+            [(ax - 5, ay - 5), (ax + size + 5, ay + size + 5)],
+            outline=BL_WHITE, width=4,
+        )
+        # Inner black border
+        draw.rectangle(
+            [(ax - 2, ay - 2), (ax + size + 2, ay + size + 2)],
+            outline=BL_BLACK, width=2,
+        )
+        # Electric blue corner brackets (L-brackets)
+        bsz = 18
+        bracket_w = 3
+        for cx2, cy2, corner in [
+            (ax - 6, ay - 6, "tl"), (ax + size + 6, ay - 6, "tr"),
+            (ax - 6, ay + size + 6, "bl"), (ax + size + 6, ay + size + 6, "br"),
+        ]:
+            _draw_bl_corner_bracket(draw, cx2, cy2, bsz, BL_BLUE_LT,
+                                    corner=corner, width=bracket_w)
+        # Tiny anime eye accents above top-left and top-right corners
+        _draw_bl_anime_eye(draw, ax + 12,       ay - 14, w=10, h=5,
+                            color=BL_BLUE, highlight=BL_WHITE)
+        _draw_bl_anime_eye(draw, ax + size - 12, ay - 14, w=10, h=5,
+                            color=BL_BLUE, highlight=BL_WHITE)
 
     return img, draw
 
 
+# ==================== AVATAR PASTE (SQUARE) ====================
+
 def _paste_avatar(img: Image.Image, avatar_bytes: bytes, x: int, y: int, size: int,
-                  border_color=None, border_width: int = 2) -> Image.Image:
-    """Paste a circular avatar image at (x, y) with given size."""
+                  border_color=None, border_width: int = 2,
+                  square: bool = True) -> Image.Image:
+    """Paste an avatar at (x, y). Square by default (matches square frame design)."""
     try:
         av_img = Image.open(io.BytesIO(avatar_bytes)).convert("RGBA")
         av_img = av_img.resize((size, size), Image.LANCZOS)
-        mask = Image.new("L", (size, size), 0)
-        md = ImageDraw.Draw(mask)
-        md.ellipse([(0, 0), (size - 1, size - 1)], fill=255)
-        output = Image.new("RGBA", img.size, (0, 0, 0, 0))
-        output.paste(av_img, (x, y), mask)
+
+        if square:
+            # Square paste — no mask needed, just paste directly
+            output = Image.new("RGBA", img.size, (0, 0, 0, 0))
+            output.paste(av_img, (x, y))
+        else:
+            # Legacy circular paste
+            mask = Image.new("L", (size, size), 0)
+            md = ImageDraw.Draw(mask)
+            md.ellipse([(0, 0), (size - 1, size - 1)], fill=255)
+            output = Image.new("RGBA", img.size, (0, 0, 0, 0))
+            output.paste(av_img, (x, y), mask)
+
         result = Image.alpha_composite(img.convert("RGBA"), output).convert("RGB")
         if border_color:
             d = ImageDraw.Draw(result)
             bw = border_width
-            d.ellipse([(x - bw, y - bw), (x + size + bw - 1, y + size + bw - 1)],
-                      outline=border_color, width=bw)
+            if square:
+                d.rectangle(
+                    [(x - bw, y - bw), (x + size + bw - 1, y + size + bw - 1)],
+                    outline=border_color, width=bw,
+                )
+            else:
+                d.ellipse(
+                    [(x - bw, y - bw), (x + size + bw - 1, y + size + bw - 1)],
+                    outline=border_color, width=bw,
+                )
         return result
     except Exception as e:
         print(f"[_paste_avatar] {e}")
@@ -230,35 +425,36 @@ def get_level(elo: int) -> int:
 
 # ==================== PROFILE CARD ====================
 def generate_profile_card(
-    username:     str,
-    game_id:      str,
-    user_id:      int,
-    elo:          int,
-    wins:         int,
-    losses:       int,
-    kills:        int,
-    deaths:       int,
-    assists:      int,
-    is_premium:   bool,
-    is_admin:     bool,
-    global_rank:  int,
-    league:       str,
-    map_stats:    list,
-    recent:       list,
-    leaderboard:  list,
-    quals_stats:  dict  = None,
-    mvp_count:    int   = 0,
-    is_verified:  bool  = False,
-    duo_stats:    dict  = None,
-    avatar_bytes: bytes = None,
-    active_frame: str   = None,
-    active_banner: str  = None,
+    username:          str,
+    game_id:           str,
+    user_id:           int,
+    elo:               int,
+    wins:              int,
+    losses:            int,
+    kills:             int,
+    deaths:            int,
+    assists:           int,
+    is_premium:        bool,
+    is_admin:          bool,
+    global_rank:       int,
+    league:            str,
+    map_stats:         list,
+    recent:            list,
+    leaderboard:       list,
+    quals_stats:       dict  = None,
+    mvp_count:         int   = 0,
+    is_verified:       bool  = False,
+    duo_stats:         dict  = None,
+    avatar_bytes:      bytes = None,
+    active_frame:      str   = None,
+    active_banner:     str   = None,
+    active_background: str   = None,
 ) -> io.BytesIO:
 
     QUALS_H = 70 if quals_stats else 0
     DUO_H   = 70 if duo_stats   else 0
     W, H = 1055, 695 + QUALS_H + DUO_H
-    # ===== DEEP PURPLE THEME =====
+
     _BG         = (14,  12,  24)
     _BG_GRID    = (20,  16,  34)
     _PANEL      = (24,  18,  44)
@@ -295,34 +491,175 @@ def generate_profile_card(
     impact = round((kills + assists) / games, 2) if games > 0 else 0.0
     rating = round(kd * (wr / 100) * 2, 2)       if games > 0 else 0.0
 
+    # ===== BACKGROUND STYLE =====
+    fn_bg = (active_background or "").lower()
+    if "blue lock" in fn_bg or "блю лок" in fn_bg or "bluelock" in fn_bg:
+        img = _draw_bl_background(img)
+        draw = ImageDraw.Draw(img)
+
     # ===== BANNER STRIP (behind header) =====
     fn_banner = (active_banner or "").lower()
-    if "gold" in fn_banner or "золот" in fn_banner:
-        _banner_col = (80, 55, 0)
-        _banner_line = (232, 185, 0)
+
+    def _draw_gold_banner_hdr(d, x1, y1, x2, y2):
+        """Rich gold/amber header banner."""
+        d.rectangle([(x1, y1), (x2, y2)], fill=(54, 38, 4))
+        # Layered amber gradient effect (dark to bright in bands)
+        for i, (col, h_frac) in enumerate([
+            ((88, 60, 6),   0.0),
+            ((110, 76, 8),  0.2),
+            ((80, 55, 5),   0.55),
+            ((62, 42, 4),   0.75),
+        ]):
+            band_y = int(y1 + (y2 - y1) * h_frac)
+            band_h = int((y2 - y1) * 0.25)
+            d.rectangle([(x1, band_y), (x2, band_y + band_h)], fill=col)
+        # Diagonal shimmer lines
+        step = 55
+        for sx in range(x1 - (y2 - y1), x2, step):
+            pts = [(sx, y1), (sx + (y2 - y1), y2)]
+            d.line(pts, fill=(232, 185, 0, 30), width=1)
+        for sx in range(x1 - (y2 - y1), x2, step * 3):
+            pts = [(sx, y1), (sx + (y2 - y1), y2)]
+            d.line(pts, fill=(255, 215, 60), width=2)
+        # Top/bottom gold borders
+        d.rectangle([(x1, y1), (x2, y1 + 4)], fill=(232, 185, 0))
+        d.rectangle([(x1, y2 - 4), (x2, y2)], fill=(232, 185, 0))
+        # Corner star accents
+        for cx2, cy2 in [(x1 + 20, y1 + 20), (x2 - 20, y1 + 20),
+                          (x1 + 20, y2 - 20), (x2 - 20, y2 - 20)]:
+            s = 8
+            d.polygon([(cx2, cy2 - s), (cx2 + s//3, cy2 - s//3),
+                        (cx2 + s, cy2), (cx2 + s//3, cy2 + s//3),
+                        (cx2, cy2 + s), (cx2 - s//3, cy2 + s//3),
+                        (cx2 - s, cy2), (cx2 - s//3, cy2 - s//3)],
+                       fill=(255, 220, 80))
+        # Thin inner border
+        d.rectangle([(x1 + 5, y1 + 5), (x2 - 5, y2 - 5)], outline=(160, 120, 0), width=1)
+        return d
+
+    def _draw_diamond_banner_hdr(d, x1, y1, x2, y2):
+        """Ice-blue/cyan crystalline header banner."""
+        d.rectangle([(x1, y1), (x2, y2)], fill=(4, 30, 46))
+        # Band layers — cool blue tones
+        for col, h_frac in [
+            ((6, 46, 68),  0.0),
+            ((0, 62, 88),  0.3),
+            ((4, 38, 58),  0.6),
+            ((2, 24, 38),  0.8),
+        ]:
+            band_y = int(y1 + (y2 - y1) * h_frac)
+            band_h = int((y2 - y1) * 0.3)
+            d.rectangle([(x1, band_y), (x2, band_y + band_h)], fill=col)
+        # Diamond/hex grid pattern
+        gstep = 40
+        H2 = y2 - y1
+        for gx in range(x1, x2 + gstep, gstep):
+            for gy in range(y1, y2 + gstep, gstep):
+                s = 8
+                d.polygon([(gx, gy - s), (gx + s, gy),
+                            (gx, gy + s), (gx - s, gy)],
+                           outline=(0, 180, 210), width=1)
+        # Diagonal shimmer lines in cyan
+        for sx in range(x1 - H2, x2, 80):
+            d.line([(sx, y1), (sx + H2, y2)], fill=(0, 210, 240), width=1)
+        for sx in range(x1 - H2, x2, 240):
+            d.line([(sx, y1), (sx + H2, y2)], fill=(80, 245, 255), width=2)
+        # Top/bottom cyan borders
+        d.rectangle([(x1, y1), (x2, y1 + 4)], fill=(0, 210, 230))
+        d.rectangle([(x1, y2 - 4), (x2, y2)], fill=(0, 210, 230))
+        # Diamond corner accents
+        for cx2, cy2 in [(x1 + 22, y1 + 22), (x2 - 22, y1 + 22),
+                          (x1 + 22, y2 - 22), (x2 - 22, y2 - 22)]:
+            s = 10
+            d.polygon([(cx2, cy2 - s), (cx2 + s, cy2),
+                        (cx2, cy2 + s), (cx2 - s, cy2)],
+                       fill=(130, 245, 255))
+        d.rectangle([(x1 + 5, y1 + 5), (x2 - 5, y2 - 5)], outline=(0, 160, 185), width=1)
+        return d
+
+    def _draw_elite_banner_hdr(d, x1, y1, x2, y2):
+        """Deep purple/violet elite header banner."""
+        d.rectangle([(x1, y1), (x2, y2)], fill=(22, 4, 42))
+        # Purple band layers
+        for col, h_frac in [
+            ((38, 8, 72),  0.0),
+            ((48, 10, 88), 0.25),
+            ((30, 6, 58),  0.55),
+            ((18, 2, 36),  0.78),
+        ]:
+            band_y = int(y1 + (y2 - y1) * h_frac)
+            band_h = int((y2 - y1) * 0.32)
+            d.rectangle([(x1, band_y), (x2, band_y + band_h)], fill=col)
+        # Diagonal accent slashes
+        H2 = y2 - y1
+        for sx in range(x1 - H2, x2, 70):
+            d.line([(sx, y1), (sx + H2, y2)], fill=(130, 40, 210), width=1)
+        for sx in range(x1 - H2, x2, 210):
+            d.line([(sx, y1), (sx + H2, y2)], fill=(180, 80, 255), width=2)
+        # Glow orbs in corners
+        for ox, oy, r2 in [(x1 + 60, (y1+y2)//2, 35),
+                            (x2 - 60, (y1+y2)//2, 35)]:
+            for layer in range(5, 0, -1):
+                lr = r2 + layer * 6
+                alpha_col = (100 + layer * 18, 20 + layer * 10, 200 + layer * 10)
+                d.ellipse([(ox - lr, oy - lr), (ox + lr, oy + lr)],
+                          fill=alpha_col)
+        # Top/bottom purple borders
+        d.rectangle([(x1, y1), (x2, y1 + 4)], fill=(160, 60, 230))
+        d.rectangle([(x1, y2 - 4), (x2, y2)], fill=(160, 60, 230))
+        # 8-point star accents
+        for cx2, cy2 in [(x1 + 22, y1 + 22), (x2 - 22, y1 + 22),
+                          (x1 + 22, y2 - 22), (x2 - 22, y2 - 22)]:
+            s = 9
+            d.polygon([(cx2, cy2 - s), (cx2 + s//3, cy2 - s//3),
+                        (cx2 + s, cy2), (cx2 + s//3, cy2 + s//3),
+                        (cx2, cy2 + s), (cx2 - s//3, cy2 + s//3),
+                        (cx2 - s, cy2), (cx2 - s//3, cy2 - s//3)],
+                       fill=(200, 100, 255))
+        d.rectangle([(x1 + 5, y1 + 5), (x2 - 5, y2 - 5)], outline=(100, 30, 160), width=1)
+        return d
+
+    # Apply banner
+    if "blue lock" in fn_banner or "блю лок" in fn_banner or "bluelock" in fn_banner:
+        pass  # Blue Lock banner drawn below after glow step
+    elif "gold" in fn_banner or "золот" in fn_banner:
+        draw = _draw_gold_banner_hdr(draw, 8, 8, W - 8, 148)
     elif "diamond" in fn_banner or "алмаз" in fn_banner:
-        _banner_col = (0, 40, 55)
-        _banner_line = (0, 210, 225)
+        draw = _draw_diamond_banner_hdr(draw, 8, 8, W - 8, 148)
     elif "elite" in fn_banner or "элит" in fn_banner:
-        _banner_col = (35, 0, 60)
-        _banner_line = (160, 60, 230)
-    else:
-        _banner_col = None
-        _banner_line = None
-    if _banner_col:
-        draw.rectangle([(8, 8), (W - 8, 148)], fill=_banner_col)
-        draw.line([(8, 8), (W - 8, 8)], fill=_banner_line, width=3)
-        draw.line([(8, 148), (W - 8, 148)], fill=_banner_line, width=3)
+        draw = _draw_elite_banner_hdr(draw, 8, 8, W - 8, 148)
 
     # ===== HEADER PANEL =====
     glow_color = _GOLD if is_premium else _GOLD_DIM
-    img = _apply_glow(img, (8, 8, W-8, 148), r=10, color=glow_color, strength=12, layers=6)
-    draw = ImageDraw.Draw(img)
 
-    _rr(draw, (8, 8, W-8, 148), 10, fill=_HEADER, outline=_GOLD_DIM, width=1)
+    if "blue lock" in fn_banner or "блю лок" in fn_banner or "bluelock" in fn_banner:
+        # Blue Lock banner: draw full styled header
+        draw = _draw_bl_banner(draw, img, 8, 8, W - 8, 148)
+        _HDR_TEXT      = BL_BLACK
+        _HDR_TEXT_GRAY = (60, 60, 100)
+        _HDR_GOLD      = BL_BLUE
+    elif fn_banner:
+        # Coloured banner already drawn above — just add panel outline, no glow overwrite
+        if "gold" in fn_banner or "золот" in fn_banner:
+            _rr(draw, (8, 8, W-8, 148), 10, outline=(160, 120, 0), width=1)
+        elif "diamond" in fn_banner or "алмаз" in fn_banner:
+            _rr(draw, (8, 8, W-8, 148), 10, outline=(0, 160, 185), width=1)
+        elif "elite" in fn_banner or "элит" in fn_banner:
+            _rr(draw, (8, 8, W-8, 148), 10, outline=(100, 30, 160), width=1)
+        _HDR_TEXT      = _TEXT
+        _HDR_TEXT_GRAY = _TEXT_GRAY
+        _HDR_GOLD      = _GOLD
+    else:
+        img = _apply_glow(img, (8, 8, W-8, 148), r=10, color=glow_color, strength=12, layers=6)
+        draw = ImageDraw.Draw(img)
+        _rr(draw, (8, 8, W-8, 148), 10, fill=_HEADER, outline=_GOLD_DIM, width=1)
+        _HDR_TEXT      = _TEXT
+        _HDR_TEXT_GRAY = _TEXT_GRAY
+        _HDR_GOLD      = _GOLD
 
+    # ===== AVATAR (SQUARE) =====
     AX, AY, AS = 20, 18, 118
-    # choose glow color based on active frame
+
     fn_frame = (active_frame or "").lower()
     if "gold" in fn_frame or "золот" in fn_frame:
         _av_glow = (232, 185, 0)
@@ -330,17 +667,22 @@ def generate_profile_card(
         _av_glow = (0, 210, 225)
     elif "elite" in fn_frame or "элит" in fn_frame:
         _av_glow = (160, 60, 230)
+    elif "blue lock" in fn_frame or "блю лок" in fn_frame or "bluelock" in fn_frame:
+        _av_glow = BL_BLUE_LT
     else:
         _av_glow = _GOLD
-    img = _apply_glow(img, (AX, AY, AX+AS, AY+AS), r=8, color=_av_glow, strength=14, layers=8)
+
+    img = _apply_glow(img, (AX, AY, AX+AS, AY+AS), r=4, color=_av_glow, strength=14, layers=8)
     draw = ImageDraw.Draw(img)
+
     if avatar_bytes:
-        _rr(draw, (AX, AY, AX+AS, AY+AS), 8, fill=(22, 16, 44), outline=_av_glow, width=2)
-        img = _paste_avatar(img, avatar_bytes, AX + 3, AY + 3, AS - 6,
-                            border_color=_av_glow, border_width=2)
+        # Square avatar background
+        draw.rectangle([(AX, AY), (AX+AS, AY+AS)], fill=(22, 16, 44), outline=_av_glow, width=2)
+        img = _paste_avatar(img, avatar_bytes, AX + 2, AY + 2, AS - 4,
+                            border_color=_av_glow, border_width=2, square=True)
         draw = ImageDraw.Draw(img)
     else:
-        _rr(draw, (AX, AY, AX+AS, AY+AS), 8, fill=(22, 16, 44), outline=_av_glow, width=2)
+        draw.rectangle([(AX, AY), (AX+AS, AY+AS)], fill=(22, 16, 44), outline=_av_glow, width=2)
         initials = (username[:2]).upper() if username else "??"
         _text_c(draw, AX + AS//2, AY + AS//2 - 22, initials, _font(38, bold=True), _GOLD)
 
@@ -348,12 +690,12 @@ def generate_profile_card(
     if active_frame:
         img, draw = _draw_frame_border(img, draw, AX, AY, AS, active_frame)
 
-    draw.text((152, 20), f"#{user_id}", font=_font(13), fill=_TEXT_GRAY)
+    draw.text((152, 20), f"#{user_id}", font=_font(13), fill=_HDR_TEXT_GRAY)
     fname = _font(30, bold=True)
-    draw.text((152, 36), username, font=fname, fill=_TEXT)
+    draw.text((152, 36), username, font=fname, fill=_HDR_TEXT)
     badge_x = 152 + _tw(draw, username, fname) + 10
     if is_premium:
-        draw.text((badge_x, 40), "★", font=_font(26, bold=True), fill=_GOLD)
+        draw.text((badge_x, 40), "★", font=_font(26, bold=True), fill=_HDR_GOLD)
         badge_x += _tw(draw, "★", _font(26, bold=True)) + 8
     if is_admin:
         _rr(draw, (badge_x, 40, badge_x + 40, 62), 4, fill=(170, 28, 28))
@@ -362,11 +704,11 @@ def generate_profile_card(
     if is_verified:
         _draw_scalloped_badge(draw, badge_x + 11, 51, 22)
 
-    draw.text((152, 78), f"ID: {game_id}", font=_font(14), fill=_TEXT_GRAY)
-    draw.text((W - 200, 16), "ELO RATING", font=_font(11), fill=_TEXT_GRAY)
-    _text_r(draw, W - 36, 28, str(elo), _font(46, bold=True), _GOLD)
+    draw.text((152, 78), f"ID: {game_id}", font=_font(14), fill=_HDR_TEXT_GRAY)
+    draw.text((W - 200, 16), "ELO RATING", font=_font(11), fill=_HDR_TEXT_GRAY)
+    _text_r(draw, W - 36, 28, str(elo), _font(46, bold=True), _HDR_GOLD)
     BX, BY, BS = W - 80, 88, 40
-    _rr(draw, (BX, BY, BX+BS, BY+BS), 6, fill=_GOLD)
+    _rr(draw, (BX, BY, BX+BS, BY+BS), 6, fill=_HDR_GOLD)
     _text_c(draw, BX + BS//2, BY + 8, str(lvl), _font(20, bold=True), (232, 228, 255))
 
     # ===== RANK BAR =====
@@ -412,9 +754,13 @@ def generate_profile_card(
     MROW = (CH*3+8*2-30) // max(len(map_stats[:5]), 1)
     for idx, ms in enumerate(map_stats[:5]):
         my = SY + 30 + idx * MROW
+        mw2  = ms.get("wins", 0)
+        ml2  = ms.get("losses", 0)
+        mg2  = mw2 + ml2
+        mwr  = ms.get("wr", round(mw2 / mg2, 2) if mg2 > 0 else 0.0)
         draw.text((RX+12, my+2), ms["map"].upper(), font=_font(12, bold=True), fill=_TEXT_LGRAY)
-        _text_r(draw, W-20, my+2,  f"{round(ms['wr']*100)}% WR", _font(11), _TEXT_GRAY)
-        _text_r(draw, W-20, my+17, f"{ms['kd']:.2f} K/D",        _font(11), _TEXT_GRAY)
+        _text_r(draw, W-20, my+2,  f"{round(mwr*100)}% WR", _font(11), _TEXT_GRAY)
+        _text_r(draw, W-20, my+17, f"{ms.get('kd', 0.0):.2f} K/D", _font(11), _TEXT_GRAY)
         if idx < len(map_stats[:5]) - 1:
             draw.line([(RX+10, my+MROW-2), (W-20, my+MROW-2)], fill=(44, 34, 82), width=1)
 
@@ -526,7 +872,6 @@ def generate_leaderboard_card(players: list, title: str = "TOP ИГРОКОВ П
     H      = HEAD_H + ROW_H * n + 8
     W      = 970
 
-    # ── deep purple theme (same as 2v2) ──
     _BG    = (13,  11,  22)
     _ROW_A = (20,  16,  34)
     _ROW_B = (13,  11,  22)
@@ -540,14 +885,12 @@ def generate_leaderboard_card(players: list, title: str = "TOP ИГРОКОВ П
     _GRAY  = (108,  98, 140)
     _WH    = (255, 255, 255)
 
-    # top-1/2/3: subtle tints + gold/silver/bronze left stripe
     _RANK_BG     = {1: (26, 20, 44), 2: (20, 16, 40), 3: (22, 14, 38)}
     _RANK_STRIPE = {1: (200, 155,  0), 2: (148, 148, 175), 3: (158, 105, 42)}
 
     img  = Image.new("RGB", (W, H), _BG)
     draw = ImageDraw.Draw(img)
 
-    # ── header ──
     draw.rectangle([(0, 0), (W, HEAD_H - 1)], fill=(9, 7, 18))
     draw.line([(0, HEAD_H - 1), (W, HEAD_H - 1)], fill=_SEP, width=2)
     draw.ellipse([(18, 19), (30, 31)], fill=(110, 80, 232))
@@ -570,16 +913,13 @@ def generate_leaderboard_card(players: list, title: str = "TOP ИГРОКОВ П
                       ("LOSSES", 514), ("W/L%", 600), ("K/D", 710)]:
         draw.text((x, HEAD_H - 22), label, font=_font(11), fill=_HDR)
 
-    # ── rows ──
     for i, p in enumerate(players[:n]):
         y    = HEAD_H + i * ROW_H
         rank = p.get("rank", i + 1)
 
-        # row background: gold/silver/bronze tint for top 3, else alternating
         row_bg = _RANK_BG.get(rank, _ROW_A if i % 2 == 0 else _ROW_B)
         draw.rectangle([(0, y), (W, y + ROW_H)], fill=row_bg)
 
-        # coloured left stripe for top 3
         if rank in _RANK_STRIPE:
             draw.rectangle([(0, y), (5, y + ROW_H)], fill=_RANK_STRIPE[rank])
 
@@ -594,8 +934,9 @@ def generate_leaderboard_card(players: list, title: str = "TOP ИГРОКОВ П
         uid_av   = p.get("uid")
         av_bytes = (avatars or {}).get(uid_av) if uid_av else None
         if av_bytes:
-            draw.ellipse([(ax, ay), (ax + ar*2, ay + ar*2)], fill=av, outline=(190, 186, 172), width=2)
-            img  = _paste_avatar(img, av_bytes, ax, ay, ar * 2, border_color=(190, 186, 172), border_width=2)
+            draw.rectangle([(ax, ay), (ax + ar*2, ay + ar*2)], fill=av, outline=(190, 186, 172), width=2)
+            img  = _paste_avatar(img, av_bytes, ax, ay, ar * 2, border_color=(190, 186, 172),
+                                  border_width=2, square=True)
             draw = ImageDraw.Draw(img)
         else:
             draw.ellipse([(ax, ay), (ax + ar*2, ay + ar*2)], fill=av, outline=(190, 186, 172), width=2)
@@ -656,11 +997,6 @@ def generate_match_result_card(
     t_stats:    list,
     league:     str = "default",
 ) -> io.BytesIO:
-    """
-    ct_stats / t_stats — list of dicts:
-      {"name", "kills", "deaths", "assists", "elo_change", "is_premium", "is_admin"}
-    winner — "ct" or "t"
-    """
     ROW_H      = 54
     HEAD_H     = 112
     COL_HEAD_H = 30
@@ -677,39 +1013,31 @@ def generate_match_result_card(
     for y in range(0, H, 40):
         draw.line([(0, y), (W, y)], fill=(20, 19, 26), width=1)
 
-    # glow on header
     glow_col = CT_BLUE if winner == "ct" else T_ORANGE
     img  = _apply_glow(img, (8, 8, W-8, HEAD_H - 8), r=10, color=glow_col, strength=22, layers=10)
     draw = ImageDraw.Draw(img)
 
-    # header panel
     _rr(draw, (8, 8, W-8, HEAD_H - 8), 10, fill=(20, 20, 28), outline=(55, 52, 75), width=1)
 
-    # match code
     draw.text((22, 16), f"МАТЧ #{match_code}", font=_font(22, bold=True), fill=WHITE)
 
-    # league badge
     lg_text = format_league(league).upper()
     lg_col  = TEAL_DIM if league == "default" else (130, 40, 170)
     lw = _tw(draw, lg_text, _font(12, bold=True)) + 14
     _rr(draw, (22, 46, 22 + lw, 66), 4, fill=lg_col)
     draw.text((29, 49), lg_text, font=_font(12, bold=True), fill=WHITE)
 
-    # map
     draw.text((22 + lw + 12, 49), f"🗺  {map_name.upper()}", font=_font(13), fill=LGRAY)
 
-    # Score (center)
     sc_text = f"{score_ct}  :  {score_t}"
     _text_c(draw, W//2, 14, sc_text, _font(40, bold=True), WHITE)
     _text_c(draw, W//2 - 65, 62, "CT",  _font(16, bold=True), CT_BLUE)
     _text_c(draw, W//2 + 65, 62, "T",   _font(16, bold=True), T_ORANGE)
 
-    # Winner label (top right)
     w_label = "💙 CT — ПОБЕДА" if winner == "ct" else "🧡 T — ПОБЕДА"
     w_col   = CT_BLUE if winner == "ct" else T_ORANGE
     _text_r(draw, W - 18, 20, w_label, _font(14, bold=True), w_col)
 
-    # ===== COLUMN HEADERS =====
     HALF_W = (W - 20) // 2
     CT_X   = 8
     T_X    = CT_X + HALF_W + 4
@@ -725,7 +1053,6 @@ def generate_match_result_card(
 
     ROW_Y0 = HEAD_H + COL_HEAD_H
 
-    # MVP = player with most kills across both teams
     all_flat = ct_stats + t_stats
     if all_flat:
         mvp_name = max(all_flat, key=lambda s: s.get("kills", 0)).get("name", "")
@@ -750,7 +1077,7 @@ def generate_match_result_card(
 
         AX2, AY2, AR2 = base_x + 8, y + 7, 18
         av_col = GOLD if is_mvp else team_col
-        draw.ellipse([(AX2, AY2), (AX2+AR2*2, AY2+AR2*2)], fill=av_col, outline=(60, 55, 80), width=1)
+        draw.rectangle([(AX2, AY2), (AX2+AR2*2, AY2+AR2*2)], fill=av_col, outline=(60, 55, 80), width=1)
         _text_c(draw, AX2+AR2, AY2+AR2-9, (name[:2]).upper(), _font(11, bold=True), (14, 13, 20))
 
         nx2 = base_x + 48
@@ -780,11 +1107,9 @@ def generate_match_result_card(
         if i < len(t_stats):
             draw_player_row(T_X,  ry, HALF_W, t_stats[i],  T_ORANGE,  winner == "t")
 
-    # divider
     div_x = CT_X + HALF_W + 2
     draw.line([(div_x, HEAD_H), (div_x, H - FOOT_H)], fill=(45, 42, 60), width=2)
 
-    # footer
     fy = H - FOOT_H
     draw.rectangle([(0, fy), (W, H)], fill=(10, 10, 16))
     draw.text((16, fy + 8), "ACTUAL FACEIT", font=_font(12, bold=True), fill=GOLD_DIM)
@@ -821,7 +1146,6 @@ def generate_duo_leaderboard_card(players: list, title: str = "TOP 2v2 ПО ELO"
     img  = Image.new("RGB", (W, H), _BG)
     draw = ImageDraw.Draw(img)
 
-    # ── header ──
     draw.rectangle([(0, 0), (W, HEAD_H - 1)], fill=(8, 6, 18))
     draw.line([(0, HEAD_H - 1), (W, HEAD_H - 1)], fill=_SEP, width=1)
     draw.ellipse([(18, 19), (30, 31)], fill=_PUR)
@@ -836,7 +1160,6 @@ def generate_duo_leaderboard_card(players: list, title: str = "TOP 2v2 ПО ELO"
                       ("LOSSES", 514), ("W/L%", 600), ("K/D", 710)]:
         draw.text((x, HEAD_H - 22), label, font=_font(11), fill=_HDR)
 
-    # ── rows ──
     for i, p in enumerate(players[:n]):
         y  = HEAD_H + i * ROW_H
         draw.rectangle([(0, y), (W, y + ROW_H)], fill=(_ROW_A if i % 2 == 0 else _ROW_B))
@@ -852,8 +1175,9 @@ def generate_duo_leaderboard_card(players: list, title: str = "TOP 2v2 ПО ELO"
         uid_av2   = p.get("uid")
         av_bytes2 = (avatars or {}).get(uid_av2) if uid_av2 else None
         if av_bytes2:
-            draw.ellipse([(ax, ay), (ax + ar*2, ay + ar*2)], fill=_PUR, outline=(52, 34, 80), width=2)
-            img  = _paste_avatar(img, av_bytes2, ax, ay, ar * 2, border_color=(52, 34, 80), border_width=2)
+            draw.rectangle([(ax, ay), (ax + ar*2, ay + ar*2)], fill=_PUR, outline=(52, 34, 80), width=2)
+            img  = _paste_avatar(img, av_bytes2, ax, ay, ar * 2, border_color=(52, 34, 80),
+                                  border_width=2, square=True)
             draw = ImageDraw.Draw(img)
         else:
             draw.ellipse([(ax, ay), (ax + ar*2, ay + ar*2)], fill=_PUR, outline=(52, 34, 80), width=2)
@@ -872,9 +1196,10 @@ def generate_duo_leaderboard_card(players: list, title: str = "TOP 2v2 ПО ELO"
             _rr(draw, (bx2, y + 10, bx2 + 32, y + 25), 3, fill=(154, 24, 24))
             draw.text((bx2 + 4, y + 11), "ADM", font=_font(10, bold=True), fill=_WH)
             bx2 += 40
-        uid_val = p.get("uid")
-        if uid_val:
-            draw.text((nx, y + 29), f"#{str(uid_val)[-7:]}", font=_font(10), fill=_GRAY)
+
+        uid_val2 = p.get("uid")
+        if uid_val2:
+            draw.text((nx, y + 29), f"#{str(uid_val2)[-7:]}", font=_font(10), fill=_GRAY)
 
         by2 = y + ROW_H - 21
         _rr(draw, (nx, by2, nx + 20, by2 + 14), 3, fill=_PURD)

@@ -223,6 +223,47 @@ ban_flow              = {}   # uid -> {step, target_id, duration_days}
 mute_flow             = {}   # uid -> {step, target_id, target_name, hours}
 warn_flow             = {}   # uid -> {step, target_id, target_name}
 give_item_flow        = {}   # uid -> {target_id, target_name}
+
+def _build_shop_items_kb(target_id: int):
+    """Inline keyboard with all shop items grouped by type for admin give-item."""
+    kb = types.InlineKeyboardMarkup(row_width=1)
+    conn2 = _db(); cur2 = conn2.cursor()
+    cur2.execute(
+        "SELECT id, name, item_type, price FROM shop_items ORDER BY item_type, price",
+    )
+    rows = cur2.fetchall()
+    conn2.close()
+
+    TYPE_LABELS = {
+        "frame":      "🖼 Рамки",
+        "banner":     "🎨 Баннеры",
+        "background": "🌄 Фоны",
+        "sticker":    "🎭 Стикеры",
+        "animation":  "✨ Анимации",
+        "premium":    "👑 Premium",
+        "x2coins":    "💰 x2 монеты",
+        "unwarn":     "🛡 Снятие варна",
+        "rename":     "✏️ Смена ника",
+        "quals":      "⭐ Quals доступ",
+    }
+
+    from collections import OrderedDict
+    by_type: dict = OrderedDict()
+    for row_id, name, item_type, price in rows:
+        by_type.setdefault(item_type, []).append((row_id, name, price))
+
+    for item_type, items in by_type.items():
+        label = TYPE_LABELS.get(item_type, item_type.title())
+        kb.add(types.InlineKeyboardButton(f"── {label} ──", callback_data="admin_noop"))
+        for row_id, name, price in items:
+            kb.add(types.InlineKeyboardButton(
+                f"{name}  ({price} AC)",
+                callback_data=f"adm_gi_{target_id}_{row_id}",
+            ))
+
+    kb.add(types.InlineKeyboardButton("❌ Отмена", callback_data="admin_noop"))
+    return kb
+
 cancel_flow           = {}   # uid -> {match_key, chat_id, thread_id, msg_id}
 ticket_flow           = {}   # uid -> {step, match_code, reason, evidence_file_id, accused_id}
 creator_flow          = {}   # uid -> {step, ...}
@@ -248,6 +289,7 @@ SHOP_ITEMS_DEFAULT = [
     ("Рамка Gold",             "Золотая рамка профиля",      "decor", 300,  "frame"),
     ("Рамка Diamond",          "Алмазная рамка профиля",     "decor", 600,  "frame"),
     ("Рамка Elite",            "Элитная рамка профиля",      "decor", 150,  "frame"),
+    ("Рамка Blue Lock",        "Квадратная рамка в стиле Blue Lock с аниме-глазами", "decor", 800, "frame"),
     ("Стикер 🔥",              "Огненный стикер",            "decor", 50,   "sticker"),
     ("Стикер 💀",              "Стикер черепа",              "decor", 50,   "sticker"),
     ("Стикер ⚡",              "Стикер молнии",              "decor", 50,   "sticker"),
@@ -256,6 +298,8 @@ SHOP_ITEMS_DEFAULT = [
     ("Баннер Gold",            "Золотой баннер профиля",     "decor", 400,  "banner"),
     ("Баннер Diamond",         "Алмазный баннер профиля",    "decor", 700,  "banner"),
     ("Баннер Elite",           "Элитный баннер профиля",     "decor", 250,  "banner"),
+    ("Баннер Blue Lock",       "Баннер Blue Lock: белый хедер с аниме-глазами и слэшем", "decor", 900, "banner"),
+    ("Фон Blue Lock",          "Геометрический фон карточки в стиле Blue Lock", "decor", 600, "background"),
     ("Premium статус",         "30 дней Premium: x1.5 монет, значок 👑", "goods", 1000, "premium"),
     ("x2 монеты",              "Удвоение монет за 7 дней",   "goods", 300,  "x2coins"),
     ("Снятие варна",           "Снять 1 предупреждение",     "goods", 150,  "unwarn"),
@@ -474,8 +518,9 @@ def init_db():
     ]:
         _add_column_if_missing("inventory", col, definition)
 
-    _add_column_if_missing("players", "active_frame",  "TEXT DEFAULT NULL")
-    _add_column_if_missing("players", "active_banner", "TEXT DEFAULT NULL")
+    _add_column_if_missing("players", "active_frame",      "TEXT DEFAULT NULL")
+    _add_column_if_missing("players", "active_banner",     "TEXT DEFAULT NULL")
+    _add_column_if_missing("players", "active_background", "TEXT DEFAULT NULL")
 
     cur.execute("""
         CREATE TABLE IF NOT EXISTS match_counter (
@@ -2199,18 +2244,21 @@ def get_all_shop_items_list():
     return "\n".join(lines)
 
 def get_active_cosmetics(uid):
-    """Returns (active_frame, active_banner) for a player from the players table."""
+    """Returns (active_frame, active_banner, active_background) for a player."""
     try:
         conn = _db()
         cur = conn.cursor()
-        cur.execute("SELECT active_frame, active_banner FROM players WHERE user_id=%s", (uid,))
+        cur.execute(
+            "SELECT active_frame, active_banner, active_background FROM players WHERE user_id=%s",
+            (uid,),
+        )
         row = cur.fetchone()
         conn.close()
         if row:
-            return row[0], row[1]
+            return row[0], row[1], row[2]
     except Exception as e:
         print(f"[get_active_cosmetics] {e}")
-    return None, None
+    return None, None, None
 
 def has_item_in_inventory(uid, item_id):
     conn = _db()
@@ -2334,6 +2382,17 @@ def activate_inventory_item(inv_id, uid, item_type, item_name):
             (uid, uid),
         )
         cur.execute("UPDATE players SET active_banner=%s WHERE user_id=%s", (item_name, uid))
+    elif item_type == "background":
+        cur.execute(
+            """UPDATE inventory SET is_activated=0
+               WHERE user_id=%s AND id IN (
+                   SELECT i.id FROM inventory i
+                   JOIN shop_items s ON i.item_id=s.id
+                   WHERE i.user_id=%s AND s.item_type='background' AND i.is_activated=1
+               )""",
+            (uid, uid),
+        )
+        cur.execute("UPDATE players SET active_background=%s WHERE user_id=%s", (item_name, uid))
     cur.execute(
         "UPDATE inventory SET is_activated=1, activated_at=%s WHERE id=%s",
         (int(time.time()), inv_id),
@@ -2973,31 +3032,32 @@ def cb_profile(c):
             mvp_count   = p[31] if len(p) > 31 else 0
 
             avatar_bytes = get_user_avatar(uid)
-            active_frame, active_banner = get_active_cosmetics(uid)
+            active_frame, active_banner, active_background = get_active_cosmetics(uid)
             img_buf = generate_profile_card(
-                username      = p[1]   or "Unknown",
-                game_id       = p[2]   or "",
-                user_id       = p[0],
-                elo           = p[4],
-                wins          = p[6],
-                losses        = p[7],
-                kills         = p[8],
-                deaths        = p[9],
-                assists       = p[10],
-                is_premium    = premium,
-                is_admin      = is_admin(uid),
-                global_rank   = rank,
-                league        = league,
-                map_stats     = map_stats,
-                recent        = recent,
-                leaderboard   = lb_data,
-                quals_stats   = quals_stats,
-                mvp_count     = mvp_count,
-                is_verified   = is_verified_check(uid),
-                duo_stats     = duo_stats,
-                avatar_bytes  = avatar_bytes,
-                active_frame  = active_frame,
-                active_banner = active_banner,
+                username           = p[1]   or "Unknown",
+                game_id            = p[2]   or "",
+                user_id            = p[0],
+                elo                = p[4],
+                wins               = p[6],
+                losses             = p[7],
+                kills              = p[8],
+                deaths             = p[9],
+                assists            = p[10],
+                is_premium         = premium,
+                is_admin           = is_admin(uid),
+                global_rank        = rank,
+                league             = league,
+                map_stats          = map_stats,
+                recent             = recent,
+                leaderboard        = lb_data,
+                quals_stats        = quals_stats,
+                mvp_count          = mvp_count,
+                is_verified        = is_verified_check(uid),
+                duo_stats          = duo_stats,
+                avatar_bytes       = avatar_bytes,
+                active_frame       = active_frame,
+                active_banner      = active_banner,
+                active_background  = active_background,
             )
 
             # delete old message, send photo with buttons
@@ -3085,30 +3145,31 @@ def cb_profile_quals(c):
             quals_recent = get_player_quals_recent_matches(uid, limit=5, matches_table=_matches_table_quals)
             q_mvp_count  = p[31] if len(p) > 31 else 0
             avatar_bytes = get_user_avatar(uid)
-            active_frame, active_banner = get_active_cosmetics(uid)
+            active_frame, active_banner, active_background = get_active_cosmetics(uid)
             img_buf = generate_profile_card(
-                username      = p[1] or "Unknown",
-                game_id       = p[2] or "",
-                user_id       = p[0],
-                elo           = q_elo,
-                wins          = q_wins,
-                losses        = q_losses,
-                kills         = q_kills,
-                deaths        = q_deaths,
-                assists       = q_assists,
-                is_premium    = premium,
-                is_admin      = is_admin(uid),
-                global_rank   = q_rank,
-                league        = "QUALS",
-                map_stats     = [],
-                recent        = quals_recent,
-                leaderboard   = lb_data,
-                quals_stats   = None,
-                mvp_count     = q_mvp_count,
-                is_verified   = is_verified_check(uid),
-                avatar_bytes  = avatar_bytes,
-                active_frame  = active_frame,
-                active_banner = active_banner,
+                username          = p[1] or "Unknown",
+                game_id           = p[2] or "",
+                user_id           = p[0],
+                elo               = q_elo,
+                wins              = q_wins,
+                losses            = q_losses,
+                kills             = q_kills,
+                deaths            = q_deaths,
+                assists           = q_assists,
+                is_premium        = premium,
+                is_admin          = is_admin(uid),
+                global_rank       = q_rank,
+                league            = "QUALS",
+                map_stats         = [],
+                recent            = quals_recent,
+                leaderboard       = lb_data,
+                quals_stats       = None,
+                mvp_count         = q_mvp_count,
+                is_verified       = is_verified_check(uid),
+                avatar_bytes      = avatar_bytes,
+                active_frame      = active_frame,
+                active_banner     = active_banner,
+                active_background = active_background,
             )
             try:
                 bot.delete_message(c.message.chat.id, c.message.message_id)
@@ -3184,32 +3245,33 @@ def cb_profile_duo(c):
             duo_recent  = get_player_duo_recent_matches(uid, limit=5, matches_table=_matches_table_duo)
             mvp_count   = p[31] if len(p) > 31 else 0
             avatar_bytes = get_user_avatar(uid)
-            active_frame, active_banner = get_active_cosmetics(uid)
+            active_frame, active_banner, active_background = get_active_cosmetics(uid)
 
             img_buf = generate_profile_card(
-                username      = p[1] or "Unknown",
-                game_id       = p[2] or "",
-                user_id       = p[0],
-                elo           = d_elo,
-                wins          = d_wins,
-                losses        = d_losses,
-                kills         = d_kills,
-                deaths        = d_deaths,
-                assists       = d_assists,
-                is_premium    = premium,
-                is_admin      = is_admin(uid),
-                global_rank   = d_rank,
-                league        = "2V2",
-                map_stats     = get_player_duo_map_stats(uid, _matches_table_duo),
-                recent        = duo_recent,
-                leaderboard   = lb_data,
-                quals_stats   = None,
-                mvp_count     = mvp_count,
-                is_verified   = is_verified_check(uid),
-                duo_stats     = None,
-                avatar_bytes  = avatar_bytes,
-                active_frame  = active_frame,
-                active_banner = active_banner,
+                username          = p[1] or "Unknown",
+                game_id           = p[2] or "",
+                user_id           = p[0],
+                elo               = d_elo,
+                wins              = d_wins,
+                losses            = d_losses,
+                kills             = d_kills,
+                deaths            = d_deaths,
+                assists           = d_assists,
+                is_premium        = premium,
+                is_admin          = is_admin(uid),
+                global_rank       = d_rank,
+                league            = "2V2",
+                map_stats         = get_player_duo_map_stats(uid, _matches_table_duo),
+                recent            = duo_recent,
+                leaderboard       = lb_data,
+                quals_stats       = None,
+                mvp_count         = mvp_count,
+                is_verified       = is_verified_check(uid),
+                duo_stats         = None,
+                avatar_bytes      = avatar_bytes,
+                active_frame      = active_frame,
+                active_banner     = active_banner,
+                active_background = active_background,
             )
             try:
                 bot.delete_message(c.message.chat.id, c.message.message_id)
@@ -5194,17 +5256,26 @@ def _build_admin_match_kb(match_key, match_code, ACreenshots_count, taken_by=Non
         p = get_player(taken_by)
         name = p[1] if p else str(taken_by)
         kb.add(
-            types.InlineKeyboardButton(f"📝 Регистрирует: {name} — ЗАНЯТО", callback_data="noop"),
-            types.InlineKeyboardButton("🔓 Освободить регистрацию", callback_data=f"reg_release|{match_key}"),
+            types.InlineKeyboardButton(f"🔒 Регистрирует: {name} — ЗАНЯТО", callback_data="match_noop"),
+            types.InlineKeyboardButton("🔓 Освободить (force)", callback_data=f"reg_release|{match_key}"),
             types.InlineKeyboardButton("🚫 Отказаться от регистрации", callback_data=f"reg_abandon|{match_key}"),
         )
     else:
-        kb.add(types.InlineKeyboardButton(f"✅ Зарегистрировать матч #{match_code} ({ACreenshots_count}📸)", callback_data=f"reg_match|{match_key}"))
+        kb.add(types.InlineKeyboardButton(
+            f"✅ Взять регистрацию #{match_code} ({ACreenshots_count}📸)",
+            callback_data=f"reg_match|{match_key}",
+        ))
     kb.add(
         types.InlineKeyboardButton("❌ Отменить матч",  callback_data=f"cancel_match|{match_key}"),
         types.InlineKeyboardButton("🔄 Перерегать",     callback_data=f"reregister_match|{match_key}"),
     )
     return kb
+
+
+@bot.callback_query_handler(func=lambda c: c.data == "match_noop")
+def cb_match_noop(c):
+    """Заглушка для неактивных кнопок в карточке матча."""
+    bot.answer_callback_query(c.id, "🔒 Матч уже взят в работу", show_alert=False)
 
 
 # ==================== СКРИНШОТЫ ====================
@@ -5272,6 +5343,18 @@ def handle_player_ACreenshot(msg):
     lobby["ACreenshots_count"] = lobby.get("ACreenshots_count", 0) + 1
     AC = lobby["ACreenshots_count"]
     match_code = lobby.get("match_code", str(match_id))
+    # Обновляем счётчик скриншотов в unregistered_matches
+    try:
+        _um_conn = _db()
+        _um_cur  = _um_conn.cursor()
+        _um_cur.execute(
+            "UPDATE unregistered_matches SET ACreenshots_count=%s WHERE match_id=%s",
+            (AC, match_id),
+        )
+        _um_conn.commit()
+        _um_conn.close()
+    except Exception as _um_e:
+        print(f"[handle_player_ACreenshot] unregistered_matches update: {_um_e}")
     if ADMIN_CHAT_ID:
         try:
             caption = f"📸 {name} ({uid}) — Match #{match_code}"
@@ -5331,13 +5414,26 @@ def cb_reg_match(c):
     match_key = c.data.split("|", 1)[1]
     lobby = running_matches.get(match_key)
     if not lobby or lobby.get("status") != "active":
-        bot.answer_callback_query(c.id, "❌ Матч не найден или завершён")
+        bot.answer_callback_query(c.id, "❌ Матч не найден или завершён", show_alert=True)
         return
+
+    # ── Защита от двойного взятия (атомарная проверка + lock) ──────────────
     taken = lobby.get("reg_taken_by")
     if taken and taken != uid:
         p = get_player(taken)
-        bot.answer_callback_query(c.id, f"❌ Регистрацию взял {p[1] if p else taken}", show_alert=True)
+        bot.answer_callback_query(c.id, f"🔒 Уже взято: {p[1] if p else taken}", show_alert=True)
         return
+    # Проверяем, не ведёт ли этот же матч кто-то через match_registration
+    for _adm, _rdata in list(match_registration.items()):
+        if _rdata.get("match_key") == match_key and _adm != uid:
+            _ap = get_player(_adm)
+            bot.answer_callback_query(
+                c.id,
+                f"🔒 {_ap[1] if _ap else _adm} уже регистрирует этот матч",
+                show_alert=True,
+            )
+            return
+    # Блокируем — сначала записываем, потом отвечаем (чтобы вторая попытка сразу видела блок)
     lobby["reg_taken_by"] = uid
     match_id   = lobby.get("match_id", "?")
     match_code = lobby.get("match_code", str(match_id))
@@ -5421,6 +5517,7 @@ def cb_reg_match(c):
 
 @bot.callback_query_handler(func=lambda c: c.data.startswith("reg_release|"))
 def cb_reg_release(c):
+    """Force-release: любой game_reg может освободить занятый матч."""
     uid = c.from_user.id
     if not is_game_reg_check(uid):
         bot.answer_callback_query(c.id, "❌ Нет доступа")
@@ -5430,8 +5527,12 @@ def cb_reg_release(c):
     if not lobby:
         bot.answer_callback_query(c.id, "❌ Матч не найден")
         return
+    prev_taker = lobby.get("reg_taken_by")
     lobby["reg_taken_by"] = None
-    match_registration.pop(uid, None)
+    # Очищаем запись match_registration для того, кто реально взял матч
+    for _adm in list(match_registration.keys()):
+        if match_registration[_adm].get("match_key") == match_key:
+            match_registration.pop(_adm, None)
     match_id   = lobby.get("match_id", "?")
     match_code = lobby.get("match_code", str(match_id))
     AC = lobby.get("ACreenshots_count", 0)
@@ -5444,7 +5545,23 @@ def cb_reg_release(c):
         bot.edit_message_reply_markup(c.message.chat.id, c.message.message_id, **edit_kw)
     except Exception:
         pass
+    admin_p = get_player(uid)
+    admin_name = admin_p[1] if admin_p else str(uid)
     bot.answer_callback_query(c.id, "🔓 Регистрация освобождена")
+    thread_id = lobby.get("admin_thread_id")
+    try:
+        kw = {"parse_mode": "HTML"}
+        if thread_id:
+            kw["message_thread_id"] = thread_id
+        prev_p = get_player(prev_taker) if prev_taker else None
+        prev_name = prev_p[1] if prev_p else str(prev_taker or "?")
+        bot.send_message(
+            ADMIN_CHAT_ID,
+            f"🔓 <b>{admin_name}</b> освободил регистрацию матча #{match_code} (была у {prev_name})",
+            **kw,
+        )
+    except Exception:
+        pass
 
 
 @bot.callback_query_handler(func=lambda c: c.data.startswith("reg_abandon|"))
@@ -5464,7 +5581,10 @@ def cb_reg_abandon(c):
         bot.answer_callback_query(c.id, "❌ Это не ваша регистрация", show_alert=True)
         return
     lobby["reg_taken_by"] = None
-    match_registration.pop(uid, None)
+    # Очищаем match_registration для регистратора этого матча (а не только для себя)
+    for _adm in list(match_registration.keys()):
+        if match_registration[_adm].get("match_key") == match_key:
+            match_registration.pop(_adm, None)
     match_id   = lobby.get("match_id", "?")
     match_code = lobby.get("match_code", str(match_id))
     AC = lobby.get("ACreenshots_count", 0)
@@ -7147,8 +7267,7 @@ def cb_admin_action(c):
         "give_item":      "🎁 Формат: <code>USER_ID ITEM_ID</code>\n\nСписок предметов из магазина — используйте ID из БД.\nПример: <code>123456789 3</code>",
     }
     if action == "give_item":
-        items_list = get_all_shop_items_list()
-        prompt = "🎁 Выдать предмет\n\nФормат: <code>USER_ID ITEM_ID</code>\n\n" + items_list
+        prompt = "🎁 Введите Telegram ID или никнейм игрока, которому выдать предмет:"
     else:
         prompt = prompts.get(action, "Введите данные:")
     admin_action[uid] = action
@@ -7497,96 +7616,96 @@ def handle_admin_action(msg):
             pass
 
     elif action == "give_item":
-        parts = text.split()
-        if len(parts) != 2 or not all(x.isdigit() for x in parts):
-            bot.send_message(uid, "❌ Формат: <code>USER_ID ITEM_ID</code>", parse_mode="HTML")
-            return
-        target_id, item_id = int(parts[0]), int(parts[1])
-        target_p = get_player(target_id)
+        # Find player by text (ID or nickname) then show item keyboard
+        def _find_p(inp):
+            if inp.isdigit():
+                return get_player(int(inp))
+            c3 = _db(); cr3 = c3.cursor()
+            cr3.execute("SELECT * FROM players WHERE username=%s AND is_bot=0", (inp,))
+            row3 = cr3.fetchone(); c3.close()
+            return row3
+        target_p = _find_p(text)
         if not target_p:
-            bot.send_message(uid, "❌ Игрок не найден")
+            bot.send_message(uid, "❌ Игрок не найден. Введите TG ID или никнейм:")
             return
-        item = get_shop_item(item_id)
-        if not item:
-            bot.send_message(uid, "❌ Предмет не найден. Проверьте ID из списка.")
-            return
-        _, item_name, _, _, _, item_type = item
-        stackable = {"sticker", "unwarn", "x2coins", "rename"}
-        if item_type not in stackable:
-            conn_chk = _db(); cur_chk = conn_chk.cursor()
-            cur_chk.execute("SELECT COUNT(*) FROM inventory WHERE user_id=%s AND item_id=%s", (target_id, item_id))
-            already = cur_chk.fetchone()[0]
-            conn_chk.close()
-            if already > 0:
-                bot.send_message(uid, f"❌ У игрока <b>{target_p[1]}</b> уже есть <b>{item_name}</b>", parse_mode="HTML")
-                return
-        conn_gi = _db(); cur_gi = conn_gi.cursor()
-        cur_gi.execute("INSERT INTO inventory (user_id, item_id) VALUES (%s, %s)", (target_id, item_id))
-        conn_gi.commit(); conn_gi.close()
-        admin_p = get_player(uid)
-        admin_name = admin_p[1] if admin_p else str(uid)
-        bot.send_message(uid, f"✅ Предмет <b>{item_name}</b> выдан игроку <b>{target_p[1]}</b>", parse_mode="HTML")
-        try:
-            bot.send_message(target_id,
-                f"🎁 Администратор выдал вам предмет: <b>{item_name}</b>\n\n"
-                f"💡 Активируйте его в 🎒 Инвентаре", parse_mode="HTML")
-        except Exception:
-            pass
-        send_punishment_log_priv(uid,
-            f"🎁 <b>Выдача предмета</b>\n"
-            f"👮 Выдал: {tg_link(uid, admin_name)}\n"
-            f"👤 Игрок: {tg_link(target_id, target_p[1])}\n"
-            f"🎮 Предмет: {item_name}"
+        target_id2 = target_p[0]
+        bot.send_message(
+            uid,
+            f"🎁 <b>Выдача предмета</b> для <b>{target_p[1]}</b>\n\nВыберите предмет из списка ниже:",
+            parse_mode="HTML",
+            reply_markup=_build_shop_items_kb(target_id2),
         )
+        return
 
 
-# ==================== ВЫДАЧА ПРЕДМЕТА (БЫСТРОЕ ДЕЙСТВИЕ) ====================
-@bot.message_handler(func=lambda m: m.from_user.id in give_item_flow and m.text is not None)
-def handle_give_item_flow(msg):
-    uid = msg.from_user.id
-    if not is_admin(uid):
-        give_item_flow.pop(uid, None)
+# ==================== ВЫДАЧА ПРЕДМЕТА — INLINE КНОПКИ ====================
+
+@bot.callback_query_handler(func=lambda c: c.data == "admin_noop")
+def cb_admin_noop(c):
+    bot.answer_callback_query(c.id)
+
+
+def _do_admin_give_item(admin_uid: int, target_id: int, item_id: int):
+    """Shared helper: give item_id to target_id, notify both, log."""
+    p = get_player(target_id)
+    if not p:
+        bot.send_message(admin_uid, "❌ Игрок не найден")
         return
-    data = give_item_flow.pop(uid, {})
-    target_id = data.get("target_id")
-    target_name = data.get("target_name", "?")
-    text = msg.text.strip()
-    if not text.isdigit():
-        bot.send_message(uid, "❌ Введите числовой ID предмета из списка выше")
-        return
-    item_id = int(text)
     item = get_shop_item(item_id)
     if not item:
-        bot.send_message(uid, "❌ Предмет не найден. Введите корректный ID.")
+        bot.send_message(admin_uid, "❌ Предмет не найден")
         return
     _, item_name, _, _, _, item_type = item
     stackable = {"sticker", "unwarn", "x2coins", "rename"}
     if item_type not in stackable:
-        conn_chk = _db(); cur_chk = conn_chk.cursor()
-        cur_chk.execute("SELECT COUNT(*) FROM inventory WHERE user_id=%s AND item_id=%s", (target_id, item_id))
-        already = cur_chk.fetchone()[0]
-        conn_chk.close()
+        ck = _db(); ckc = ck.cursor()
+        ckc.execute("SELECT COUNT(*) FROM inventory WHERE user_id=%s AND item_id=%s",
+                    (target_id, item_id))
+        already = ckc.fetchone()[0]; ck.close()
         if already > 0:
-            bot.send_message(uid, f"❌ У игрока <b>{target_name}</b> уже есть <b>{item_name}</b>", parse_mode="HTML")
+            bot.send_message(admin_uid,
+                f"❌ У игрока <b>{p[1]}</b> уже есть <b>{item_name}</b>",
+                parse_mode="HTML")
             return
-    conn_gi = _db(); cur_gi = conn_gi.cursor()
-    cur_gi.execute("INSERT INTO inventory (user_id, item_id) VALUES (%s, %s)", (target_id, item_id))
-    conn_gi.commit(); conn_gi.close()
-    admin_p = get_player(uid)
-    admin_name = admin_p[1] if admin_p else str(uid)
-    bot.send_message(uid, f"✅ Предмет <b>{item_name}</b> выдан игроку <b>{target_name}</b>", parse_mode="HTML")
+    cg = _db(); cgc = cg.cursor()
+    cgc.execute("INSERT INTO inventory (user_id, item_id) VALUES (%s, %s)",
+                (target_id, item_id))
+    cg.commit(); cg.close()
+    admin_p = get_player(admin_uid)
+    admin_name = admin_p[1] if admin_p else str(admin_uid)
+    bot.send_message(admin_uid,
+        f"✅ Предмет <b>{item_name}</b> выдан игроку <b>{p[1]}</b>",
+        parse_mode="HTML")
     try:
         bot.send_message(target_id,
             f"🎁 Администратор выдал вам предмет: <b>{item_name}</b>\n\n"
             f"💡 Активируйте его в 🎒 Инвентаре", parse_mode="HTML")
     except Exception:
         pass
-    send_punishment_log_priv(uid,
+    send_punishment_log_priv(admin_uid,
         f"🎁 <b>Выдача предмета</b>\n"
-        f"👮 Выдал: {tg_link(uid, admin_name)}\n"
-        f"👤 Игрок: {tg_link(target_id, target_name)}\n"
+        f"👮 Выдал: {tg_link(admin_uid, admin_name)}\n"
+        f"👤 Игрок: {tg_link(target_id, p[1])}\n"
         f"🎮 Предмет: {item_name}"
     )
+
+
+@bot.callback_query_handler(func=lambda c: c.data.startswith("adm_gi_"))
+def cb_admin_give_item_pick(c):
+    uid = c.from_user.id
+    if not is_admin(uid):
+        bot.answer_callback_query(c.id, "❌ Нет доступа")
+        return
+    try:
+        # Format: adm_gi_{target_id}_{item_id}
+        parts = c.data.split("_")
+        target_id = int(parts[2])
+        item_id   = int(parts[3])
+    except (IndexError, ValueError):
+        bot.answer_callback_query(c.id, "❌ Ошибка")
+        return
+    bot.answer_callback_query(c.id)
+    _do_admin_give_item(uid, target_id, item_id)
 
 
 # ==================== МУЛЬТИШаговый БАН ====================
@@ -7976,14 +8095,13 @@ def cb_admin_do_action(c):
         msg_text = f"{'⭐ Quals выдан' if new_val else '❌ Quals снят'}: {p[1]}"
     elif action == "give_item":
         conn.close()
-        items_list = get_all_shop_items_list()
-        give_item_flow[uid] = {"target_id": target_id, "target_name": p[1]}
         bot.answer_callback_query(c.id, f"🎁 Выбор предмета для {p[1]}", show_alert=False)
         bot.send_message(
             uid,
             f"🎁 <b>Выдача предмета</b> для <b>{p[1]}</b>\n\n"
-            f"Введите ID предмета:\n{items_list}",
+            f"Выберите предмет из списка ниже:",
             parse_mode="HTML",
+            reply_markup=_build_shop_items_kb(target_id),
         )
         return
     elif action == "toggle_verified":
