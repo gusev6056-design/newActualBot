@@ -1581,55 +1581,46 @@ def save_match_to_history(lobby, data, all_stats):
             "assists": s["assists"],
             "won": s["won"],
         })
+    players_json_str = json.dumps(players_info, ensure_ascii=False)
+    match_id   = lobby.get("match_id", 0)
+    match_code = lobby.get("match_code", "")
+    league     = lobby.get("league", "")
+    device     = lobby.get("device", "")
+    map_name   = lobby.get("map_name", "")
+    winner     = data.get("winner", "")
+    score_w    = data.get("ACore_w", 0)
+    score_l    = data.get("ACore_l", 0)
+    now        = int(time.time())
+
+    # ── 1. Обновляем главную таблицу matches (отдельная транзакция) ──────────
+    # Важно: коммитим ДО работы с приваточной таблицей, иначе ошибка в
+    # darling_matches откатит и этот UPDATE, оставив статус 'active' в БД.
     conn = None
     try:
         conn = _db()
         cur = conn.cursor()
         cur.execute(
             """INSERT INTO matches
-               (match_id, match_code, league, device, map_name, winner, ACore_w, ACore_l, players_json,
-                status, started_at)
-               VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, 'registered', %s)
+               (match_id, match_code, league, device, map_name, winner, ACore_w, ACore_l,
+                players_json, status, started_at, finished_at)
+               VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, 'registered', %s, %s)
                ON CONFLICT (match_id) DO UPDATE SET
-                   winner      = EXCLUDED.winner,
-                   ACore_w     = EXCLUDED.ACore_w,
-                   ACore_l     = EXCLUDED.ACore_l,
+                   winner       = EXCLUDED.winner,
+                   ACore_w      = EXCLUDED.ACore_w,
+                   ACore_l      = EXCLUDED.ACore_l,
                    players_json = EXCLUDED.players_json,
-                   status      = 'registered'""",
-            (
-                lobby.get("match_id", 0),
-                lobby.get("match_code", ""),
-                lobby.get("league", ""),
-                lobby.get("device", ""),
-                lobby.get("map_name", ""),
-                data.get("winner", ""),
-                data.get("ACore_w", 0),
-                data.get("ACore_l", 0),
-                json.dumps(players_info, ensure_ascii=False),
-                int(time.time()),
-            ),
+                   status       = 'registered',
+                   finished_at  = EXCLUDED.finished_at""",
+            (match_id, match_code, league, device, map_name, winner,
+             score_w, score_l, players_json_str, now, now),
         )
         try:
-            cur.execute("DELETE FROM unregistered_matches WHERE match_id=%s", (lobby.get("match_id", 0),))
+            cur.execute("DELETE FROM unregistered_matches WHERE match_id=%s", (match_id,))
         except Exception:
             pass
-        # Пишем результат в таблицу матчей конкретной приватки
-        _pmt = PRIVATE_CONFIG.get(lobby.get("private", "darling"), PRIVATE_CONFIG["darling"])["matches_table"]
-        cur.execute(
-            f"""INSERT INTO {_pmt}
-               (match_id, match_code, league, device, map_name, winner, ACore_w, ACore_l, players_json, status, started_at)
-               VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, 'registered', %s)
-               ON CONFLICT (match_id) DO UPDATE SET
-                   winner=EXCLUDED.winner, ACore_w=EXCLUDED.ACore_w, ACore_l=EXCLUDED.ACore_l,
-                   players_json=EXCLUDED.players_json, status='registered'""",
-            (lobby.get("match_id", 0), lobby.get("match_code", ""), lobby.get("league", ""),
-             lobby.get("device", ""), lobby.get("map_name", ""), data.get("winner", ""),
-             data.get("ACore_w", 0), data.get("ACore_l", 0),
-             json.dumps(players_info, ensure_ascii=False), int(time.time())),
-        )
         conn.commit()
     except Exception as e:
-        print(f"[save_match_to_history ERROR] {e}")
+        print(f"[save_match_to_history] matches UPDATE ERROR: {e}")
         import traceback; traceback.print_exc()
         try:
             if conn:
@@ -1640,6 +1631,44 @@ def save_match_to_history(lobby, data, all_stats):
         try:
             if conn:
                 conn.close()
+        except Exception:
+            pass
+
+    # ── 2. Обновляем таблицу конкретной приватки (отдельная транзакция) ──────
+    # Если эта часть падает — главная таблица matches уже закоммичена выше,
+    # матч не потеряется после рестарта.
+    conn2 = None
+    try:
+        conn2 = _db()
+        cur2  = conn2.cursor()
+        _pmt  = PRIVATE_CONFIG.get(lobby.get("private", "darling"), PRIVATE_CONFIG["darling"])["matches_table"]
+        cur2.execute(
+            f"""INSERT INTO {_pmt}
+               (match_id, match_code, league, device, map_name, winner, ACore_w, ACore_l,
+                players_json, status, started_at, finished_at)
+               VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, 'registered', %s, %s)
+               ON CONFLICT (match_id) DO UPDATE SET
+                   winner       = EXCLUDED.winner,
+                   ACore_w      = EXCLUDED.ACore_w,
+                   ACore_l      = EXCLUDED.ACore_l,
+                   players_json = EXCLUDED.players_json,
+                   status       = 'registered',
+                   finished_at  = EXCLUDED.finished_at""",
+            (match_id, match_code, league, device, map_name, winner,
+             score_w, score_l, players_json_str, now, now),
+        )
+        conn2.commit()
+    except Exception as e2:
+        print(f"[save_match_to_history] {_pmt} UPDATE ERROR: {e2}")
+        try:
+            if conn2:
+                conn2.rollback()
+        except Exception:
+            pass
+    finally:
+        try:
+            if conn2:
+                conn2.close()
         except Exception:
             pass
 
@@ -1656,52 +1685,77 @@ def save_match_cancelled(lobby, reason=""):
             "name": p[1] if p else str(uid),
             "team": "ct" if uid in lobby.get("team_ct", []) else "t",
         })
-    conn = _db()
-    cur = conn.cursor()
+    players_json_str = json.dumps(players_info, ensure_ascii=False)
+    match_id   = lobby.get("match_id", 0)
+    match_code = lobby.get("match_code", "")
+    league     = lobby.get("league", "")
+    device     = lobby.get("device", "")
+    map_name   = lobby.get("map_name", "")
+    now        = int(time.time())
+
+    # ── 1. Главная таблица matches (отдельная транзакция) ────────────────────
+    conn = None
     try:
+        conn = _db()
+        cur = conn.cursor()
         cur.execute(
             """INSERT INTO matches
-               (match_id, match_code, league, device, map_name, status, cancel_reason, players_json,
-                winner, ACore_w, ACore_l, started_at)
+               (match_id, match_code, league, device, map_name, status, cancel_reason,
+                players_json, winner, ACore_w, ACore_l, started_at)
                VALUES (%s, %s, %s, %s, %s, 'cancelled', %s, %s, '', 0, 0, %s)
                ON CONFLICT (match_id) DO UPDATE SET
                    status        = 'cancelled',
                    cancel_reason = EXCLUDED.cancel_reason""",
-            (
-                lobby.get("match_id", 0),
-                lobby.get("match_code", ""),
-                lobby.get("league", ""),
-                lobby.get("device", ""),
-                lobby.get("map_name", ""),
-                reason,
-                json.dumps(players_info, ensure_ascii=False),
-                int(time.time()),
-            ),
+            (match_id, match_code, league, device, map_name, reason, players_json_str, now),
         )
-        # Матч отменён — удаляем из незарегистрированных
         try:
-            cur.execute("DELETE FROM unregistered_matches WHERE match_id=%s", (lobby.get("match_id", 0),))
+            cur.execute("DELETE FROM unregistered_matches WHERE match_id=%s", (match_id,))
         except Exception:
             pass
-        # Пишем отмену в таблицу матчей конкретной приватки
-        _pmt = PRIVATE_CONFIG.get(lobby.get("private", "darling"), PRIVATE_CONFIG["darling"])["matches_table"]
-        cur.execute(
-            f"""INSERT INTO {_pmt}
-               (match_id, match_code, league, device, map_name, status, cancel_reason, players_json,
-                winner, ACore_w, ACore_l, started_at)
-               VALUES (%s, %s, %s, %s, %s, 'cancelled', %s, %s, '', 0, 0, %s)
-               ON CONFLICT (match_id) DO UPDATE SET
-                   status='cancelled', cancel_reason=EXCLUDED.cancel_reason""",
-            (lobby.get("match_id", 0), lobby.get("match_code", ""), lobby.get("league", ""),
-             lobby.get("device", ""), lobby.get("map_name", ""),
-             lobby.get("cancel_reason", ""), json.dumps(players_info, ensure_ascii=False),
-             int(time.time())),
-        )
         conn.commit()
     except Exception as e:
-        print(f"save_match_cancelled error: {e}")
-        conn.rollback()
-    conn.close()
+        print(f"[save_match_cancelled] matches UPDATE ERROR: {e}")
+        try:
+            if conn:
+                conn.rollback()
+        except Exception:
+            pass
+    finally:
+        try:
+            if conn:
+                conn.close()
+        except Exception:
+            pass
+
+    # ── 2. Таблица приватки (отдельная транзакция) ───────────────────────────
+    conn2 = None
+    try:
+        conn2 = _db()
+        cur2  = conn2.cursor()
+        _pmt  = PRIVATE_CONFIG.get(lobby.get("private", "darling"), PRIVATE_CONFIG["darling"])["matches_table"]
+        cur2.execute(
+            f"""INSERT INTO {_pmt}
+               (match_id, match_code, league, device, map_name, status, cancel_reason,
+                players_json, winner, ACore_w, ACore_l, started_at)
+               VALUES (%s, %s, %s, %s, %s, 'cancelled', %s, %s, '', 0, 0, %s)
+               ON CONFLICT (match_id) DO UPDATE SET
+                   status = 'cancelled', cancel_reason = EXCLUDED.cancel_reason""",
+            (match_id, match_code, league, device, map_name, reason, players_json_str, now),
+        )
+        conn2.commit()
+    except Exception as e2:
+        print(f"[save_match_cancelled] {_pmt} UPDATE ERROR: {e2}")
+        try:
+            if conn2:
+                conn2.rollback()
+        except Exception:
+            pass
+    finally:
+        try:
+            if conn2:
+                conn2.close()
+        except Exception:
+            pass
 
 
 # ==================== ТИКЕТЫ (БД хелперы) ====================
@@ -4645,8 +4699,18 @@ def _apply_draft_pick(lobby_id, team, unit):
         do_finish = not remaining_units or (ct_needs <= 0 and t_needs <= 0)
 
         if not do_finish:
-            # Advance turn (skip if that team is full)
-            next_turn = "t" if team == "ct" else "ct"
+            # Give the next turn to whichever team needs MORE players (catch-up).
+            # This handles the case where a party unit was just picked: the team
+            # that received multiple players in one pick may now be ahead, so the
+            # opposing team keeps picking until team sizes are equal again.
+            if ct_needs > t_needs:
+                next_turn = "ct"
+            elif t_needs > ct_needs:
+                next_turn = "t"
+            else:
+                # Teams need the same amount — normal alternation
+                next_turn = "t" if team == "ct" else "ct"
+            # Safety guard: skip any team that is already full
             if next_turn == "ct" and ct_needs <= 0:
                 next_turn = "t"
             elif next_turn == "t" and t_needs <= 0:
