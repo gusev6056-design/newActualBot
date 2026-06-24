@@ -628,6 +628,13 @@ def init_db():
     _add_column_if_missing("matches", "admin_thread_id", "BIGINT DEFAULT NULL")
     _add_column_if_missing("matches", "admin_msg_id",    "BIGINT DEFAULT NULL")
 
+    # unregistered_matches — колонки которых может не быть в старой таблице
+    _add_column_if_missing("unregistered_matches", "team_ct_json",      "TEXT DEFAULT '[]'")
+    _add_column_if_missing("unregistered_matches", "team_t_json",       "TEXT DEFAULT '[]'")
+    _add_column_if_missing("unregistered_matches", "host_game_id",      "TEXT DEFAULT ''")
+    _add_column_if_missing("unregistered_matches", "ACreenshots_count", "INTEGER DEFAULT 0")
+    _add_column_if_missing("unregistered_matches", "started_at",        "BIGINT DEFAULT 0")
+
     # Синяя галочка — верификация игрока
     _add_column_if_missing("players", "is_verified", "INTEGER DEFAULT 0")
     # UNIQUE-индекс на match_id для ON CONFLICT
@@ -2661,6 +2668,245 @@ def cmd_topicsettings(msg):
         f"🏁 Ветка результатов:\n{res_info}\n\n"
         f"<i>Зайди в нужную ветку и отправь /setlogtopic или /setresulttopic чтобы привязать.</i>",
         parse_mode="HTML"
+    )
+
+
+@bot.message_handler(commands=["revive_match"])
+def cmd_revive_match(msg):
+    """
+    /revive_match КОД  — оживить матч по коду (напр. COBVVK1).
+    Восстанавливает лобби в памяти и отправляет новую admin-карточку.
+    Только для администраторов.
+    """
+    uid = msg.from_user.id
+    if not is_admin(uid):
+        return
+
+    parts = msg.text.strip().split()
+    if len(parts) < 2:
+        bot.reply_to(msg,
+            "❌ Укажи код матча.\nПример: <code>/revive_match COBVVK1</code>",
+            parse_mode="HTML")
+        return
+
+    match_code_arg = parts[1].strip().upper()
+
+    conn = _db()
+    cur  = conn.cursor()
+    row_um = row_m = None
+    try:
+        # 1. Ищем в unregistered_matches (там есть team_ct_json / team_t_json)
+        cur.execute(
+            "SELECT match_id, match_code, league, device, map_name, "
+            "players_json, team_ct_json, team_t_json, host_game_id, acreenshots_count "
+            "FROM unregistered_matches WHERE UPPER(match_code)=%s LIMIT 1",
+            (match_code_arg,),
+        )
+        row_um = cur.fetchone()
+
+        # 2. Ищем в matches
+        cur.execute(
+            "SELECT match_id, match_code, league, device, map_name, "
+            "players_json, started_at, COALESCE(private_key,'darling'), "
+            "admin_thread_id, admin_msg_id, status "
+            "FROM matches WHERE UPPER(match_code)=%s LIMIT 1",
+            (match_code_arg,),
+        )
+        row_m = cur.fetchone()
+    except Exception as _e:
+        bot.reply_to(msg, f"❌ Ошибка БД: {_e}")
+        conn.close()
+        return
+    finally:
+        conn.close()
+
+    if not row_um and not row_m:
+        bot.reply_to(msg,
+            f"❌ Матч <b>{match_code_arg}</b> не найден ни в matches, ни в unregistered_matches.",
+            parse_mode="HTML")
+        return
+
+    # ── Собираем данные из доступных источников ───────────────────────────
+    if row_um:
+        match_id, match_code, league, device, map_name, \
+            players_json, team_ct_json_s, team_t_json_s, host_game_id, AC_count = row_um
+        private_key     = "darling"
+        admin_thread_id = None
+        admin_msg_id    = None
+        if row_m:
+            private_key     = row_m[7] or "darling"
+            admin_thread_id = row_m[8]
+            admin_msg_id    = row_m[9]
+    else:
+        match_id, match_code, league, device, map_name, \
+            players_json, started_at, private_key, \
+            admin_thread_id, admin_msg_id, _ = row_m
+        team_ct_json_s = "[]"
+        team_t_json_s  = "[]"
+        host_game_id   = ""
+        AC_count       = 0
+
+    match_key = f"match_{match_id}"
+
+    # ── Парсим команды ────────────────────────────────────────────────────
+    try:
+        team_ct = json.loads(team_ct_json_s or "[]")
+        team_t  = json.loads(team_t_json_s  or "[]")
+    except Exception:
+        team_ct, team_t = [], []
+
+    players_info = []
+    try:
+        players_info = json.loads(players_json or "[]")
+    except Exception:
+        pass
+
+    # Если team_ct/team_t пустые — восстанавливаем из players_json
+    if not team_ct and not team_t and players_info:
+        for p in players_info:
+            uid2 = p.get("user_id")
+            if not uid2:
+                continue
+            if p.get("team") == "ct":
+                team_ct.append(uid2)
+            else:
+                team_t.append(uid2)
+
+    players = list(dict.fromkeys(team_ct + team_t))
+
+    # ── Ищем хоста ───────────────────────────────────────────────────────
+    _rv_priv_cfg = PRIVATE_CONFIG.get(private_key, PRIVATE_CONFIG["darling"])
+    _rv_table    = _rv_priv_cfg["table"]
+    host_uid     = next((u for u in team_ct if not is_bot_player(u)), None)
+    if host_uid:
+        host_p_row = get_player_from_table(host_uid, _rv_table) or get_player(host_uid)
+        if host_p_row:
+            host_name_rv    = host_p_row[1]
+            host_game_id_rv = host_p_row[2] if not host_game_id else host_game_id
+        else:
+            host_name_rv    = str(host_uid)
+            host_game_id_rv = host_game_id or "—"
+    else:
+        host_name_rv    = "—"
+        host_game_id_rv = host_game_id or "—"
+
+    # ── Строим лобби в памяти ─────────────────────────────────────────────
+    lobby = {
+        "match_id":          match_id,
+        "match_code":        match_code or match_code_arg,
+        "league":            league or "default",
+        "device":            device or "",
+        "map_name":          map_name or "",
+        "status":            "active",
+        "players":           players,
+        "team_ct":           team_ct,
+        "team_t":            team_t,
+        "ACreenshots":       {},
+        "ACreenshots_count": AC_count or 0,
+        "reg_taken_by":      None,
+        "match_key":         match_key,
+        "started_at":        int(time.time()),
+        "private":           private_key,
+        "admin_thread_id":   admin_thread_id,
+        "admin_msg_id":      admin_msg_id,
+        "host_uid":          host_uid,
+        "host_game_id":      host_game_id_rv,
+    }
+    running_matches[match_key] = lobby
+
+    # Восстанавливаем awaiting_ACreenshot для игроков
+    for p_uid in players:
+        if not is_bot_player(p_uid):
+            awaiting_ACreenshot[p_uid] = match_key
+
+    # ── Обновляем unregistered_matches ───────────────────────────────────
+    try:
+        _pj  = json.dumps(players_info, ensure_ascii=False)
+        _ctj = json.dumps(team_ct,      ensure_ascii=False)
+        _tj  = json.dumps(team_t,       ensure_ascii=False)
+        _conn2 = _db(); _cur2 = _conn2.cursor()
+        _cur2.execute(
+            """INSERT INTO unregistered_matches
+               (match_id, match_code, league, device, map_name,
+                players_json, team_ct_json, team_t_json, host_game_id, acreenshots_count, started_at)
+               VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+               ON CONFLICT (match_id) DO UPDATE SET
+                   match_code        = EXCLUDED.match_code,
+                   players_json      = EXCLUDED.players_json,
+                   team_ct_json      = EXCLUDED.team_ct_json,
+                   team_t_json       = EXCLUDED.team_t_json,
+                   acreenshots_count = EXCLUDED.acreenshots_count""",
+            (match_id, match_code or match_code_arg, league or "", device or "",
+             map_name or "", _pj, _ctj, _tj, host_game_id_rv, AC_count or 0,
+             int(time.time())),
+        )
+        _conn2.commit(); _conn2.close()
+    except Exception as _ue:
+        print(f"[revive_match] unregistered_matches update error: {_ue}")
+
+    # ── Строим текст admin-карточки ───────────────────────────────────────
+    _adm_priv_label = f"{_rv_priv_cfg['emoji']} {_rv_priv_cfg['display']}"
+
+    def _rv_pline(idx, u):
+        p2 = get_player_from_table(u, _rv_table) or get_player(u)
+        num = NUMBER_EMOJI[idx] if idx < len(NUMBER_EMOJI) else f"{idx+1}."
+        if p2:
+            prem = " 👑" if (not p2[13] and has_active_premium(u)) else ""
+            elo  = _resolve_display_elo(u, p2, _rv_table, league or "default")
+            return f"{num} {p2[1]}{prem} | ID: <code>{u}</code> | ELO: {elo}"
+        return f"{num} <code>{u}</code>"
+
+    ct_lines = "\n".join([_rv_pline(i, u) for i, u in enumerate(team_ct)])
+    t_lines  = "\n".join([_rv_pline(i, u) for i, u in enumerate(team_t)])
+
+    match_text = (
+        f"♻️ <b>МАТЧ #{match_code or match_code_arg} ОЖИВЛЁН</b>\n\n"
+        f"🏠 Приватка: <b>{_adm_priv_label}</b>\n"
+        f"🏷 Лига: {format_league(league or 'default')}\n"
+        f"📱 Устройство: {(device or '').upper()}\n"
+        f"🗺 Карта: <b>{map_name or '?'}</b>\n"
+        f"👑 Хост: <b>{host_name_rv}</b> | Game ID: <code>{host_game_id_rv}</code>\n\n"
+        f"💙 <b>Команда CT</b>\n{ct_lines}\n\n"
+        f"🧡 <b>Команда T</b>\n{t_lines}"
+    )
+
+    # ── Отправляем новую admin-карточку ──────────────────────────────────
+    kb_admin = _build_admin_match_kb(match_key, match_code or match_code_arg, AC_count or 0)
+
+    if ADMIN_CHAT_ID:
+        new_thread_id = admin_thread_id  # пробуем переиспользовать старую ветку
+        if not new_thread_id:
+            try:
+                topic = bot.create_forum_topic(ADMIN_CHAT_ID, f"MATCH #{match_code or match_code_arg}")
+                new_thread_id = topic.message_thread_id
+            except Exception:
+                pass
+
+        lobby["admin_thread_id"] = new_thread_id
+        try:
+            send_kw = {"reply_markup": kb_admin, "parse_mode": "HTML"}
+            if new_thread_id:
+                send_kw["message_thread_id"] = new_thread_id
+            sent = bot.send_message(ADMIN_CHAT_ID, match_text, **send_kw)
+            lobby["admin_msg_id"] = sent.message_id
+            try:
+                bot.pin_chat_message(ADMIN_CHAT_ID, sent.message_id, disable_notification=True)
+            except Exception:
+                pass
+        except Exception as _ae:
+            print(f"[revive_match] admin send error: {_ae}")
+            bot.reply_to(msg, f"⚠️ Лобби восстановлено в памяти, но не удалось отправить в admin-чат: {_ae}")
+            return
+
+    # ── Подтверждение тому, кто вызвал команду ───────────────────────────
+    bot.reply_to(
+        msg,
+        f"✅ <b>Матч #{match_code or match_code_arg} оживлён!</b>\n\n"
+        f"• Лобби восстановлено в памяти\n"
+        f"• Карточка отправлена в admin-чат\n"
+        f"• Игроки: {len(players)} (CT: {len(team_ct)}, T: {len(team_t)})\n"
+        f"• Скриншоты: {AC_count or 0}",
+        parse_mode="HTML",
     )
 
 
@@ -7233,7 +7479,7 @@ _RESTRICT_MAP = {
     "admin_warn", "admin_broadcast", "admin_give_admin",
     "admin_quals_access", "admin_give_game_reg", "admin_mute", "admin_unmute",
     "admin_check", "admin_uncheck", "admin_change_nick", "admin_change_gid",
-    "admin_edit_stats", "admin_give_verified",
+    "admin_edit_stats", "admin_give_verified", "admin_give_item",
 ])
 def cb_admin_action(c):
     uid = c.from_user.id
