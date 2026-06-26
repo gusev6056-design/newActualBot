@@ -3365,6 +3365,7 @@ def cb_profile(c):
         types.InlineKeyboardButton("✏️ Изменить ник",     callback_data="change_nick"),
         types.InlineKeyboardButton("🎮 Изменить Game ID", callback_data="change_game_id"),
     )
+    kb.add(types.InlineKeyboardButton("💸 Перевести монеты", callback_data="transfer_coins"))
     extra_btns = []
     if has_quals_access(uid):
         extra_btns.append(types.InlineKeyboardButton("⭐ Quals профиль", callback_data="profile_quals"))
@@ -3458,6 +3459,171 @@ def cb_profile(c):
     )
     bot.edit_message_text(text, c.message.chat.id, c.message.message_id, reply_markup=kb)
     bot.answer_callback_query(c.id)
+
+
+# ==================== ПЕРЕВОД МОНЕТ ====================
+# Словарь: uid -> {step: "target"|"amount", target_uid, target_name}
+_transfer_flow: dict = {}
+
+TRANSFER_COMMISSION = 0.03  # 3%
+
+@bot.callback_query_handler(func=lambda c: c.data == "transfer_coins")
+def cb_transfer_coins_start(c):
+    uid = c.from_user.id
+    err = check_blocked(uid)
+    if err:
+        bot.answer_callback_query(c.id, "⚠️ Доступ ограничен", show_alert=True)
+        return
+    if not is_registered(uid):
+        bot.answer_callback_query(c.id, "❌ Сначала зарегистрируйтесь", show_alert=True)
+        return
+    p = get_player(uid)
+    coins = p[5] if p and len(p) > 5 else 0
+    bot.answer_callback_query(c.id)
+    _transfer_flow[uid] = {"step": "target"}
+    sent = bot.send_message(
+        uid,
+        f"💸 <b>Перевод монет</b>\n\n"
+        f"💰 Ваш баланс: <b>{coins} AC</b>\n"
+        f"📋 Комиссия: <b>3%</b> (списывается с вас)\n\n"
+        f"Введите Telegram ID или никнейм получателя:",
+        parse_mode="HTML",
+    )
+    bot.register_next_step_handler(sent, _transfer_step_target)
+
+
+def _transfer_step_target(msg):
+    uid = msg.from_user.id
+    if uid not in _transfer_flow:
+        return
+    text = msg.text.strip() if msg.text else ""
+    if not text:
+        bot.send_message(uid, "❌ Введите ID или никнейм:")
+        bot.register_next_step_handler(msg, _transfer_step_target)
+        return
+
+    # Ищем получателя
+    target = None
+    if text.isdigit():
+        target = get_player(int(text))
+    else:
+        try:
+            conn2 = _db(); cur2 = conn2.cursor()
+            cur2.execute("SELECT * FROM players WHERE username=%s AND is_bot=0", (text,))
+            target = cur2.fetchone(); conn2.close()
+        except Exception:
+            pass
+
+    if not target:
+        bot.send_message(uid, "❌ Игрок не найден. Введите корректный ID или никнейм:")
+        bot.register_next_step_handler(msg, _transfer_step_target)
+        return
+
+    target_uid = target[0]
+    if target_uid == uid:
+        bot.send_message(uid, "❌ Нельзя переводить монеты самому себе. Введите другого игрока:")
+        bot.register_next_step_handler(msg, _transfer_step_target)
+        return
+
+    target_name = target[1] or str(target_uid)
+    _transfer_flow[uid]["step"] = "amount"
+    _transfer_flow[uid]["target_uid"] = target_uid
+    _transfer_flow[uid]["target_name"] = target_name
+
+    p = get_player(uid)
+    coins = p[5] if p and len(p) > 5 else 0
+    sent = bot.send_message(
+        uid,
+        f"💸 <b>Перевод монет</b>\n\n"
+        f"📤 Получатель: <b>{target_name}</b> (<code>{target_uid}</code>)\n"
+        f"💰 Ваш баланс: <b>{coins} AC</b>\n"
+        f"📋 Комиссия: <b>3%</b> (спишется сверху)\n\n"
+        f"Введите сумму перевода (минимум <b>2 AC</b>):",
+        parse_mode="HTML",
+    )
+    bot.register_next_step_handler(sent, _transfer_step_amount)
+
+
+def _transfer_step_amount(msg):
+    uid = msg.from_user.id
+    flow = _transfer_flow.pop(uid, None)
+    if not flow:
+        return
+    text = msg.text.strip() if msg.text else ""
+    try:
+        amount = int(text)
+        if amount < 2:
+            raise ValueError
+    except ValueError:
+        bot.send_message(uid, "❌ Введите целое число от 2 AC. Начните перевод заново — нажмите «💸 Перевести монеты».")
+        return
+
+    target_uid  = flow["target_uid"]
+    target_name = flow["target_name"]
+
+    p = get_player(uid)
+    coins = p[5] if p and len(p) > 5 else 0
+
+    commission = max(1, round(amount * TRANSFER_COMMISSION))
+    total_cost = amount + commission
+
+    if total_cost > coins:
+        bot.send_message(
+            uid,
+            f"❌ Недостаточно монет!\n\n"
+            f"Перевод: <b>{amount} AC</b>\n"
+            f"Комиссия (3%): <b>{commission} AC</b>\n"
+            f"Итого нужно: <b>{total_cost} AC</b>\n"
+            f"У вас: <b>{coins} AC</b>\n\n"
+            f"Начните перевод заново — нажмите «💸 Перевести монеты».",
+            parse_mode="HTML",
+        )
+        return
+
+    # Проверяем получателя
+    target = get_player(target_uid)
+    if not target:
+        bot.send_message(uid, "❌ Получатель не найден. Начните перевод заново.")
+        return
+
+    # Выполняем перевод
+    try:
+        conn = _db(); cur = conn.cursor()
+        # Списываем с отправителя (сумма + комиссия)
+        cur.execute("UPDATE players SET coins=GREATEST(0, coins-%s) WHERE user_id=%s", (total_cost, uid))
+        # Зачисляем получателю
+        cur.execute("UPDATE players SET coins=coins+%s WHERE user_id=%s", (amount, target_uid))
+        conn.commit(); conn.close()
+    except Exception as _te:
+        print(f"[transfer_coins] {_te}")
+        bot.send_message(uid, "❌ Ошибка при переводе. Попробуйте позже.")
+        return
+
+    new_balance = coins - total_cost
+    # Уведомляем отправителя
+    bot.send_message(
+        uid,
+        f"✅ <b>Перевод выполнен!</b>\n\n"
+        f"📤 Отправлено: <b>{amount} AC</b> → <b>{target_name}</b>\n"
+        f"📋 Комиссия: <b>{commission} AC</b> (3%)\n"
+        f"💰 Ваш новый баланс: <b>{new_balance} AC</b>",
+        parse_mode="HTML",
+    )
+    # Уведомляем получателя
+    sender_p = get_player(uid)
+    sender_name = sender_p[1] if sender_p else str(uid)
+    target_coins = target[5] if len(target) > 5 else 0
+    try:
+        bot.send_message(
+            target_uid,
+            f"💰 <b>Вам перевели монеты!</b>\n\n"
+            f"📥 Получено: <b>+{amount} AC</b>\n"
+            f"📤 От: <b>{sender_name}</b>\n"
+            f"💰 Ваш новый баланс: <b>{target_coins + amount} AC</b>",
+            parse_mode="HTML",
+        )
+    except Exception:
+        pass
 
 
 # ==================== QUALS ПРОФИЛЬ ====================
@@ -6906,9 +7072,13 @@ _slots_weights: dict = {s: 1 for s in SLOTS_SYMBOLS}
 # Персональная удача: {uid: шанс_форс_победы_в_процентах (0-100)}
 _slots_luck: dict = {}
 
-# Глобальный шанс джекпота 777 (в процентах, float). По умолчанию 0.20%.
+# Глобальный шанс джекпота 777 (в процентах, float). По умолчанию 0.01%.
 # Хранится в БД, изменяется через админ панель.
-_slots_jackpot_chance: float = 0.20
+_slots_jackpot_chance: float = 0.01
+
+# Шанс тройки x10 (любой не-777 символ, в процентах, float). По умолчанию 2%.
+# Хранится в БД, изменяется через админ панель.
+_slots_x10_chance: float = 2.0
 
 # Словарь: uid -> данные ожидания ввода кастомной ставки
 _slots_custom_bet_pending: dict = {}
@@ -6917,8 +7087,8 @@ _slots_luck_flow: dict = {}
 
 
 def _load_slots_weights():
-    """Загружает веса символов, удачу и шанс джекпота из БД."""
-    global _slots_weights, _slots_luck, _slots_jackpot_chance
+    """Загружает веса символов, удачу, шанс джекпота и шанс x10 из БД."""
+    global _slots_weights, _slots_luck, _slots_jackpot_chance, _slots_x10_chance
     try:
         import json as _json
         raw = get_setting("slots_weights")
@@ -6934,6 +7104,9 @@ def _load_slots_weights():
         raw3 = get_setting("slots_jackpot_chance")
         if raw3:
             _slots_jackpot_chance = max(0.0, min(100.0, float(raw3)))
+        raw4 = get_setting("slots_x10_chance")
+        if raw4:
+            _slots_x10_chance = max(0.0, min(100.0, float(raw4)))
     except Exception as _e:
         print(f"[load_slots_weights] {_e}")
 
@@ -6952,16 +7125,21 @@ def _save_slots_jackpot_chance():
     set_setting("slots_jackpot_chance", str(_slots_jackpot_chance))
 
 
+def _save_slots_x10_chance():
+    set_setting("slots_x10_chance", str(_slots_x10_chance))
+
+
 def _spin_slots(uid: int = None) -> list:
     """Крутит барабаны.
-    1. Джекпот 777 — отдельный roll с _slots_jackpot_chance %.
+    1. Джекпот 777 — отдельный roll с _slots_jackpot_chance % (минимальный).
     2. Персональная удача игрока — форс тройки любого другого символа.
-    3. Обычный спин (7️⃣ исключён из пула, только фрукты/алмаз/звезда).
+    3. Шанс тройки x10 — контролируется _slots_x10_chance %.
+    4. Если ни один шанс не сработал — возвращаем гарантированно не-тройку.
     """
     JACKPOT_SYM = "7️⃣"
     OTHER_SYMS  = [s for s in SLOTS_SYMBOLS if s != JACKPOT_SYM]
 
-    # 1. Глобальный шанс джекпота 777
+    # 1. Глобальный шанс джекпота 777 (минимальный)
     if _slots_jackpot_chance > 0 and random.random() * 100 < _slots_jackpot_chance:
         return [JACKPOT_SYM, JACKPOT_SYM, JACKPOT_SYM]
 
@@ -6972,11 +7150,21 @@ def _spin_slots(uid: int = None) -> list:
             sym = random.choice(OTHER_SYMS)
             return [sym, sym, sym]
 
-    # 3. Обычный спин (7️⃣ не участвует — только через джекпот)
-    pool = []
-    for sym in OTHER_SYMS:
-        pool.extend([sym] * _slots_weights.get(sym, 1))
-    return [random.choice(pool) for _ in range(3)]
+    # 3. Шанс тройки x10 (пониженный)
+    if _slots_x10_chance > 0 and random.random() * 100 < _slots_x10_chance:
+        sym = random.choice(OTHER_SYMS)
+        return [sym, sym, sym]
+
+    # 4. Нет выигрыша — гарантированно не-тройка
+    r1 = random.choice(OTHER_SYMS)
+    r2 = random.choice(OTHER_SYMS)
+    r3 = random.choice(OTHER_SYMS)
+    # Если случайно выпала тройка — меняем последний барабан
+    attempts = 0
+    while r1 == r2 == r3 and attempts < 10:
+        r3 = random.choice(OTHER_SYMS)
+        attempts += 1
+    return [r1, r2, r3]
 
 
 def _slots_total_weight() -> int:
@@ -7020,12 +7208,15 @@ def _slots_menu_kb(selected_bet=None):
 
 def _slots_menu_text(coins: int, selected_bet=None) -> str:
     bet_line = f"🎯 Выбрана ставка: <b>{selected_bet} AC</b>\n" if selected_bet else ""
+    jackpot_avg = f"≈1 на {round(100/_slots_jackpot_chance)}" if _slots_jackpot_chance > 0 else "∞"
+    x10_avg = f"≈1 на {round(100/_slots_x10_chance)}" if _slots_x10_chance > 0 else "∞"
     return (
         f"🎰 <b>СЛОТЫ</b>\n\n"
         f"💰 Ваш баланс: <b>{coins} AC</b>\n"
         f"{bet_line}\n"
         f"Символы и множители (три одинаковых):\n"
-        f"7️⃣ ×100  |  все остальные ×10\n\n"
+        f"7️⃣ ×100 — шанс <b>{_slots_jackpot_chance}%</b> ({jackpot_avg} спинов)\n"
+        f"🍒🍋🍊🍇💎⭐ ×10 — шанс <b>{_slots_x10_chance}%</b> ({x10_avg} спинов)\n\n"
         f"{'Нажмите «Крутить» для старта!' if selected_bet else 'Выберите ставку:'}"
     )
 
@@ -7224,10 +7415,14 @@ def _slots_settings_text() -> str:
         name = p[1] if p else str(luid)
         lucky.append(f"  👤 {name} (<code>{luid}</code>) — <b>{pct}%</b>")
     lucky_block = "\n".join(lucky) if lucky else "  <i>нет</i>"
+    jackpot_avg = round(100 / _slots_jackpot_chance) if _slots_jackpot_chance > 0 else "∞"
+    x10_avg = round(100 / _slots_x10_chance) if _slots_x10_chance > 0 else "∞"
     return (
         f"🎰 <b>Настройки слотов</b>\n\n"
-        f"7️⃣ <b>Шанс джекпота (777):</b> <b>{_slots_jackpot_chance}%</b>\n"
-        f"<i>Сейчас в среднем 1 раз на {round(100/_slots_jackpot_chance) if _slots_jackpot_chance > 0 else '∞'} спинов</i>\n\n"
+        f"7️⃣ <b>Шанс джекпота 777 (×100):</b> <b>{_slots_jackpot_chance}%</b>\n"
+        f"<i>≈1 раз на {jackpot_avg} спинов</i>\n\n"
+        f"🍒 <b>Шанс тройки ×10:</b> <b>{_slots_x10_chance}%</b>\n"
+        f"<i>≈1 раз на {x10_avg} спинов</i>\n\n"
         f"🍀 <b>Игроки с повышенной удачей (фрукты):</b>\n{lucky_block}\n\n"
         f"<i>Удача = % шанс форсированной тройки фруктов за спин.\n"
         f"Джекпот 777 управляется отдельно глобальным шансом.</i>"
@@ -7237,10 +7432,11 @@ def _slots_settings_text() -> str:
 def _slots_settings_kb() -> types.InlineKeyboardMarkup:
     kb = types.InlineKeyboardMarkup(row_width=1)
     kb.add(
-        types.InlineKeyboardButton("7️⃣ Изменить шанс джекпота 777", callback_data="admin_slots_jackpot"),
-        types.InlineKeyboardButton("🍀 Выдать удачу игроку",         callback_data="admin_slots_luck_set"),
-        types.InlineKeyboardButton("❌ Убрать удачу игроку",         callback_data="admin_slots_luck_remove"),
-        types.InlineKeyboardButton("🔙 Назад",                       callback_data="admin_panel"),
+        types.InlineKeyboardButton("7️⃣ Изменить шанс джекпота 777 (×100)", callback_data="admin_slots_jackpot"),
+        types.InlineKeyboardButton("🍒 Изменить шанс тройки ×10",           callback_data="admin_slots_x10"),
+        types.InlineKeyboardButton("🍀 Выдать удачу игроку",                callback_data="admin_slots_luck_set"),
+        types.InlineKeyboardButton("❌ Убрать удачу игроку",                callback_data="admin_slots_luck_remove"),
+        types.InlineKeyboardButton("🔙 Назад",                              callback_data="admin_panel"),
     )
     return kb
 
@@ -7273,6 +7469,26 @@ def cb_admin_slots_jackpot(c):
         f"Текущий шанс: <b>{_slots_jackpot_chance}%</b>\n"
         f"<i>(≈1 раз на {round(100/_slots_jackpot_chance) if _slots_jackpot_chance > 0 else '∞'} спинов)</i>\n\n"
         f"Введите новый шанс в % (например: <code>0.20</code> или <code>1.5</code>):\n"
+        f"<i>Диапазон: 0.01 — 100</i>",
+        parse_mode="HTML",
+    )
+
+
+@bot.callback_query_handler(func=lambda c: c.data == "admin_slots_x10")
+def cb_admin_slots_x10(c):
+    uid = c.from_user.id
+    if not is_admin(uid):
+        bot.answer_callback_query(c.id, "❌ Нет доступа")
+        return
+    bot.answer_callback_query(c.id)
+    _slots_luck_flow[uid] = {"step": "x10_chance", "action": "x10"}
+    x10_avg = round(100 / _slots_x10_chance) if _slots_x10_chance > 0 else "∞"
+    bot.send_message(
+        uid,
+        f"🍒 <b>Шанс тройки ×10</b>\n\n"
+        f"Текущий шанс: <b>{_slots_x10_chance}%</b>\n"
+        f"<i>(≈1 раз на {x10_avg} спинов)</i>\n\n"
+        f"Введите новый шанс в % (например: <code>2</code> или <code>0.5</code>):\n"
         f"<i>Диапазон: 0.01 — 100</i>",
         parse_mode="HTML",
     )
@@ -7329,6 +7545,28 @@ def handle_slots_luck_flow(msg):
             uid,
             f"✅ <b>Шанс джекпота обновлён!</b>\n\n"
             f"7️⃣ Новый шанс: <b>{_slots_jackpot_chance}%</b>\n"
+            f"<i>≈1 раз на {avg} спинов</i>",
+            parse_mode="HTML",
+        )
+        return
+
+    if flow["step"] == "x10_chance":
+        try:
+            val = float(text.replace(",", "."))
+            if not 0.01 <= val <= 100:
+                raise ValueError
+        except ValueError:
+            bot.send_message(uid, "❌ Введите число от 0.01 до 100 (например: <code>2</code>):", parse_mode="HTML")
+            return
+        global _slots_x10_chance
+        _slots_x10_chance = round(val, 4)
+        _slots_luck_flow.pop(uid, None)
+        _save_slots_x10_chance()
+        avg = round(100 / _slots_x10_chance) if _slots_x10_chance > 0 else "∞"
+        bot.send_message(
+            uid,
+            f"✅ <b>Шанс тройки ×10 обновлён!</b>\n\n"
+            f"🍒 Новый шанс: <b>{_slots_x10_chance}%</b>\n"
             f"<i>≈1 раз на {avg} спинов</i>",
             parse_mode="HTML",
         )
