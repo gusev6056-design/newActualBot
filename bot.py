@@ -4013,6 +4013,15 @@ def cb_join(c):
         party_obj = get_party_of(uid)
         party_leader = party_obj["leader"] if party_obj else None
 
+        # Проверка: QUALS — только соло, пати запрещено
+        if league == "quals" and party_obj and len(party_obj["members"]) > 1:
+            bot.answer_callback_query(
+                c.id,
+                "⭐ В QUALS лигу нельзя заходить с пати! Выйдите из пати и попробуйте снова.",
+                show_alert=True,
+            )
+            return
+
         # Проверка: если в пати есть участники с другой приваткой — предупредить
         if party_obj and len(party_obj["members"]) > 1:
             different_priv_members = []
@@ -4139,7 +4148,7 @@ def start_accept_phase(lobby_id):
         return
     lobby["status"] = "accepting"
     lobby["accepted"] = []
-    lobby_player_messages.pop(lobby_id, None)
+    delete_lobby_messages(lobby_id)
     accept_status_messages[lobby_id] = {}
     match_found_messages[lobby_id] = {}
     for uid in lobby["players"]:
@@ -4281,6 +4290,8 @@ def cb_accept(c):
     update_accept_status(lobby_id)
     if len(lobby["accepted"]) >= len(lobby["players"]) and lobby["status"] == "accepting":
         lobby["status"] = "pre_mapban"
+        delete_accept_status(lobby_id)
+        delete_match_found(lobby_id)
         threading.Thread(target=start_map_ban_phase, args=(lobby_id,), daemon=True).start()
 
 
@@ -4458,16 +4469,18 @@ def _start_map_ban_phase_inner(lobby_id):
 
     print(f"[mapban] ct_cap={lobby['ct_captain']} t_cap={lobby['t_captain']}")
 
-    # Сообщение всем игрокам о старте фазы бана
+    # Сообщение всем игрокам о старте фазы бана (с отслеживанием для последующего удаления)
+    lobby["ban_announce_msgs"] = {}
     for _uid in players:
         if is_bot_player(_uid):
             continue
         try:
-            bot.send_message(
+            _sent = bot.send_message(
                 _uid,
                 "🗺 <b>Фаза бана карт началась!</b>\nОжидайте хода капитана...",
                 parse_mode="HTML",
             )
+            lobby["ban_announce_msgs"][_uid] = (_sent.chat.id, _sent.message_id)
         except Exception:
             pass
 
@@ -4766,6 +4779,12 @@ def _start_draft_phase_inner(lobby_id):
             bot.delete_message(_ban_kb[0], _ban_kb[1])
         except Exception:
             pass
+    # Анонс начала фазы бана (у всех игроков)
+    for _uid, (_cid, _mid) in list(lobby.pop("ban_announce_msgs", {}).items()):
+        try:
+            bot.delete_message(_cid, _mid)
+        except Exception:
+            pass
     # ────────────────────────────────────────────────────────────────────────
 
     lobby["status"] = "draft"
@@ -4815,11 +4834,12 @@ def _start_draft_phase_inner(lobby_id):
     ct_cap_name = pname(ct_captain) if ct_captain else "?"
     t_cap_name  = pname(t_captain)  if t_captain  else "?"
 
+    lobby["draft_announce_msgs"] = {}
     for uid in players:
         if is_bot_player(uid):
             continue
         try:
-            bot.send_message(
+            _dsent = bot.send_message(
                 uid,
                 f"👥 <b>Фаза выбора игроков!</b>\n"
                 f"🗺 Карта: <b>{lobby.get('map_name', '?')}</b>\n\n"
@@ -4828,6 +4848,7 @@ def _start_draft_phase_inner(lobby_id):
                 f"Капитаны по очереди выбирают состав.",
                 parse_mode="HTML",
             )
+            lobby["draft_announce_msgs"][uid] = (_dsent.chat.id, _dsent.message_id)
         except Exception:
             pass
 
@@ -5088,11 +5109,12 @@ def _finish_draft(lobby_id):
     ct_lines = "\n".join(f"  {pname(u)}" for u in ct_team)
     t_lines  = "\n".join(f"  {pname(u)}" for u in t_team)
 
+    lobby["draft_result_msgs"] = {}
     for uid in lobby["players"]:
         if is_bot_player(uid):
             continue
         try:
-            bot.send_message(
+            _drsent = bot.send_message(
                 uid,
                 f"✅ <b>Команды выбраны!</b>\n\n"
                 f"💙 <b>CT:</b>\n{ct_lines}\n\n"
@@ -5100,6 +5122,7 @@ def _finish_draft(lobby_id):
                 f"🗺 Карта: <b>{lobby.get('map_name', '?')}</b>",
                 parse_mode="HTML",
             )
+            lobby["draft_result_msgs"][uid] = (_drsent.chat.id, _drsent.message_id)
         except Exception:
             pass
 
@@ -5492,6 +5515,17 @@ def _launch_match_inner(lobby_id):
     delete_ban_status(lobby_id)
     delete_accept_status(lobby_id)
     delete_match_found(lobby_id)
+    # Удаляем анонс черновика и сообщение о выбранных командах
+    for _uid, (_cid, _mid) in list(lobby.get("draft_announce_msgs", {}).items()):
+        try:
+            bot.delete_message(_cid, _mid)
+        except Exception:
+            pass
+    for _uid, (_cid, _mid) in list(lobby.get("draft_result_msgs", {}).items()):
+        try:
+            bot.delete_message(_cid, _mid)
+        except Exception:
+            pass
     for uid in players:
         user_lobby.pop(uid, None)
 
