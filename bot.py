@@ -843,6 +843,7 @@ def load_dynamic_settings():
         if val6:
             _dynamic_ticket_thread_id = int(val6)
         print(f"✅ Настройки веток загружены: logs={_dynamic_log_thread_id}, results={_dynamic_results_thread_id}, matchreg={_dynamic_match_reg_chat_id}/{_dynamic_match_reg_thread_id}, tickets={_dynamic_ticket_chat_id}/{_dynamic_ticket_thread_id}")
+        _load_slots_weights()
     except Exception as e:
         print(f"load_dynamic_settings error: {e}")
 
@@ -2643,7 +2644,7 @@ def main_menu(uid):
 
 def main_menu_text(uid):
     p = get_player(uid)
-    coins = p[7] if p and len(p) > 7 else 0
+    coins = p[5] if p and len(p) > 5 else 0
     return (
         f"⚡ <b>Actual FACEIT</b>\n"
         f"🏠 Приватка: <b>⚡ StandDarling</b>\n"
@@ -6887,25 +6888,109 @@ def handle_rename(msg):
 SLOTS_SYMBOLS = ["🍒", "🍋", "🍊", "🍇", "💎", "7️⃣", "⭐"]
 SLOTS_BETS    = [10, 25, 50, 100, 250, 500]
 
-# Множители выигрыша: (символ или "любой") -> множитель
-# Три одинаковых символа:
 SLOTS_PAYOUTS = {
-    "7️⃣": 10,   # три семёрки — x10
-    "💎": 7,    # три бриллианта — x7
-    "⭐": 5,    # три звезды — x5
-    "🍇": 4,
-    "🍒": 3,
-    "🍊": 3,
-    "🍋": 2,
+    "7️⃣": 100,  # три семёрки — x100
+    "💎": 10,
+    "⭐": 10,
+    "🍇": 10,
+    "🍒": 10,
+    "🍊": 10,
+    "🍋": 10,
 }
-SLOTS_TRIPLE_ANY = 2   # три любых одинаковых — x2 (если нет в таблице)
-SLOTS_TWO_SAME   = 0   # два одинаковых — ставка не возвращается (проигрыш)
+SLOTS_TRIPLE_ANY = 10  # любая другая тройка — x10
 
-def _spin_slots() -> list:
-    return [random.choice(SLOTS_SYMBOLS) for _ in range(3)]
+# Веса символов: чем больше вес, тем чаще символ выпадает.
+# Загружаются из БД при старте, изменяются через админ-панель.
+_slots_weights: dict = {s: 1 for s in SLOTS_SYMBOLS}
+
+# Персональная удача: {uid: шанс_форс_победы_в_процентах (0-100)}
+_slots_luck: dict = {}
+
+# Глобальный шанс джекпота 777 (в процентах, float). По умолчанию 0.20%.
+# Хранится в БД, изменяется через админ панель.
+_slots_jackpot_chance: float = 0.20
+
+# Словарь: uid -> данные ожидания ввода кастомной ставки
+_slots_custom_bet_pending: dict = {}
+# Словарь: uid -> шаг мульти-шагового ввода удачи {step, target_uid, target_name}
+_slots_luck_flow: dict = {}
+
+
+def _load_slots_weights():
+    """Загружает веса символов, удачу и шанс джекпота из БД."""
+    global _slots_weights, _slots_luck, _slots_jackpot_chance
+    try:
+        import json as _json
+        raw = get_setting("slots_weights")
+        if raw:
+            loaded = _json.loads(raw)
+            for s in SLOTS_SYMBOLS:
+                if s in loaded:
+                    _slots_weights[s] = max(1, int(loaded[s]))
+        raw2 = get_setting("slots_luck")
+        if raw2:
+            luck = _json.loads(raw2)
+            _slots_luck = {int(k): max(0, min(100, int(v))) for k, v in luck.items()}
+        raw3 = get_setting("slots_jackpot_chance")
+        if raw3:
+            _slots_jackpot_chance = max(0.0, min(100.0, float(raw3)))
+    except Exception as _e:
+        print(f"[load_slots_weights] {_e}")
+
+
+def _save_slots_weights():
+    import json as _json
+    set_setting("slots_weights", _json.dumps(_slots_weights))
+
+
+def _save_slots_luck():
+    import json as _json
+    set_setting("slots_luck", _json.dumps({str(k): v for k, v in _slots_luck.items()}))
+
+
+def _save_slots_jackpot_chance():
+    set_setting("slots_jackpot_chance", str(_slots_jackpot_chance))
+
+
+def _spin_slots(uid: int = None) -> list:
+    """Крутит барабаны.
+    1. Джекпот 777 — отдельный roll с _slots_jackpot_chance %.
+    2. Персональная удача игрока — форс тройки любого другого символа.
+    3. Обычный спин (7️⃣ исключён из пула, только фрукты/алмаз/звезда).
+    """
+    JACKPOT_SYM = "7️⃣"
+    OTHER_SYMS  = [s for s in SLOTS_SYMBOLS if s != JACKPOT_SYM]
+
+    # 1. Глобальный шанс джекпота 777
+    if _slots_jackpot_chance > 0 and random.random() * 100 < _slots_jackpot_chance:
+        return [JACKPOT_SYM, JACKPOT_SYM, JACKPOT_SYM]
+
+    # 2. Персональная удача — форс тройки из фруктов
+    if uid is not None and uid in _slots_luck:
+        luck_pct = _slots_luck[uid]
+        if luck_pct > 0 and random.randint(1, 100) <= luck_pct:
+            sym = random.choice(OTHER_SYMS)
+            return [sym, sym, sym]
+
+    # 3. Обычный спин (7️⃣ не участвует — только через джекпот)
+    pool = []
+    for sym in OTHER_SYMS:
+        pool.extend([sym] * _slots_weights.get(sym, 1))
+    return [random.choice(pool) for _ in range(3)]
+
+
+def _slots_total_weight() -> int:
+    return sum(_slots_weights.get(s, 1) for s in SLOTS_SYMBOLS)
+
+
+def _slots_sym_chance(sym: str) -> float:
+    """Вероятность тройки конкретного символа в %."""
+    total = _slots_total_weight()
+    w = _slots_weights.get(sym, 1)
+    return round((w / total) ** 3 * 100, 3)
+
 
 def _calc_slots_win(bet: int, reels: list) -> tuple:
-    """Возвращает (выигрыш, текст_результата)."""
     a, b, c = reels
     if a == b == c:
         mult = SLOTS_PAYOUTS.get(a, SLOTS_TRIPLE_ANY)
@@ -6915,17 +7000,35 @@ def _calc_slots_win(bet: int, reels: list) -> tuple:
         return 0, f"😐 Два одинаковых — ставка потеряна (-{bet} AC)"
     return 0, f"💨 Мимо — ставка потеряна (-{bet} AC)"
 
+
 def _slots_menu_kb(selected_bet=None):
     kb = types.InlineKeyboardMarkup(row_width=3)
     bet_btns = []
     for b in SLOTS_BETS:
-        label = f"[{b} AC]" if b == selected_bet else f"{b} AC"
+        label = f"✅ {b} AC" if b == selected_bet else f"{b} AC"
         bet_btns.append(types.InlineKeyboardButton(label, callback_data=f"slots_bet|{b}"))
     kb.add(*bet_btns)
+    kb.add(types.InlineKeyboardButton("✏️ Своя ставка", callback_data="slots_custom_bet"))
     if selected_bet:
         kb.add(types.InlineKeyboardButton(f"🎰 Крутить ({selected_bet} AC)", callback_data=f"slots_spin|{selected_bet}"))
-    kb.add(types.InlineKeyboardButton("🔙 Назад", callback_data="back"))
+    kb.add(
+        types.InlineKeyboardButton("📊 Шансы", callback_data="slots_odds"),
+        types.InlineKeyboardButton("🔙 Назад", callback_data="back"),
+    )
     return kb
+
+
+def _slots_menu_text(coins: int, selected_bet=None) -> str:
+    bet_line = f"🎯 Выбрана ставка: <b>{selected_bet} AC</b>\n" if selected_bet else ""
+    return (
+        f"🎰 <b>СЛОТЫ</b>\n\n"
+        f"💰 Ваш баланс: <b>{coins} AC</b>\n"
+        f"{bet_line}\n"
+        f"Символы и множители (три одинаковых):\n"
+        f"7️⃣ ×100  |  все остальные ×10\n\n"
+        f"{'Нажмите «Крутить» для старта!' if selected_bet else 'Выберите ставку:'}"
+    )
+
 
 @bot.callback_query_handler(func=lambda c: c.data == "slots_menu")
 def cb_slots_menu(c):
@@ -6938,21 +7041,98 @@ def cb_slots_menu(c):
         bot.answer_callback_query(c.id, "❌ Сначала зарегистрируйтесь /start", show_alert=True)
         return
     p = get_player(uid)
-    coins = p[7] if p and len(p) > 7 else 0
+    coins = p[5] if p and len(p) > 5 else 0
     bot.answer_callback_query(c.id)
-    text = (
-        f"🎰 <b>СЛОТЫ</b>\n\n"
-        f"💰 Ваш баланс: <b>{coins} AC</b>\n\n"
-        f"Символы и множители (три одинаковых):\n"
-        f"7️⃣ x10  |  💎 x7  |  ⭐ x5\n"
-        f"🍇 x4  |  🍒 x3  |  🍊 x3  |  🍋 x2\n\n"
-        f"Выберите ставку:"
-    )
+    text = _slots_menu_text(coins)
     try:
         bot.edit_message_text(text, c.message.chat.id, c.message.message_id,
                               reply_markup=_slots_menu_kb(), parse_mode="HTML")
     except Exception:
         bot.send_message(uid, text, reply_markup=_slots_menu_kb(), parse_mode="HTML")
+
+
+@bot.callback_query_handler(func=lambda c: c.data == "slots_odds")
+def cb_slots_odds(c):
+    bot.answer_callback_query(c.id)
+    n = len(SLOTS_SYMBOLS)  # 7
+    total = n ** 3           # 343
+    triples = n              # 7
+    pairs   = n * 3 * (n-1) # 126
+    misses  = total - triples - pairs  # 210
+    # средний множитель за трипл
+    avg_mult = sum(SLOTS_PAYOUTS.values()) / n
+    rtp = round(avg_mult * triples / total * 100, 1)
+    lines = "\n".join(
+        f"  {sym} ×{mult} — шанс {round(1/total*100,2)}%"
+        for sym, mult in SLOTS_PAYOUTS.items()
+    )
+    text = (
+        f"📊 <b>Шансы в слотах</b>\n\n"
+        f"Всего символов: {n}  |  Барабанов: 3\n"
+        f"Всего комбинаций: {total}\n\n"
+        f"🎉 Три одинаковых: {triples}/{total} = <b>{round(triples/total*100,2)}%</b>\n"
+        f"😐 Два одинаковых: {pairs}/{total} = <b>{round(pairs/total*100,1)}%</b>\n"
+        f"💨 Все разные:      {misses}/{total} = <b>{round(misses/total*100,1)}%</b>\n\n"
+        f"<b>Выигрыши при трёх одинаковых:</b>\n{lines}\n\n"
+        f"📈 Средний возврат (RTP): <b>≈{rtp}%</b>\n"
+        f"<i>(на каждые 100 AC ставки в среднем возвращается {rtp} AC)</i>"
+    )
+    kb = types.InlineKeyboardMarkup()
+    kb.add(types.InlineKeyboardButton("🔙 Назад к слотам", callback_data="slots_menu"))
+    try:
+        bot.edit_message_text(text, c.message.chat.id, c.message.message_id,
+                              reply_markup=kb, parse_mode="HTML")
+    except Exception:
+        bot.send_message(c.from_user.id, text, reply_markup=kb, parse_mode="HTML")
+
+
+@bot.callback_query_handler(func=lambda c: c.data == "slots_custom_bet")
+def cb_slots_custom_bet(c):
+    uid = c.from_user.id
+    if not is_registered(uid):
+        bot.answer_callback_query(c.id, "❌ Сначала зарегистрируйтесь", show_alert=True)
+        return
+    p = get_player(uid)
+    coins = p[5] if p and len(p) > 5 else 0
+    bot.answer_callback_query(c.id)
+    sent = bot.send_message(
+        uid,
+        f"✏️ <b>Введите свою ставку</b>\n\n"
+        f"💰 Ваш баланс: <b>{coins} AC</b>\n"
+        f"Минимум: <b>1 AC</b>  |  Максимум: <b>{coins} AC</b>\n\n"
+        f"Напишите число:",
+        parse_mode="HTML",
+    )
+    _slots_custom_bet_pending[uid] = {"msg_id": c.message.message_id, "chat_id": c.message.chat.id}
+    bot.register_next_step_handler(sent, _handle_slots_custom_bet_input)
+
+
+def _handle_slots_custom_bet_input(msg):
+    uid = msg.from_user.id
+    pending = _slots_custom_bet_pending.pop(uid, None)
+    try:
+        bet = int(msg.text.strip())
+    except (ValueError, AttributeError):
+        bot.send_message(uid, "❌ Введите целое число. Попробуйте ещё раз — нажмите «✏️ Своя ставка».")
+        return
+    p = get_player(uid)
+    coins = p[5] if p and len(p) > 5 else 0
+    if bet < 1:
+        bot.send_message(uid, "❌ Ставка должна быть минимум 1 AC.")
+        return
+    if bet > coins:
+        bot.send_message(uid, f"❌ Недостаточно монет! У вас {coins} AC, ставка {bet} AC.")
+        return
+    text = _slots_menu_text(coins, selected_bet=bet)
+    kb = _slots_menu_kb(selected_bet=bet)
+    if pending:
+        try:
+            bot.edit_message_text(text, pending["chat_id"], pending["msg_id"],
+                                  reply_markup=kb, parse_mode="HTML")
+            return
+        except Exception:
+            pass
+    bot.send_message(uid, text, reply_markup=kb, parse_mode="HTML")
 
 
 @bot.callback_query_handler(func=lambda c: c.data.startswith("slots_bet|"))
@@ -6963,14 +7143,12 @@ def cb_slots_bet(c):
         return
     bet = int(c.data.split("|", 1)[1])
     p = get_player(uid)
-    coins = p[7] if p and len(p) > 7 else 0
+    coins = p[5] if p and len(p) > 5 else 0
+    if bet > coins:
+        bot.answer_callback_query(c.id, f"❌ Недостаточно монет! У вас {coins} AC", show_alert=True)
+        return
     bot.answer_callback_query(c.id)
-    text = (
-        f"🎰 <b>СЛОТЫ</b>\n\n"
-        f"💰 Ваш баланс: <b>{coins} AC</b>\n"
-        f"🎯 Выбрана ставка: <b>{bet} AC</b>\n\n"
-        f"Нажмите «Крутить» для старта:"
-    )
+    text = _slots_menu_text(coins, selected_bet=bet)
     try:
         bot.edit_message_text(text, c.message.chat.id, c.message.message_id,
                               reply_markup=_slots_menu_kb(bet), parse_mode="HTML")
@@ -6990,7 +7168,7 @@ def cb_slots_spin(c):
         return
     bet = int(c.data.split("|", 1)[1])
     p = get_player(uid)
-    coins = p[7] if p and len(p) > 7 else 0
+    coins = p[5] if p and len(p) > 5 else 0
     if coins < bet:
         bot.answer_callback_query(c.id, f"❌ Недостаточно монет! У вас {coins} AC, нужно {bet} AC", show_alert=True)
         return
@@ -7003,9 +7181,8 @@ def cb_slots_spin(c):
         print(f"[slots debit] {_se}")
         bot.answer_callback_query(c.id, "❌ Ошибка, попробуй ещё раз", show_alert=True)
         return
-    reels = _spin_slots()
+    reels = _spin_slots(uid=uid)
     win, result_text = _calc_slots_win(bet, reels)
-    # Начисляем выигрыш если есть
     if win > 0:
         try:
             conn2 = _db(); cur2 = conn2.cursor()
@@ -7014,18 +7191,19 @@ def cb_slots_spin(c):
         except Exception as _se2:
             print(f"[slots credit] {_se2}")
     new_coins = coins - bet + win
-    reels_str = " | ".join(reels)
+    reels_str = "  ".join(reels)
     text = (
         f"🎰 <b>СЛОТЫ</b>\n\n"
         f"╔══════════════╗\n"
-        f"║  {reels_str}  ║\n"
+        f"║   {reels_str}   ║\n"
         f"╚══════════════╝\n\n"
         f"{result_text}\n\n"
         f"💰 Баланс: <b>{new_coins} AC</b>"
     )
-    kb = types.InlineKeyboardMarkup(row_width=1)
+    kb = types.InlineKeyboardMarkup(row_width=2)
     kb.add(
         types.InlineKeyboardButton(f"🔄 Ещё раз ({bet} AC)", callback_data=f"slots_spin|{bet}"),
+        types.InlineKeyboardButton("✏️ Своя ставка", callback_data="slots_custom_bet"),
         types.InlineKeyboardButton("💰 Сменить ставку", callback_data="slots_menu"),
         types.InlineKeyboardButton("🔙 Главное меню", callback_data="back"),
     )
@@ -7035,6 +7213,182 @@ def cb_slots_spin(c):
                               reply_markup=kb, parse_mode="HTML")
     except Exception:
         bot.send_message(uid, text, reply_markup=kb, parse_mode="HTML")
+
+
+# ==================== АДМИН: НАСТРОЙКИ СЛОТОВ ====================
+
+def _slots_settings_text() -> str:
+    lucky = []
+    for luid, pct in _slots_luck.items():
+        p = get_player(luid)
+        name = p[1] if p else str(luid)
+        lucky.append(f"  👤 {name} (<code>{luid}</code>) — <b>{pct}%</b>")
+    lucky_block = "\n".join(lucky) if lucky else "  <i>нет</i>"
+    return (
+        f"🎰 <b>Настройки слотов</b>\n\n"
+        f"7️⃣ <b>Шанс джекпота (777):</b> <b>{_slots_jackpot_chance}%</b>\n"
+        f"<i>Сейчас в среднем 1 раз на {round(100/_slots_jackpot_chance) if _slots_jackpot_chance > 0 else '∞'} спинов</i>\n\n"
+        f"🍀 <b>Игроки с повышенной удачей (фрукты):</b>\n{lucky_block}\n\n"
+        f"<i>Удача = % шанс форсированной тройки фруктов за спин.\n"
+        f"Джекпот 777 управляется отдельно глобальным шансом.</i>"
+    )
+
+
+def _slots_settings_kb() -> types.InlineKeyboardMarkup:
+    kb = types.InlineKeyboardMarkup(row_width=1)
+    kb.add(
+        types.InlineKeyboardButton("7️⃣ Изменить шанс джекпота 777", callback_data="admin_slots_jackpot"),
+        types.InlineKeyboardButton("🍀 Выдать удачу игроку",         callback_data="admin_slots_luck_set"),
+        types.InlineKeyboardButton("❌ Убрать удачу игроку",         callback_data="admin_slots_luck_remove"),
+        types.InlineKeyboardButton("🔙 Назад",                       callback_data="admin_panel"),
+    )
+    return kb
+
+
+@bot.callback_query_handler(func=lambda c: c.data == "admin_slots_settings")
+def cb_admin_slots_settings(c):
+    uid = c.from_user.id
+    if not is_admin(uid):
+        bot.answer_callback_query(c.id, "❌ Нет доступа")
+        return
+    bot.answer_callback_query(c.id)
+    try:
+        bot.edit_message_text(_slots_settings_text(), c.message.chat.id, c.message.message_id,
+                              reply_markup=_slots_settings_kb(), parse_mode="HTML")
+    except Exception:
+        bot.send_message(uid, _slots_settings_text(), reply_markup=_slots_settings_kb(), parse_mode="HTML")
+
+
+@bot.callback_query_handler(func=lambda c: c.data == "admin_slots_jackpot")
+def cb_admin_slots_jackpot(c):
+    uid = c.from_user.id
+    if not is_admin(uid):
+        bot.answer_callback_query(c.id, "❌ Нет доступа")
+        return
+    bot.answer_callback_query(c.id)
+    _slots_luck_flow[uid] = {"step": "jackpot_chance", "action": "jackpot"}
+    bot.send_message(
+        uid,
+        f"7️⃣ <b>Шанс джекпота 777</b>\n\n"
+        f"Текущий шанс: <b>{_slots_jackpot_chance}%</b>\n"
+        f"<i>(≈1 раз на {round(100/_slots_jackpot_chance) if _slots_jackpot_chance > 0 else '∞'} спинов)</i>\n\n"
+        f"Введите новый шанс в % (например: <code>0.20</code> или <code>1.5</code>):\n"
+        f"<i>Диапазон: 0.01 — 100</i>",
+        parse_mode="HTML",
+    )
+
+
+@bot.callback_query_handler(func=lambda c: c.data in ("admin_slots_luck_set", "admin_slots_luck_remove"))
+def cb_admin_slots_luck_start(c):
+    uid = c.from_user.id
+    if not is_admin(uid):
+        bot.answer_callback_query(c.id, "❌ Нет доступа")
+        return
+    action = "set" if c.data == "admin_slots_luck_set" else "remove"
+    _slots_luck_flow[uid] = {"step": "target", "action": action}
+    bot.answer_callback_query(c.id)
+    if action == "set":
+        bot.send_message(uid, "🍀 <b>Выдать удачу</b>\n\nВведите Telegram ID или никнейм игрока:", parse_mode="HTML")
+    else:
+        bot.send_message(uid, "❌ <b>Убрать удачу</b>\n\nВведите Telegram ID или никнейм игрока:", parse_mode="HTML")
+
+
+@bot.message_handler(func=lambda m: m.from_user.id in _slots_luck_flow and m.text is not None)
+def handle_slots_luck_flow(msg):
+    uid = msg.from_user.id
+    if not is_admin(uid):
+        _slots_luck_flow.pop(uid, None)
+        return
+    flow = _slots_luck_flow.get(uid)
+    if not flow:
+        return
+    text = msg.text.strip()
+
+    def _find(inp):
+        if inp.isdigit():
+            return get_player(int(inp))
+        conn2 = _db(); cur2 = conn2.cursor()
+        cur2.execute("SELECT * FROM players WHERE username=%s AND is_bot=0", (inp,))
+        row = cur2.fetchone(); conn2.close()
+        return row
+
+    if flow["step"] == "jackpot_chance":
+        try:
+            val = float(text.replace(",", "."))
+            if not 0.01 <= val <= 100:
+                raise ValueError
+        except ValueError:
+            bot.send_message(uid, "❌ Введите число от 0.01 до 100 (например: <code>0.20</code>):", parse_mode="HTML")
+            return
+        global _slots_jackpot_chance
+        _slots_jackpot_chance = round(val, 4)
+        _slots_luck_flow.pop(uid, None)
+        _save_slots_jackpot_chance()
+        avg = round(100 / _slots_jackpot_chance) if _slots_jackpot_chance > 0 else "∞"
+        bot.send_message(
+            uid,
+            f"✅ <b>Шанс джекпота обновлён!</b>\n\n"
+            f"7️⃣ Новый шанс: <b>{_slots_jackpot_chance}%</b>\n"
+            f"<i>≈1 раз на {avg} спинов</i>",
+            parse_mode="HTML",
+        )
+        return
+
+    if flow["step"] == "target":
+        p = _find(text)
+        if not p:
+            bot.send_message(uid, "❌ Игрок не найден. Введите корректный ID или никнейм:")
+            return
+        target_uid  = p[0]
+        target_name = p[1] or str(target_uid)
+        flow["target_uid"]  = target_uid
+        flow["target_name"] = target_name
+
+        if flow["action"] == "remove":
+            _slots_luck_flow.pop(uid, None)
+            removed = _slots_luck.pop(target_uid, None)
+            _save_slots_luck()
+            if removed is not None:
+                bot.send_message(uid,
+                    f"✅ Удача снята с <b>{target_name}</b> (<code>{target_uid}</code>).",
+                    parse_mode="HTML")
+            else:
+                bot.send_message(uid,
+                    f"⚠️ У <b>{target_name}</b> не было удачи.", parse_mode="HTML")
+            return
+
+        flow["step"] = "percent"
+        current = _slots_luck.get(target_uid, 0)
+        bot.send_message(
+            uid,
+            f"🍀 Игрок: <b>{target_name}</b> (<code>{target_uid}</code>)\n"
+            f"Текущая удача: <b>{current}%</b>\n\n"
+            f"Введите новый % шанса победы (1–100):\n"
+            f"<i>Пример: 25 = примерно каждый 4-й спин выигрышный</i>",
+            parse_mode="HTML",
+        )
+
+    elif flow["step"] == "percent":
+        try:
+            pct = int(text)
+            if not 1 <= pct <= 100:
+                raise ValueError
+        except ValueError:
+            bot.send_message(uid, "❌ Введите целое число от 1 до 100:")
+            return
+        target_uid  = flow["target_uid"]
+        target_name = flow["target_name"]
+        _slots_luck_flow.pop(uid, None)
+        _slots_luck[target_uid] = pct
+        _save_slots_luck()
+        bot.send_message(
+            uid,
+            f"✅ <b>Удача выдана!</b>\n\n"
+            f"👤 Игрок: <b>{target_name}</b> (<code>{target_uid}</code>)\n"
+            f"🍀 Шанс победы: <b>{pct}%</b> за каждый спин\n\n"
+            f"<i>Игрок не знает об этом — со стороны всё выглядит как обычные слоты.</i>",
+            parse_mode="HTML",
+        )
 
 
 # ==================== ПАТИ ====================
@@ -7475,6 +7829,7 @@ def cb_admin_panel(c):
         kb.add(types.InlineKeyboardButton("🎟 Открытые тикеты",     callback_data="admin_tickets"))
         _btn("✅ Синяя галочка",        "admin_give_verified",  "give_verified")
         _btn("🏆 Управление сезонами",  "admin_seasons",        "seasons")
+        kb.add(types.InlineKeyboardButton("🎰 Настройки слотов",    callback_data="admin_slots_settings"))
         kb.add(types.InlineKeyboardButton("🔙 Назад",               callback_data="back"))
 
         bot.edit_message_text(text, c.message.chat.id, c.message.message_id,
