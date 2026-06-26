@@ -1439,7 +1439,7 @@ def get_current_season_top(priv_table="players", limit=10):
 
 # Призовой фонд сезона: 1 000 000 AC среди топ-10
 SEASON_TOP_REWARDS = [250000, 200000, 150000, 100000, 80000,
-                      60000, 50000, 40000, 30000, 40000]
+                      60000, 50000, 40000, 40000, 30000]
 
 
 def reset_season(admin_uid):
@@ -3861,8 +3861,8 @@ def cb_season_info(c):
         ("6️⃣ 6 место",   60000),
         ("7️⃣ 7 место",   50000),
         ("8️⃣ 8 место",   40000),
-        ("9️⃣ 9 место",   30000),
-        ("🔟 10 место",  40000),
+        ("9️⃣ 9 место",   40000),
+        ("🔟 10 место",  30000),
     ]
     prizes_text = "\n".join(f"{label} — <b>{amt:,} голды</b>".replace(",", " ") for label, amt in prizes)
 
@@ -10014,11 +10014,31 @@ def _reset_all_stats(table="players"):
         f"""UPDATE {table} SET
             elo=1000, wins=0, losses=0, kills=0, deaths=0, assists=0, mvp_count=0,
             quals_elo=1000, quals_wins=0, quals_losses=0,
-            quals_kills=0, quals_deaths=0, quals_assists=0,
-            duo_elo=1000, duo_wins=0, duo_losses=0,
-            duo_kills=0, duo_deaths=0, duo_assists=0
+            quals_kills=0, quals_deaths=0, quals_assists=0
         WHERE is_bot=0"""
     )
+    conn.commit()
+    conn.close()
+
+
+def _reset_everything(table="players"):
+    """Обнуляет ВСЁ: ELO, статы, монеты, премку, варны, баны, мут."""
+    conn = _db()
+    cur  = conn.cursor()
+    cur.execute(
+        f"""UPDATE {table} SET
+            elo=1000, wins=0, losses=0, kills=0, deaths=0, assists=0, mvp_count=0,
+            quals_elo=1000, quals_wins=0, quals_losses=0,
+            quals_kills=0, quals_deaths=0, quals_assists=0,
+            coins=0,
+            is_banned=0, warns=0, is_muted=0, mute_until=0
+        WHERE is_bot=0"""
+    )
+    # Сбрасываем премку: удаляем все активные записи
+    try:
+        cur.execute("DELETE FROM user_items WHERE item_type='premium'")
+    except Exception:
+        pass
     conn.commit()
     conn.close()
 
@@ -10044,6 +10064,9 @@ def _creator_panel_kb():
     kb.add(
         types.InlineKeyboardButton("🧹 Обнулить стату всех",      callback_data="creator_reset_all"),
         types.InlineKeyboardButton("👤 Обнулить стату игрока",    callback_data="creator_reset_player"),
+    )
+    kb.add(
+        types.InlineKeyboardButton("💣 Обнулить ВСЁ",             callback_data="creator_reset_everything"),
     )
     kb.add(
         types.InlineKeyboardButton("🔒 Ограничения для админов",  callback_data="creator_restrict_menu"),
@@ -10140,6 +10163,55 @@ def cb_creator_reset_all_exec(c):
         bot.answer_callback_query(c.id, "✅ Статистика всех игроков обнулена!", show_alert=True)
         bot.edit_message_text(
             "✅ <b>Статистика всех игроков успешно обнулена.</b>",
+            c.message.chat.id, c.message.message_id,
+            reply_markup=_creator_panel_kb(), parse_mode="HTML",
+        )
+    except Exception as e:
+        bot.answer_callback_query(c.id, f"❌ Ошибка: {e}", show_alert=True)
+
+
+@bot.callback_query_handler(func=lambda c: c.data == "creator_reset_everything")
+def cb_creator_reset_everything(c):
+    uid = c.from_user.id
+    if not is_creator(uid):
+        bot.answer_callback_query(c.id, "❌ Нет доступа")
+        return
+    kb = types.InlineKeyboardMarkup(row_width=2)
+    kb.add(
+        types.InlineKeyboardButton("💣 Да, обнулить ВСЁ", callback_data="creator_reset_everything_exec"),
+        types.InlineKeyboardButton("❌ Отмена",             callback_data="creator_panel"),
+    )
+    bot.edit_message_text(
+        "💣 <b>ОБНУЛЕНИЕ ВСЕГО — ПОДТВЕРЖДЕНИЕ</b>\n\n"
+        "⚠️ Это действие <b>необратимо</b>!\n\n"
+        "Будет сброшено у <b>ВСЕХ</b> игроков:\n"
+        "• ELO → 1000\n"
+        "• Все статы (победы, поражения, убийства и т.д.) → 0\n"
+        "• Монеты (голды) → 0\n"
+        "• Варны → 0\n"
+        "• Баны → сняты\n"
+        "• Мут → снят\n"
+        "• Премиум → удалён\n\n"
+        "Вы уверены?",
+        c.message.chat.id, c.message.message_id,
+        reply_markup=kb, parse_mode="HTML",
+    )
+    bot.answer_callback_query(c.id)
+
+
+@bot.callback_query_handler(func=lambda c: c.data == "creator_reset_everything_exec")
+def cb_creator_reset_everything_exec(c):
+    uid = c.from_user.id
+    if not is_creator(uid):
+        bot.answer_callback_query(c.id, "❌ Нет доступа")
+        return
+    try:
+        _reset_everything("players")
+        log_admin_action(uid, "reset_everything", details="Полное обнуление всех игроков (ELO, монеты, премка, варны, баны, мут)")
+        bot.answer_callback_query(c.id, "💣 Всё обнулено!", show_alert=True)
+        bot.edit_message_text(
+            "💣 <b>Полное обнуление выполнено.</b>\n\n"
+            "У всех игроков сброшены: ELO, статы, монеты, варны, баны, мут, премиум.",
             c.message.chat.id, c.message.message_id,
             reply_markup=_creator_panel_kb(), parse_mode="HTML",
         )
