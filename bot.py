@@ -108,6 +108,13 @@ try:
 except Exception:
     LOG_CHAT_ID = 0
 
+# Отдельный чат для проверки зарегистрированных матчей (перерег / подтверждение)
+MATCH_REVIEW_CHAT_ID_RAW = os.environ.get("MATCH_REVIEW_CHAT_ID", "0")
+try:
+    MATCH_REVIEW_CHAT_ID = int(MATCH_REVIEW_CHAT_ID_RAW)
+except Exception:
+    MATCH_REVIEW_CHAT_ID = 0
+
 # Начальные значения из env — могут быть переопределены через /setlogtopic и /setresulttopic
 LOG_THREAD_ID_RAW = os.environ.get("LOG_THREAD_ID", "0")
 try:
@@ -150,13 +157,13 @@ bot = telebot.TeleBot(TOKEN, parse_mode="HTML")
 # ==================== ОБЯЗАТЕЛЬНЫЕ КАНАЛЫ ====================
 REQUIRED_CHANNELS = [
     {
-        "id": "@sarefaceit",
-        "url": "https://t.me/sarefaceit",
+        "id": "@actualfaceitnews",
+        "url": "https://t.me/actualfaceitnews",
         "name": "Официальный канал",
     },
     {
-        "id": os.environ.get("REQUIRED_CHANNEL_2_ID", ""),
-        "url": "https://t.me/+CVI-8ZnLk0ZkMDcy",
+        "id": os.environ.get("REQUIRED_CHANNEL_2_ID", "@actualfaceitnews"),
+        "url": "https://t.me/+Iftd5uhl3EJiZGRi",
         "name": "Паблик StandDarling",
     },
 ]
@@ -190,7 +197,7 @@ def send_subACribe_message(chat_id: int, message_to_delete_id: int = None):
     bot.send_message(
         chat_id,
         "⚠️ <b>Для использования бота необходимо подписаться на наши каналы:</b>\n\n"
-        "1. 📢 <b>Официальный канал</b> — @actualfaceito\n"
+        "1. 📢 <b>Официальный канал</b> — @actualfaceitnews\n"
         "2. 📢 <b>Паблик StandDarling</b>\n\n"
         "Подпишитесь на оба канала, затем нажмите кнопку ниже.",
         reply_markup=kb,
@@ -5537,8 +5544,7 @@ def _build_admin_match_kb(match_key, match_code, ACreenshots_count, taken_by=Non
         name = p[1] if p else str(taken_by)
         kb.add(
             types.InlineKeyboardButton(f"🔒 Регистрирует: {name} — ЗАНЯТО", callback_data="match_noop"),
-            types.InlineKeyboardButton("🔓 Освободить (force)", callback_data=f"reg_release|{match_key}"),
-            types.InlineKeyboardButton("🚫 Отказаться от регистрации", callback_data=f"reg_abandon|{match_key}"),
+            types.InlineKeyboardButton("🔓 Освободить регистрацию", callback_data=f"reg_abandon|{match_key}"),
         )
     else:
         kb.add(types.InlineKeyboardButton(
@@ -5857,8 +5863,8 @@ def cb_reg_abandon(c):
         bot.answer_callback_query(c.id, "❌ Матч не найден")
         return
     taken = lobby.get("reg_taken_by")
-    if taken and taken != uid and not is_admin(uid):
-        bot.answer_callback_query(c.id, "❌ Это не ваша регистрация", show_alert=True)
+    if taken and taken != uid:
+        bot.answer_callback_query(c.id, "❌ Только тот, кто взял регистрацию, может её освободить", show_alert=True)
         return
     lobby["reg_taken_by"] = None
     # Очищаем match_registration для регистратора этого матча (а не только для себя)
@@ -6315,6 +6321,28 @@ def _finalize_match(reg_uid, match_key):
         except Exception as e:
             print(f"Close topic error: {e}")
 
+    # Отправляем в отдельный чат проверки — там выбирают: подтвердить или перерегать
+    if MATCH_REVIEW_CHAT_ID:
+        try:
+            kb_review = types.InlineKeyboardMarkup(row_width=1)
+            kb_review.add(
+                types.InlineKeyboardButton("🔄 На перерегистрацию", callback_data=f"reregister_match|{match_key}"),
+            )
+            priv_cfg2 = PRIVATE_CONFIG.get(lobby.get("private", "darling"), PRIVATE_CONFIG["darling"])
+            priv_label2 = f"{priv_cfg2['emoji']} {priv_cfg2['display']}"
+            bot.send_message(
+                MATCH_REVIEW_CHAT_ID,
+                f"📋 <b>Матч #{match_code} зарегистрирован — ожидает проверки</b>\n\n"
+                f"🏠 Привате: <b>{priv_label2}</b>\n"
+                f"🗺 Карта: {lobby.get('map_name', '?')} | Счёт: <b>{ACore_w}:{ACore_l}</b>\n"
+                f"🏷 Лига: {format_league(lobby.get('league','default'))} | 📱 {lobby.get('device','').upper()}\n"
+                f"🏆 Победитель: <b>{winner_team_label}</b>",
+                reply_markup=kb_review,
+                parse_mode="HTML",
+            )
+        except Exception as _rve:
+            print(f"[match_review send] {_rve}")
+
 
 @bot.callback_query_handler(func=lambda c: c.data.startswith("cancel_match|"))
 def cb_cancel_match(c):
@@ -6447,6 +6475,47 @@ def cb_reregister_match(c):
             new_kb = _build_admin_match_kb(match_key, match_code, AC, taken_by=None)
             kw = {"parse_mode": "HTML", "reply_markup": new_kb, "message_thread_id": thread_id}
             bot.send_message(ADMIN_CHAT_ID, f"🔄 Матч #{match_code} отправлен на перерегистрацию.", **kw)
+        except Exception:
+            pass
+
+
+@bot.callback_query_handler(func=lambda c: c.data.startswith("activate_match|"))
+def cb_activate_match(c):
+    """Подтвердить зарегистрированный матч — сделать его «активным» (принять как есть)."""
+    uid = c.from_user.id
+    if not is_game_reg_check(uid) and not is_admin(uid):
+        bot.answer_callback_query(c.id, "❌ Нет доступа")
+        return
+    match_key = c.data.split("|", 1)[1]
+    lobby = running_matches.get(match_key)
+    match_code = lobby.get("match_code", "?") if lobby else "?"
+    admin_p = get_player(uid)
+    admin_name = admin_p[1] if admin_p else str(uid)
+    try:
+        bot.edit_message_reply_markup(c.message.chat.id, c.message.message_id, reply_markup=None)
+    except Exception:
+        pass
+    bot.answer_callback_query(c.id, f"✅ Матч #{match_code} сделан активным")
+    try:
+        bot.send_message(
+            c.message.chat.id,
+            f"✅ <b>Матч #{match_code} сделан активным</b>\n👮 Подтвердил: <b>{admin_name}</b>",
+            parse_mode="HTML",
+        )
+    except Exception:
+        pass
+    # Уведомляем в основной admin-чат
+    if ADMIN_CHAT_ID:
+        try:
+            thread_id = lobby.get("admin_thread_id") if lobby else None
+            kw = {"parse_mode": "HTML"}
+            if thread_id:
+                kw["message_thread_id"] = thread_id
+            bot.send_message(
+                ADMIN_CHAT_ID,
+                f"✅ <b>Матч #{match_code} подтверждён и сделан активным</b>\n👮 {admin_name}",
+                **kw,
+            )
         except Exception:
             pass
 
