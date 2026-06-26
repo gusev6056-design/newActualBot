@@ -115,6 +115,19 @@ try:
 except Exception:
     MATCH_REVIEW_CHAT_ID = 0
 
+# Чат и ветка (тред) для тикетов — если не задано, шлём админам в личку
+TICKET_CHAT_ID_RAW = os.environ.get("TICKET_CHAT_ID", "0")
+try:
+    TICKET_CHAT_ID = int(TICKET_CHAT_ID_RAW)
+except Exception:
+    TICKET_CHAT_ID = 0
+
+TICKET_THREAD_ID_RAW = os.environ.get("TICKET_THREAD_ID", "0")
+try:
+    TICKET_THREAD_ID = int(TICKET_THREAD_ID_RAW) if TICKET_THREAD_ID_RAW and TICKET_THREAD_ID_RAW != "0" else None
+except Exception:
+    TICKET_THREAD_ID = None
+
 # Начальные значения из env — могут быть переопределены через /setlogtopic и /setresulttopic
 LOG_THREAD_ID_RAW = os.environ.get("LOG_THREAD_ID", "0")
 try:
@@ -129,8 +142,12 @@ except Exception:
     RESULTS_THREAD_ID = None
 
 # Динамические значения (перезаписываются из БД при старте и через команды)
-_dynamic_log_thread_id     = LOG_THREAD_ID
-_dynamic_results_thread_id = RESULTS_THREAD_ID
+_dynamic_log_thread_id      = LOG_THREAD_ID
+_dynamic_results_thread_id  = RESULTS_THREAD_ID
+_dynamic_match_reg_chat_id  = MATCH_REVIEW_CHAT_ID   # чат для рег/отмены матчей
+_dynamic_match_reg_thread_id = None                   # ветка внутри этого чата
+_dynamic_ticket_chat_id     = TICKET_CHAT_ID          # чат для тикетов
+_dynamic_ticket_thread_id   = TICKET_THREAD_ID        # ветка для тикетов
 
 DATABASE_URL = os.environ.get("DATABASE_URL") or os.environ.get("SUPABASE_URL", "")
 
@@ -180,7 +197,9 @@ def check_subACriptions(user_id: int) -> list:
             if member.status in ("left", "kicked", "banned"):
                 not_subACribed.append(ch)
         except Exception as e:
-            print(f"[check_sub] Не удалось проверить {ch_id}: {e} — пропускаем")
+            print(f"[check_sub] Не удалось проверить {ch_id}: {e} — считаем не подписанным")
+            # Если бот не может проверить канал — считаем пользователя неподписанным
+            not_subACribed.append(ch)
     return not_subACribed
 
 def send_subACribe_message(chat_id: int, message_to_delete_id: int = None):
@@ -802,6 +821,8 @@ def set_setting(key, value):
 def load_dynamic_settings():
     """Загружает сохранённые thread ID из БД и обновляет глобальные переменные."""
     global _dynamic_log_thread_id, _dynamic_results_thread_id
+    global _dynamic_match_reg_chat_id, _dynamic_match_reg_thread_id
+    global _dynamic_ticket_chat_id, _dynamic_ticket_thread_id
     try:
         val = get_setting("log_thread_id")
         if val:
@@ -809,7 +830,19 @@ def load_dynamic_settings():
         val2 = get_setting("results_thread_id")
         if val2:
             _dynamic_results_thread_id = int(val2)
-        print(f"✅ Настройки веток загружены: logs={_dynamic_log_thread_id}, results={_dynamic_results_thread_id}")
+        val3 = get_setting("match_reg_chat_id")
+        if val3:
+            _dynamic_match_reg_chat_id = int(val3)
+        val4 = get_setting("match_reg_thread_id")
+        if val4:
+            _dynamic_match_reg_thread_id = int(val4)
+        val5 = get_setting("ticket_chat_id")
+        if val5:
+            _dynamic_ticket_chat_id = int(val5)
+        val6 = get_setting("ticket_thread_id")
+        if val6:
+            _dynamic_ticket_thread_id = int(val6)
+        print(f"✅ Настройки веток загружены: logs={_dynamic_log_thread_id}, results={_dynamic_results_thread_id}, matchreg={_dynamic_match_reg_chat_id}/{_dynamic_match_reg_thread_id}, tickets={_dynamic_ticket_chat_id}/{_dynamic_ticket_thread_id}")
     except Exception as e:
         print(f"load_dynamic_settings error: {e}")
 
@@ -2588,6 +2621,7 @@ def main_menu(uid):
         types.InlineKeyboardButton("🛒 Магазин", callback_data="shop"),
         types.InlineKeyboardButton("🎒 Инвентарь", callback_data="inv"),
         types.InlineKeyboardButton("💳 Купить монеты", callback_data="buy_coins"),
+        types.InlineKeyboardButton("🎰 Слоты", callback_data="slots_menu"),
         types.InlineKeyboardButton("🎁 Промокод", callback_data="promo"),
         types.InlineKeyboardButton("🎟 Тикет / Жалоба", callback_data="ticket_start"),
     )
@@ -2660,6 +2694,62 @@ def cmd_setresulttopic(msg):
     )
 
 
+@bot.message_handler(commands=["setmatchreg"])
+def cmd_setmatchreg(msg):
+    """Привязать текущий чат/ветку как чат для рег/отменённых матчей."""
+    uid = msg.from_user.id
+    if uid not in ADMIN_IDS_LIST:
+        return
+    global _dynamic_match_reg_chat_id, _dynamic_match_reg_thread_id
+    chat_id   = msg.chat.id
+    thread_id = msg.message_thread_id
+    _dynamic_match_reg_chat_id  = chat_id
+    _dynamic_match_reg_thread_id = thread_id
+    set_setting("match_reg_chat_id",  chat_id)
+    set_setting("match_reg_thread_id", thread_id or "")
+    thread_info = f"ветка <code>{thread_id}</code>" if thread_id else "общий чат (без ветки)"
+    send_kw = {"parse_mode": "HTML"}
+    if thread_id:
+        send_kw["message_thread_id"] = thread_id
+    bot.send_message(
+        chat_id,
+        f"✅ <b>Чат проверки матчей привязан!</b>\n\n"
+        f"Chat ID: <code>{chat_id}</code>\n"
+        f"Место: {thread_info}\n\n"
+        f"Сюда будут приходить:\n"
+        f"✅ Зарегистрированные матчи (кнопка «На перерегистрацию»)\n"
+        f"❌ Отменённые матчи",
+        **send_kw,
+    )
+
+
+@bot.message_handler(commands=["setticketchat"])
+def cmd_setticketchat(msg):
+    """Привязать текущий чат/ветку как чат для тикетов."""
+    uid = msg.from_user.id
+    if uid not in ADMIN_IDS_LIST:
+        return
+    global _dynamic_ticket_chat_id, _dynamic_ticket_thread_id
+    chat_id   = msg.chat.id
+    thread_id = msg.message_thread_id
+    _dynamic_ticket_chat_id  = chat_id
+    _dynamic_ticket_thread_id = thread_id
+    set_setting("ticket_chat_id",  chat_id)
+    set_setting("ticket_thread_id", thread_id or "")
+    thread_info = f"ветка <code>{thread_id}</code>" if thread_id else "общий чат (без ветки)"
+    send_kw = {"parse_mode": "HTML"}
+    if thread_id:
+        send_kw["message_thread_id"] = thread_id
+    bot.send_message(
+        chat_id,
+        f"✅ <b>Чат тикетов привязан!</b>\n\n"
+        f"Chat ID: <code>{chat_id}</code>\n"
+        f"Место: {thread_info}\n\n"
+        f"Сюда будут приходить: 🎟 все новые тикеты от игроков",
+        **send_kw,
+    )
+
+
 @bot.message_handler(commands=["topicsettings"])
 def cmd_topicsettings(msg):
     """Показать текущие настройки веток. Только для главных админов."""
@@ -2667,14 +2757,30 @@ def cmd_topicsettings(msg):
     if uid not in ADMIN_IDS_LIST:
         return
     log_info = f"<code>{_dynamic_log_thread_id}</code>" if _dynamic_log_thread_id else "не задана"
-    res_info = f"<code>{_dynamic_results_thread_id}</code>" if _dynamic_results_thread_id else f"не задана (используется ветка логов)"
+    res_info = f"<code>{_dynamic_results_thread_id}</code>" if _dynamic_results_thread_id else "не задана (используется ветка логов)"
+    mreg_info = (
+        f"chat <code>{_dynamic_match_reg_chat_id}</code>"
+        + (f" / thread <code>{_dynamic_match_reg_thread_id}</code>" if _dynamic_match_reg_thread_id else "")
+        if _dynamic_match_reg_chat_id else "не задан"
+    )
+    ticket_info = (
+        f"chat <code>{_dynamic_ticket_chat_id}</code>"
+        + (f" / thread <code>{_dynamic_ticket_thread_id}</code>" if _dynamic_ticket_thread_id else "")
+        if _dynamic_ticket_chat_id else "не задан (личка админам)"
+    )
     bot.send_message(
         msg.chat.id,
-        f"⚙️ <b>Текущие настройки веток</b>\n\n"
-        f"📋 Ветка логов (баны/муты/варны/отмены):\n{log_info}\n\n"
-        f"🏁 Ветка результатов:\n{res_info}\n\n"
-        f"<i>Зайди в нужную ветку и отправь /setlogtopic или /setresulttopic чтобы привязать.</i>",
-        parse_mode="HTML"
+        f"⚙️ <b>Текущие настройки чатов/веток</b>\n\n"
+        f"📋 Логи (баны/муты/варны):\n{log_info}\n\n"
+        f"🏁 Результаты матчей:\n{res_info}\n\n"
+        f"✅ Рег/отмена матчей:\n{mreg_info}\n\n"
+        f"🎟 Тикеты:\n{ticket_info}\n\n"
+        f"<i>Команды для привязки:\n"
+        f"/setlogtopic — логи\n"
+        f"/setresulttopic — результаты\n"
+        f"/setmatchreg — рег/отмена матчей\n"
+        f"/setticketchat — тикеты</i>",
+        parse_mode="HTML",
     )
 
 
@@ -5726,14 +5832,11 @@ def cb_reg_match(c):
     AC = lobby.get("ACreenshots_count", 0)
     try:
         new_kb = _build_admin_match_kb(match_key, match_code, AC, taken_by=uid)
-        thread_id = lobby.get("admin_thread_id")
-        edit_kw = {"reply_markup": new_kb}
-        if thread_id:
-            edit_kw["message_thread_id"] = thread_id
-        bot.edit_message_reply_markup(c.message.chat.id, c.message.message_id, **edit_kw)
+        # Не передаём message_thread_id в edit_message_reply_markup — он там не нужен
+        bot.edit_message_reply_markup(c.message.chat.id, c.message.message_id, reply_markup=new_kb)
     except Exception:
         pass
-    bot.answer_callback_query(c.id, "✅ Регистрация захвачена!")
+    bot.answer_callback_query(c.id, "✅ Регистрация захвачена! Кнопка «Освободить» появилась в чате матча.")
 
     # Уведомление в ветку: "Администратор X начал обработку матча"
     admin_p = get_player(uid)
@@ -5852,7 +5955,7 @@ def cb_reg_release(c):
 
 @bot.callback_query_handler(func=lambda c: c.data.startswith("reg_abandon|"))
 def cb_reg_abandon(c):
-    """Регистратор отказывается от своей регистрации."""
+    """Регистратор нажал «Освободить» — показываем подтверждение."""
     uid = c.from_user.id
     if not is_game_reg_check(uid):
         bot.answer_callback_query(c.id, "❌ Нет доступа")
@@ -5866,6 +5969,48 @@ def cb_reg_abandon(c):
     if taken and taken != uid:
         bot.answer_callback_query(c.id, "❌ Только тот, кто взял регистрацию, может её освободить", show_alert=True)
         return
+    match_code = lobby.get("match_code", str(lobby.get("match_id", "?")))
+    bot.answer_callback_query(c.id)
+    kb_confirm = types.InlineKeyboardMarkup(row_width=1)
+    kb_confirm.add(
+        types.InlineKeyboardButton("✅ Да, освободить регистрацию", callback_data=f"reg_abandon_confirm|{match_key}"),
+        types.InlineKeyboardButton("❌ Нет, продолжаю регистрацию", callback_data="match_noop"),
+    )
+    try:
+        bot.send_message(
+            uid,
+            f"⚠️ <b>Отмена регистрации матча #{match_code}</b>\n\n"
+            f"Ты уверен что хочешь освободить регистрацию?\n"
+            f"Матч будет доступен другим game reg.",
+            reply_markup=kb_confirm,
+            parse_mode="HTML",
+        )
+    except Exception:
+        pass
+    return
+
+
+@bot.callback_query_handler(func=lambda c: c.data.startswith("reg_abandon_confirm|"))
+def cb_reg_abandon_confirm(c):
+    """Подтверждённый отказ от регистрации."""
+    uid = c.from_user.id
+    if not is_game_reg_check(uid):
+        bot.answer_callback_query(c.id, "❌ Нет доступа")
+        return
+    match_key = c.data.split("|", 1)[1]
+    lobby = running_matches.get(match_key)
+    if not lobby:
+        bot.answer_callback_query(c.id, "❌ Матч не найден")
+        return
+    taken = lobby.get("reg_taken_by")
+    if taken and taken != uid:
+        bot.answer_callback_query(c.id, "❌ Только тот, кто взял регистрацию, может её освободить", show_alert=True)
+        return
+    # Убираем кнопки подтверждения
+    try:
+        bot.edit_message_reply_markup(c.message.chat.id, c.message.message_id, reply_markup=None)
+    except Exception:
+        pass
     lobby["reg_taken_by"] = None
     # Очищаем match_registration для регистратора этого матча (а не только для себя)
     for _adm in list(match_registration.keys()):
@@ -6321,8 +6466,8 @@ def _finalize_match(reg_uid, match_key):
         except Exception as e:
             print(f"Close topic error: {e}")
 
-    # Отправляем в отдельный чат проверки — там выбирают: подтвердить или перерегать
-    if MATCH_REVIEW_CHAT_ID:
+    # Отправляем в чат проверки матчей (настраивается через /setmatchreg)
+    if _dynamic_match_reg_chat_id:
         try:
             kb_review = types.InlineKeyboardMarkup(row_width=1)
             kb_review.add(
@@ -6330,15 +6475,17 @@ def _finalize_match(reg_uid, match_key):
             )
             priv_cfg2 = PRIVATE_CONFIG.get(lobby.get("private", "darling"), PRIVATE_CONFIG["darling"])
             priv_label2 = f"{priv_cfg2['emoji']} {priv_cfg2['display']}"
+            _mreg_kw = {"reply_markup": kb_review, "parse_mode": "HTML"}
+            if _dynamic_match_reg_thread_id:
+                _mreg_kw["message_thread_id"] = _dynamic_match_reg_thread_id
             bot.send_message(
-                MATCH_REVIEW_CHAT_ID,
-                f"📋 <b>Матч #{match_code} зарегистрирован — ожидает проверки</b>\n\n"
+                _dynamic_match_reg_chat_id,
+                f"📋 <b>Матч #{match_code} зарегистрирован</b>\n\n"
                 f"🏠 Привате: <b>{priv_label2}</b>\n"
                 f"🗺 Карта: {lobby.get('map_name', '?')} | Счёт: <b>{ACore_w}:{ACore_l}</b>\n"
                 f"🏷 Лига: {format_league(lobby.get('league','default'))} | 📱 {lobby.get('device','').upper()}\n"
                 f"🏆 Победитель: <b>{winner_team_label}</b>",
-                reply_markup=kb_review,
-                parse_mode="HTML",
+                **_mreg_kw,
             )
         except Exception as _rve:
             print(f"[match_review send] {_rve}")
@@ -6432,6 +6579,23 @@ def handle_cancel_reason(msg):
         f"📝 Причина: <b>{reason}</b>\n"
         f"🏷 {lobby.get('league','').upper()}/{lobby.get('device','').upper()}"
     )
+
+    # Отправляем отменённый матч в чат проверки (настраивается через /setmatchreg)
+    if _dynamic_match_reg_chat_id:
+        try:
+            _kw_cancel = {"parse_mode": "HTML"}
+            if _dynamic_match_reg_thread_id:
+                _kw_cancel["message_thread_id"] = _dynamic_match_reg_thread_id
+            bot.send_message(
+                _dynamic_match_reg_chat_id,
+                f"❌ <b>Матч #{match_code} отменён</b>\n\n"
+                f"👮 Администратор: <b>{admin_name}</b>\n"
+                f"📝 Причина: <b>{reason}</b>\n"
+                f"🏷 Лига: {format_league(lobby.get('league','default'))} | 📱 {lobby.get('device','').upper()}",
+                **_kw_cancel,
+            )
+        except Exception as _cre:
+            print(f"[cancel match review send] {_cre}")
 
 
 @bot.callback_query_handler(func=lambda c: c.data.startswith("reregister_match|"))
@@ -6717,6 +6881,160 @@ def handle_rename(msg):
     conn.commit()
     conn.close()
     bot.send_message(uid, f"✅ Никнейм изменён на <b>{new_nick}</b>!")
+
+
+# ==================== СЛОТЫ ====================
+SLOTS_SYMBOLS = ["🍒", "🍋", "🍊", "🍇", "💎", "7️⃣", "⭐"]
+SLOTS_BETS    = [10, 25, 50, 100, 250, 500]
+
+# Множители выигрыша: (символ или "любой") -> множитель
+# Три одинаковых символа:
+SLOTS_PAYOUTS = {
+    "7️⃣": 10,   # три семёрки — x10
+    "💎": 7,    # три бриллианта — x7
+    "⭐": 5,    # три звезды — x5
+    "🍇": 4,
+    "🍒": 3,
+    "🍊": 3,
+    "🍋": 2,
+}
+SLOTS_TRIPLE_ANY = 2   # три любых одинаковых — x2 (если нет в таблице)
+SLOTS_TWO_SAME   = 0   # два одинаковых — ставка не возвращается (проигрыш)
+
+def _spin_slots() -> list:
+    return [random.choice(SLOTS_SYMBOLS) for _ in range(3)]
+
+def _calc_slots_win(bet: int, reels: list) -> tuple:
+    """Возвращает (выигрыш, текст_результата)."""
+    a, b, c = reels
+    if a == b == c:
+        mult = SLOTS_PAYOUTS.get(a, SLOTS_TRIPLE_ANY)
+        win = bet * mult
+        return win, f"🎉 <b>ДЖЕКПОТ!</b> Три {a} — выигрыш <b>+{win} AC</b> (x{mult})"
+    if a == b or b == c or a == c:
+        return 0, f"😐 Два одинаковых — ставка потеряна (-{bet} AC)"
+    return 0, f"💨 Мимо — ставка потеряна (-{bet} AC)"
+
+def _slots_menu_kb(selected_bet=None):
+    kb = types.InlineKeyboardMarkup(row_width=3)
+    bet_btns = []
+    for b in SLOTS_BETS:
+        label = f"[{b} AC]" if b == selected_bet else f"{b} AC"
+        bet_btns.append(types.InlineKeyboardButton(label, callback_data=f"slots_bet|{b}"))
+    kb.add(*bet_btns)
+    if selected_bet:
+        kb.add(types.InlineKeyboardButton(f"🎰 Крутить ({selected_bet} AC)", callback_data=f"slots_spin|{selected_bet}"))
+    kb.add(types.InlineKeyboardButton("🔙 Назад", callback_data="back"))
+    return kb
+
+@bot.callback_query_handler(func=lambda c: c.data == "slots_menu")
+def cb_slots_menu(c):
+    uid = c.from_user.id
+    err = check_blocked(uid)
+    if err:
+        bot.answer_callback_query(c.id, "⚠️ Доступ ограничен", show_alert=True)
+        return
+    if not is_registered(uid):
+        bot.answer_callback_query(c.id, "❌ Сначала зарегистрируйтесь /start", show_alert=True)
+        return
+    p = get_player(uid)
+    coins = p[7] if p and len(p) > 7 else 0
+    bot.answer_callback_query(c.id)
+    text = (
+        f"🎰 <b>СЛОТЫ</b>\n\n"
+        f"💰 Ваш баланс: <b>{coins} AC</b>\n\n"
+        f"Символы и множители (три одинаковых):\n"
+        f"7️⃣ x10  |  💎 x7  |  ⭐ x5\n"
+        f"🍇 x4  |  🍒 x3  |  🍊 x3  |  🍋 x2\n\n"
+        f"Выберите ставку:"
+    )
+    try:
+        bot.edit_message_text(text, c.message.chat.id, c.message.message_id,
+                              reply_markup=_slots_menu_kb(), parse_mode="HTML")
+    except Exception:
+        bot.send_message(uid, text, reply_markup=_slots_menu_kb(), parse_mode="HTML")
+
+
+@bot.callback_query_handler(func=lambda c: c.data.startswith("slots_bet|"))
+def cb_slots_bet(c):
+    uid = c.from_user.id
+    if not is_registered(uid):
+        bot.answer_callback_query(c.id, "❌ Сначала зарегистрируйтесь", show_alert=True)
+        return
+    bet = int(c.data.split("|", 1)[1])
+    p = get_player(uid)
+    coins = p[7] if p and len(p) > 7 else 0
+    bot.answer_callback_query(c.id)
+    text = (
+        f"🎰 <b>СЛОТЫ</b>\n\n"
+        f"💰 Ваш баланс: <b>{coins} AC</b>\n"
+        f"🎯 Выбрана ставка: <b>{bet} AC</b>\n\n"
+        f"Нажмите «Крутить» для старта:"
+    )
+    try:
+        bot.edit_message_text(text, c.message.chat.id, c.message.message_id,
+                              reply_markup=_slots_menu_kb(bet), parse_mode="HTML")
+    except Exception:
+        pass
+
+
+@bot.callback_query_handler(func=lambda c: c.data.startswith("slots_spin|"))
+def cb_slots_spin(c):
+    uid = c.from_user.id
+    err = check_blocked(uid)
+    if err:
+        bot.answer_callback_query(c.id, "⚠️ Доступ ограничен", show_alert=True)
+        return
+    if not is_registered(uid):
+        bot.answer_callback_query(c.id, "❌ Сначала зарегистрируйтесь", show_alert=True)
+        return
+    bet = int(c.data.split("|", 1)[1])
+    p = get_player(uid)
+    coins = p[7] if p and len(p) > 7 else 0
+    if coins < bet:
+        bot.answer_callback_query(c.id, f"❌ Недостаточно монет! У вас {coins} AC, нужно {bet} AC", show_alert=True)
+        return
+    # Списываем ставку
+    try:
+        conn = _db(); cur = conn.cursor()
+        cur.execute("UPDATE players SET coins=GREATEST(0, coins-%s) WHERE user_id=%s", (bet, uid))
+        conn.commit(); conn.close()
+    except Exception as _se:
+        print(f"[slots debit] {_se}")
+        bot.answer_callback_query(c.id, "❌ Ошибка, попробуй ещё раз", show_alert=True)
+        return
+    reels = _spin_slots()
+    win, result_text = _calc_slots_win(bet, reels)
+    # Начисляем выигрыш если есть
+    if win > 0:
+        try:
+            conn2 = _db(); cur2 = conn2.cursor()
+            cur2.execute("UPDATE players SET coins=coins+%s WHERE user_id=%s", (win, uid))
+            conn2.commit(); conn2.close()
+        except Exception as _se2:
+            print(f"[slots credit] {_se2}")
+    new_coins = coins - bet + win
+    reels_str = " | ".join(reels)
+    text = (
+        f"🎰 <b>СЛОТЫ</b>\n\n"
+        f"╔══════════════╗\n"
+        f"║  {reels_str}  ║\n"
+        f"╚══════════════╝\n\n"
+        f"{result_text}\n\n"
+        f"💰 Баланс: <b>{new_coins} AC</b>"
+    )
+    kb = types.InlineKeyboardMarkup(row_width=1)
+    kb.add(
+        types.InlineKeyboardButton(f"🔄 Ещё раз ({bet} AC)", callback_data=f"slots_spin|{bet}"),
+        types.InlineKeyboardButton("💰 Сменить ставку", callback_data="slots_menu"),
+        types.InlineKeyboardButton("🔙 Главное меню", callback_data="back"),
+    )
+    bot.answer_callback_query(c.id)
+    try:
+        bot.edit_message_text(text, c.message.chat.id, c.message.message_id,
+                              reply_markup=kb, parse_mode="HTML")
+    except Exception:
+        bot.send_message(uid, text, reply_markup=kb, parse_mode="HTML")
 
 
 # ==================== ПАТИ ====================
@@ -9184,7 +9502,7 @@ def ticket_step_accused(msg):
         reply_markup=main_menu(uid),
     )
 
-    # Уведомить всех администраторов
+    # Уведомить администраторов — в ветку группы или в личку каждому
     kb_admin = types.InlineKeyboardMarkup(row_width=2)
     kb_admin.add(
         types.InlineKeyboardButton("✅ Закрыть (решено)", callback_data=f"ticket_close|{ticket_code}"),
@@ -9197,14 +9515,28 @@ def ticket_step_accused(msg):
         f"📝 Причина: {reason}\n"
         f"🎯 Обвиняемый: {accused_text_display}\n"
     )
-    for admin_id in ADMIN_IDS_LIST:
+    if _dynamic_ticket_chat_id:
+        # Отправляем в групповую ветку (настраивается через /setticketchat)
         try:
+            send_kw = {"reply_markup": kb_admin, "parse_mode": "HTML"}
+            if _dynamic_ticket_thread_id:
+                send_kw["message_thread_id"] = _dynamic_ticket_thread_id
             if evidence_file_id:
-                bot.send_photo(admin_id, evidence_file_id, caption=admin_text, reply_markup=kb_admin, parse_mode="HTML")
+                bot.send_photo(_dynamic_ticket_chat_id, evidence_file_id, caption=admin_text, **send_kw)
             else:
-                bot.send_message(admin_id, admin_text, reply_markup=kb_admin, parse_mode="HTML")
-        except Exception:
-            pass
+                bot.send_message(_dynamic_ticket_chat_id, admin_text, **send_kw)
+        except Exception as _te:
+            print(f"[ticket group send] {_te}")
+    else:
+        # Fallback — личка каждому администратору
+        for admin_id in ADMIN_IDS_LIST:
+            try:
+                if evidence_file_id:
+                    bot.send_photo(admin_id, evidence_file_id, caption=admin_text, reply_markup=kb_admin, parse_mode="HTML")
+                else:
+                    bot.send_message(admin_id, admin_text, reply_markup=kb_admin, parse_mode="HTML")
+            except Exception:
+                pass
 
 
 @bot.callback_query_handler(func=lambda c: c.data.startswith("ticket_close|") or c.data.startswith("ticket_reject|"))
