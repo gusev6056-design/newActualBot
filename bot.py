@@ -337,11 +337,11 @@ CATEGORY_NAMES = {"decor": "🖼 Декор", "goods": "📦 Товары"}
 CATEGORY_ICONS = {"decor": "🖼", "goods": "📦"}
 
 COIN_PACKAGES = [
-    ("Стартовый",   200,   40,   "40 ⭐"),
-    ("Оптимальный", 600,   100,  "100 ⭐"),
-    ("Выгодный",    2000,  300,  "300 ⭐"),
-    ("Мега",        5000,  750,  "750 ⭐"),
-    ("Элита",       70000, 1200, "1200 ⭐"),
+    ("Стартовый",   200,   15,  "15 ⭐"),
+    ("Оптимальный", 600,   60,  "60 ⭐"),
+    ("Выгодный",    2000,  100, "100 ⭐"),
+    ("Мега",        5000,  200, "200 ⭐"),
+    ("Элита",       70000, 500, "500 ⭐"),
 ]
 
 NUMBER_EMOJI = ["①","②","③","④","⑤","⑥","⑦","⑧","⑨","⑩"]
@@ -7620,7 +7620,7 @@ def cb_buy_package(c):
         bot.send_invoice(
             chat_id=uid,
             title=f"💰 {coins_amount} SareCoin",
-            deACription=f"Пакет «{name}»: {coins_amount} AC для Actual FACEIT",
+            description=f"Пакет «{name}»: {coins_amount} AC для Actual FACEIT",
             invoice_payload=f"coins_{pkg_idx}_{uid}",
             provider_token="",
             currency="XTR",
