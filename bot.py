@@ -11,6 +11,9 @@ import random
 import time
 import datetime
 import json
+import base64
+import urllib.request
+import urllib.error
 
 # Московское время UTC+3
 MSK = datetime.timezone(datetime.timedelta(hours=3))
@@ -107,6 +110,8 @@ try:
     LOG_CHAT_ID = int(LOG_CHAT_ID_RAW)
 except Exception:
     LOG_CHAT_ID = 0
+
+OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY", "")
 
 # Отдельный чат для проверки зарегистрированных матчей (перерег / подтверждение)
 MATCH_REVIEW_CHAT_ID_RAW = os.environ.get("MATCH_REVIEW_CHAT_ID", "0")
@@ -296,7 +301,8 @@ creator_flow          = {}   # uid -> {step, ...}
 
 # ==================== КОНФИГ ПРИВАТОК ====================
 PRIVATE_CONFIG = {
-    "darling": {"table": "players", "display": "StandFade", "emoji": "⚡", "matches_table": "darling_matches"},
+    "darling": {"table": "players",      "display": "StandDarling", "emoji": "💖", "matches_table": "matches"},
+    "fade":    {"table": "players_fade", "display": "StandFade",    "emoji": "⚡", "matches_table": "fade_matches"},
 }
 
 # ==================== ЛОББИ: размеры по режиму ====================
@@ -464,6 +470,98 @@ def init_db():
         ("duo_assists",    "INTEGER DEFAULT 0"),
     ]:
         _add_column_if_missing("players", col, definition)
+
+    # ==================== ТАБЛИЦА players_fade (StandFade) ====================
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS players_fade (
+            user_id BIGINT PRIMARY KEY,
+            username TEXT,
+            game_id TEXT,
+            device TEXT,
+            elo INTEGER DEFAULT 1000,
+            coins INTEGER DEFAULT 100,
+            wins INTEGER DEFAULT 0,
+            losses INTEGER DEFAULT 0,
+            kills INTEGER DEFAULT 0,
+            deaths INTEGER DEFAULT 0,
+            assists INTEGER DEFAULT 0,
+            is_admin INTEGER DEFAULT 0,
+            registered INTEGER DEFAULT 0,
+            is_bot INTEGER DEFAULT 0,
+            is_banned INTEGER DEFAULT 0,
+            warns INTEGER DEFAULT 0,
+            quals_access INTEGER DEFAULT 0,
+            is_game_reg INTEGER DEFAULT 0,
+            is_muted INTEGER DEFAULT 0,
+            mute_until BIGINT DEFAULT 0,
+            is_on_check INTEGER DEFAULT 0,
+            check_admin_id BIGINT DEFAULT 0,
+            tg_username TEXT DEFAULT ''
+        )
+    """)
+    conn.commit()
+
+    for col, definition in [
+        ("ban_reason",     "TEXT DEFAULT ''"),
+        ("ban_until",      "BIGINT DEFAULT 0"),
+        ("quals_wins",     "INTEGER DEFAULT 0"),
+        ("quals_losses",   "INTEGER DEFAULT 0"),
+        ("quals_kills",    "INTEGER DEFAULT 0"),
+        ("quals_deaths",   "INTEGER DEFAULT 0"),
+        ("quals_assists",  "INTEGER DEFAULT 0"),
+        ("quals_elo",      "INTEGER DEFAULT 1000"),
+        ("mvp_count",      "INTEGER DEFAULT 0"),
+        ("premium_until",  "BIGINT DEFAULT 0"),
+        ("quals_until",    "BIGINT DEFAULT 0"),
+        ("duo_elo",        "INTEGER DEFAULT 1000"),
+        ("duo_wins",       "INTEGER DEFAULT 0"),
+        ("duo_losses",     "INTEGER DEFAULT 0"),
+        ("duo_kills",      "INTEGER DEFAULT 0"),
+        ("duo_deaths",     "INTEGER DEFAULT 0"),
+        ("duo_assists",    "INTEGER DEFAULT 0"),
+        ("is_verified",    "INTEGER DEFAULT 0"),
+        ("active_frame",      "TEXT DEFAULT NULL"),
+        ("active_banner",     "TEXT DEFAULT NULL"),
+        ("active_background", "TEXT DEFAULT NULL"),
+    ]:
+        _add_column_if_missing("players_fade", col, definition)
+
+    # Боты для players_fade (те же что в players)
+    cur.execute("SELECT COUNT(*) FROM players_fade WHERE is_bot=1")
+    if cur.fetchone()[0] == 0:
+        for i in range(1, 21):
+            bot_id = 1000000000 + i
+            cur.execute(
+                "INSERT INTO players_fade (user_id, username, game_id, device, registered, is_bot, elo) VALUES (%s, %s, %s, %s, 1, 1, 1000) ON CONFLICT (user_id) DO NOTHING",
+                (bot_id, f"Bot_{i}", str(500000000 + i), "PC" if i % 2 == 0 else "MOBILE"),
+            )
+    conn.commit()
+
+    # ==================== ТАБЛИЦА fade_matches (StandFade матчи) ====================
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS fade_matches (
+            id SERIAL PRIMARY KEY,
+            match_id INTEGER NOT NULL,
+            match_code TEXT DEFAULT '',
+            league TEXT DEFAULT '',
+            device TEXT DEFAULT '',
+            map_name TEXT DEFAULT '',
+            winner TEXT DEFAULT '',
+            ACore_w INTEGER DEFAULT 0,
+            ACore_l INTEGER DEFAULT 0,
+            status TEXT DEFAULT 'registered',
+            cancel_reason TEXT DEFAULT '',
+            started_at BIGINT DEFAULT 0,
+            players_json TEXT DEFAULT '[]',
+            finished_at BIGINT DEFAULT EXTRACT(EPOCH FROM NOW())::BIGINT
+        )
+    """)
+    conn.commit()
+    try:
+        cur.execute("CREATE UNIQUE INDEX IF NOT EXISTS fade_matches_match_id_uq ON fade_matches (match_id)")
+        conn.commit()
+    except Exception:
+        conn.rollback()
 
     # Таблица для хранения выбранной приватки пользователя между перезапусками
     cur.execute("""
@@ -1068,33 +1166,36 @@ def is_bot_player(uid):
     return p is not None and p[13] == 1
 
 def is_banned_check(uid):
-    p = get_current_player(uid)
+    # Бан — глобальный, всегда проверяем основную таблицу players
+    p = get_player(uid)
     return p is not None and len(p) > 14 and p[14] == 1
 
 def is_muted_check(uid):
-    p = get_current_player(uid)
+    # Мут — глобальный, всегда проверяем основную таблицу players
+    p = get_player(uid)
     if p is None:
         return False
     if len(p) > 19 and p[18] == 1:
         mute_until = p[19] or 0
         if mute_until > time.time():
             return True
-        table = get_user_table(uid)
         conn = _db()
         cur = conn.cursor()
-        cur.execute(f"UPDATE {table} SET is_muted=0, mute_until=0 WHERE user_id=%s", (uid,))
+        cur.execute("UPDATE players SET is_muted=0, mute_until=0 WHERE user_id=%s", (uid,))
         conn.commit()
         conn.close()
     return False
 
 def get_mute_remaining(uid):
-    p = get_current_player(uid)
+    # Мут — глобальный, всегда из основной таблицы players
+    p = get_player(uid)
     if p is None or len(p) <= 19:
         return 0
     return max(0, int((p[19] or 0) - time.time()))
 
 def is_on_check_db(uid):
-    p = get_current_player(uid)
+    # Проверка (check) — глобальная, всегда из основной таблицы players
+    p = get_player(uid)
     return p is not None and len(p) > 20 and p[20] == 1
 
 def is_verified_check(uid):
@@ -1113,7 +1214,8 @@ def is_verified_check(uid):
         return False
 
 def get_check_admin(uid):
-    p = get_current_player(uid)
+    # Проверка (check) — глобальная, всегда из основной таблицы players
+    p = get_player(uid)
     if p is None or len(p) <= 21:
         return None
     return p[21]
@@ -2576,6 +2678,14 @@ def main_menu(uid):
     kb.add(types.InlineKeyboardButton(
         "👥 Моя пати" if in_party else "➕ Создать пати", callback_data="party_menu"
     ))
+    # Кнопка переключения приватки
+    cur_priv = get_user_private(uid)
+    other_priv_key = "fade" if cur_priv == "darling" else "darling"
+    other_priv_cfg = PRIVATE_CONFIG[other_priv_key]
+    kb.add(types.InlineKeyboardButton(
+        f"🔀 Сменить на {other_priv_cfg['emoji']} {other_priv_cfg['display']}",
+        callback_data=f"switch_private_{other_priv_key}"
+    ))
     if is_admin(uid):
         kb.add(
             types.InlineKeyboardButton("🤖 Добавить ботов", callback_data="add_bots_admin"),
@@ -2589,11 +2699,12 @@ def main_menu(uid):
 
 
 def main_menu_text(uid):
-    p = get_player(uid)
+    p = get_current_player(uid) or get_player(uid)
     coins = p[5] if p and len(p) > 5 else 0
+    priv_display = get_user_private_display(uid)
     return (
         f"⚡ <b>Actual FACEIT</b>\n"
-        f"🏠 Приватка: <b>⚡ StandFade</b>\n"
+        f"🏠 Приватка: <b>{priv_display}</b>\n"
         f"🪙 Кошелёк: <b>{coins} AC</b>\n"
         f"🆔 Ваш TG ID: <code>{uid}</code>"
     )
@@ -3089,6 +3200,60 @@ def cb_rejoin_lobby(c):
         lobby_player_messages[lobby_id] = {}
     lobby_player_messages[lobby_id][uid] = (c.message.chat.id, c.message.message_id)
     bot.answer_callback_query(c.id)
+
+
+# ==================== ПЕРЕКЛЮЧЕНИЕ ПРИВАТКИ ====================
+@bot.callback_query_handler(func=lambda c: c.data.startswith("switch_private_"))
+def cb_switch_private(c):
+    uid = c.from_user.id
+    bot.answer_callback_query(c.id)
+    target_key = c.data.replace("switch_private_", "")
+    if target_key not in PRIVATE_CONFIG:
+        bot.answer_callback_query(c.id, "❌ Неизвестная приватка", show_alert=True)
+        return
+    if uid in user_lobby:
+        bot.answer_callback_query(c.id, "❌ Нельзя сменить приватку находясь в лобби", show_alert=True)
+        return
+    for mk, lobby in running_matches.items():
+        if uid in lobby.get("players", []):
+            bot.answer_callback_query(c.id, "❌ Нельзя сменить приватку во время матча", show_alert=True)
+            return
+    old_key = get_user_private(uid)
+    if old_key == target_key:
+        bot.answer_callback_query(c.id, "ℹ️ Вы уже в этой приватке", show_alert=True)
+        return
+    user_private[uid] = target_key
+    save_user_private(uid, target_key)
+    cfg = PRIVATE_CONFIG[target_key]
+    priv_display = f"{cfg['emoji']} {cfg['display']}"
+    # Если пользователь не зарегистрирован в новой приватке — предлагаем зарегистрироваться
+    p = get_current_player(uid)
+    if not p or not p[12]:
+        try:
+            bot.edit_message_text(
+                f"🔀 Приватка изменена: <b>{priv_display}</b>\n\n"
+                f"В этой приватке вы ещё не зарегистрированы.\n"
+                f"Введи /start чтобы пройти регистрацию.",
+                c.message.chat.id, c.message.message_id,
+                reply_markup=main_menu(uid), parse_mode="HTML",
+            )
+        except Exception:
+            bot.send_message(
+                uid,
+                f"🔀 Приватка изменена: <b>{priv_display}</b>\n\n"
+                f"В этой приватке вы ещё не зарегистрированы.\n"
+                f"Введи /start чтобы пройти регистрацию.",
+                reply_markup=main_menu(uid), parse_mode="HTML",
+            )
+    else:
+        try:
+            bot.edit_message_text(
+                f"✅ Приватка изменена на <b>{priv_display}</b>!\n\n" + main_menu_text(uid),
+                c.message.chat.id, c.message.message_id,
+                reply_markup=main_menu(uid), parse_mode="HTML",
+            )
+        except Exception:
+            bot.send_message(uid, main_menu_text(uid), reply_markup=main_menu(uid), parse_mode="HTML")
 
 
 # ==================== ПРОМОКОД (пользователь) ====================
@@ -5737,6 +5902,117 @@ def handle_player_ACreenshot(msg):
 
 # ==================== РЕГИСТРАЦИЯ РЕЗУЛЬТАТОВ ====================
 match_registration = {}
+ai_reg_pending    = {}   # uid -> {match_key, step, photo_bytes, ai_result, reply_chat_id, reply_thread_id}
+
+
+# ==================== AI SCREENSHOT HELPERS ====================
+
+def _call_openai_vision(image_bytes: bytes) -> dict:
+    """Отправляет скрин в GPT-4o Vision, возвращает dict с результатами матча."""
+    if not OPENAI_API_KEY:
+        raise RuntimeError("OPENAI_API_KEY не задан")
+    b64 = base64.b64encode(image_bytes).decode()
+    payload = json.dumps({
+        "model": "gpt-4o",
+        "messages": [{
+            "role": "user",
+            "content": [
+                {
+                    "type": "image_url",
+                    "image_url": {"url": f"data:image/jpeg;base64,{b64}"}
+                },
+                {
+                    "type": "text",
+                    "text": (
+                        "Это скриншот итоговой статистики матча (CS-подобная игра: Warface, Stand Off 2 и т.п.).\n"
+                        "На скрине две команды: СПЕЦНАЗ/CT и ТЕРРОРИСТЫ/T.\n"
+                        "Столбцы таблицы: ИМЯ (никнейм), У (убийства/kills), П (смерти/deaths), С (помощи/assists). Иногда порядок: У П С или K D A.\n"
+                        "Победившая команда обозначена словом 'ПОБЕДА'.\n\n"
+                        "Верни ТОЛЬКО валидный JSON без пояснений и без markdown:\n"
+                        "{\n"
+                        "  \"winner\": \"ct\" или \"t\",\n"
+                        "  \"score_ct\": число,\n"
+                        "  \"score_t\": число,\n"
+                        "  \"ct_players\": [{\"name\": \"ник\", \"kills\": N, \"deaths\": N, \"assists\": N}],\n"
+                        "  \"t_players\":  [{\"name\": \"ник\", \"kills\": N, \"deaths\": N, \"assists\": N}]\n"
+                        "}"
+                    )
+                }
+            ]
+        }],
+        "max_tokens": 1200,
+    }).encode("utf-8")
+
+    req = urllib.request.Request(
+        "https://api.openai.com/v1/chat/completions",
+        data=payload,
+        headers={
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {OPENAI_API_KEY}",
+        },
+    )
+    with urllib.request.urlopen(req, timeout=40) as resp:
+        data = json.loads(resp.read())
+    raw = data["choices"][0]["message"]["content"].strip()
+    m = re.search(r'\{.*\}', raw, re.DOTALL)
+    return json.loads(m.group() if m else raw)
+
+
+def _fuzzy_match_nick(nick: str, player_rows: list):
+    """Пытается сопоставить ник со скрина с uid зарегистрированного игрока.
+    player_rows: список строк (uid, username, game_id, ...)
+    Возвращает uid или None.
+    """
+    def clean(s: str) -> str:
+        s = (s or "").lower().strip()
+        s = re.sub(r'^\[.*?\]\s*', '', s)   # убираем клан-тег [VV] [winx]
+        return s
+
+    nick_c = clean(nick)
+    if not nick_c:
+        return None
+
+    for p in player_rows:
+        uid, username, game_id = p[0], p[1] if len(p) > 1 else "", p[2] if len(p) > 2 else ""
+        for candidate in (game_id, username):
+            cand_c = clean(candidate)
+            if not cand_c:
+                continue
+            if nick_c == cand_c:
+                return uid
+            if nick_c in cand_c or cand_c in nick_c:
+                if len(min(nick_c, cand_c, key=len)) >= 3:
+                    return uid
+    return None
+
+
+def _format_ai_preview(lobby, ai_result: dict, mapped: dict) -> str:
+    """Форматирует превью AI-результата для показа админу."""
+    winner = ai_result.get("winner", "ct")
+    sc = ai_result.get("score_ct", "?")
+    st = ai_result.get("score_t", "?")
+    winner_label = "💙 CT (СПЕЦНАЗ)" if winner == "ct" else "🧡 T (ТЕРРОРИСТЫ)"
+    lines = [
+        f"🤖 <b>AI-анализ скрина</b>\n",
+        f"🏆 Победитель: <b>{winner_label}</b>",
+        f"📊 Счёт: <b>{sc}:{st}</b>\n",
+    ]
+    for team_key, emoji, players in (("ct", "💙", ai_result.get("ct_players", [])),
+                                     ("t",  "🧡", ai_result.get("t_players",  []))):
+        lines.append(f"{emoji} {'CT' if team_key == 'ct' else 'T'}:")
+        for pl in players:
+            name = pl.get("name", "?")
+            uid = mapped.get(name)
+            if uid:
+                p = get_player(uid)
+                reg_name = p[1] if p else str(uid)
+                match_flag = f"✅ {reg_name}"
+            else:
+                match_flag = f"❓ <i>{name}</i> — не найден → 0/0/10"
+            lines.append(f"  {match_flag} | {pl.get('kills',0)}/{pl.get('deaths',0)}/{pl.get('assists',0)}")
+        lines.append("")
+    return "\n".join(lines)
+
 
 def reg_send(uid, text, **kwargs):
     data = match_registration.get(uid, {})
@@ -5840,25 +6116,375 @@ def cb_reg_match(c):
         reply_thread_id = None
     _reg_priv_cfg   = PRIVATE_CONFIG.get(lobby.get("private", "darling"), PRIVATE_CONFIG["darling"])
     _reg_priv_label = f"{_reg_priv_cfg['emoji']} {_reg_priv_cfg['display']}"
-    instructions = (
+    match_info = (
         f"📋 <b>Регистрация матча #{match_code}</b>\n\n"
         f"🏠 Приватка: <b>{_reg_priv_label}</b>\n"
         f"🏷 Лига: {format_league(lobby.get('league','default'))} | 📱 {lobby.get('device','').upper()}\n\n"
         f"💙 <b>CT</b>\n{ct_list}\n\n🧡 <b>T</b>\n{t_list}\n\n"
         f"━━━━━━━━━━━━━━━━\n\n"
-        f"<b>Шаг 1/3</b> — Введи счёт матча:\n"
-        f"Формат: <code>13:11</code>"
+        f"Выбери способ регистрации:"
     )
     match_registration[uid] = {
         "match_key": match_key,
-        "step": "ACore",
+        "step": "choose_method",
         "reply_chat_id": reply_chat_id,
         "reply_thread_id": reply_thread_id,
+        "ct_list_raw": ct_list,
+        "t_list_raw":  t_list,
     }
+    choice_kb = types.InlineKeyboardMarkup(row_width=1)
+    choice_kb.add(
+        types.InlineKeyboardButton("🤖 По скрину (AI)", callback_data=f"reg_ai_photo|{match_key}"),
+        types.InlineKeyboardButton("📝 Вручную",         callback_data=f"reg_manual|{match_key}"),
+    )
+    send_kw = {"parse_mode": "HTML", "reply_markup": choice_kb}
+    if reply_thread_id:
+        send_kw["message_thread_id"] = reply_thread_id
+    bot.send_message(reply_chat_id, match_info, **send_kw)
+
+
+@bot.callback_query_handler(func=lambda c: c.data.startswith("reg_manual|"))
+def cb_reg_manual(c):
+    """Ручная регистрация — запускает стандартный Шаг 1/3."""
+    uid = c.from_user.id
+    if not is_game_reg_check(uid):
+        bot.answer_callback_query(c.id, "❌ Нет доступа")
+        return
+    match_key = c.data.split("|", 1)[1]
+    data = match_registration.get(uid, {})
+    if data.get("match_key") != match_key:
+        bot.answer_callback_query(c.id, "❌ Нет активной регистрации")
+        return
+    data["step"] = "ACore"
+    match_registration[uid] = data
+    bot.answer_callback_query(c.id)
+    try:
+        bot.edit_message_reply_markup(c.message.chat.id, c.message.message_id, reply_markup=None)
+    except Exception:
+        pass
+    reply_chat_id   = data.get("reply_chat_id", uid)
+    reply_thread_id = data.get("reply_thread_id")
     send_kw = {"parse_mode": "HTML"}
     if reply_thread_id:
         send_kw["message_thread_id"] = reply_thread_id
-    bot.send_message(reply_chat_id, instructions, **send_kw)
+    bot.send_message(
+        reply_chat_id,
+        "<b>Шаг 1/3</b> — Введи счёт матча:\nФормат: <code>13:11</code>",
+        **send_kw,
+    )
+
+
+@bot.callback_query_handler(func=lambda c: c.data.startswith("reg_ai_photo|"))
+def cb_reg_ai_photo(c):
+    """Начало AI-регистрации — просим прислать скрин в ЛС."""
+    uid = c.from_user.id
+    if not is_game_reg_check(uid):
+        bot.answer_callback_query(c.id, "❌ Нет доступа")
+        return
+    if not OPENAI_API_KEY:
+        bot.answer_callback_query(c.id, "❌ OPENAI_API_KEY не задан — используй ручной режим", show_alert=True)
+        return
+    match_key = c.data.split("|", 1)[1]
+    data = match_registration.get(uid, {})
+    if data.get("match_key") != match_key:
+        bot.answer_callback_query(c.id, "❌ Нет активной регистрации")
+        return
+    bot.answer_callback_query(c.id)
+    try:
+        bot.edit_message_reply_markup(c.message.chat.id, c.message.message_id, reply_markup=None)
+    except Exception:
+        pass
+    ai_reg_pending[uid] = {
+        "match_key":      match_key,
+        "step":           "awaiting_photo",
+        "reply_chat_id":  data.get("reply_chat_id", uid),
+        "reply_thread_id": data.get("reply_thread_id"),
+    }
+    try:
+        bot.send_message(
+            uid,
+            "📸 <b>AI-регистрация</b>\n\n"
+            "Отправь скрин финальной статистики матча <b>в этот чат</b> (ЛС с ботом).\n"
+            "Нейросеть сама определит победителя, счёт и K/D/A каждого игрока.",
+            parse_mode="HTML",
+        )
+    except Exception:
+        pass
+
+
+@bot.message_handler(
+    func=lambda m: m.from_user.id in ai_reg_pending
+                   and ai_reg_pending[m.from_user.id].get("step") == "awaiting_photo"
+                   and m.chat.type == "private",
+    content_types=["photo"],
+)
+def handle_ai_reg_photo(msg):
+    """Получаем скрин, анализируем через GPT-4o, показываем превью."""
+    uid = msg.from_user.id
+    pending = ai_reg_pending.get(uid, {})
+    match_key = pending.get("match_key")
+    lobby = running_matches.get(match_key)
+
+    if not lobby or lobby.get("status") != "active":
+        bot.send_message(uid, "❌ Матч не найден или уже завершён.", parse_mode="HTML")
+        ai_reg_pending.pop(uid, None)
+        return
+
+    # Скачиваем фото в память
+    try:
+        file_id = msg.photo[-1].file_id
+        file_info = bot.get_file(file_id)
+        image_bytes = bot.download_file(file_info.file_path)
+    except Exception as _e:
+        bot.send_message(uid, f"❌ Не удалось скачать фото: {_e}")
+        return
+
+    bot.send_message(uid, "⏳ Анализирую скрин через нейросеть...", parse_mode="HTML")
+
+    # Вызываем GPT-4o Vision в отдельном потоке чтобы не блокировать поллинг
+    def _analyze():
+        try:
+            ai_result = _call_openai_vision(image_bytes)
+        except Exception as _e:
+            bot.send_message(uid, f"❌ Ошибка AI: {_e}\n\nПопробуй ещё раз или используй ручной режим.")
+            return
+
+        # Собираем всех игроков матча для fuzzy-match
+        ct_uids = lobby.get("team_ct", [])
+        t_uids  = lobby.get("team_t",  [])
+        all_uids = ct_uids + t_uids
+        all_players = []
+        for _u in all_uids:
+            p = get_player(_u)
+            if p:
+                all_players.append(p)
+
+        # Матчим ники
+        mapped = {}   # ник_со_скрина -> uid
+        for pl in ai_result.get("ct_players", []) + ai_result.get("t_players", []):
+            name = pl.get("name", "")
+            if name:
+                uid_found = _fuzzy_match_nick(name, all_players)
+                mapped[name] = uid_found
+
+        # Проверяем, нашли ли хоть кого-то
+        found_any = any(v is not None for v in mapped.values())
+        if not found_any:
+            # Идём к администрации
+            reply_chat_id   = pending.get("reply_chat_id", uid)
+            reply_thread_id = pending.get("reply_thread_id")
+            send_kw = {"parse_mode": "HTML"}
+            if reply_thread_id:
+                send_kw["message_thread_id"] = reply_thread_id
+            match_code = lobby.get("match_code", match_key)
+            bot.send_message(
+                reply_chat_id,
+                f"⚠️ <b>AI не смог определить ники игроков</b> для матча #{match_code}.\n"
+                f"Пожалуйста, зарегистрируйте матч вручную.",
+                **send_kw,
+            )
+            bot.send_message(uid, "⚠️ AI не распознал ни одного ника. Используй ручную регистрацию.")
+            ai_reg_pending.pop(uid, None)
+            return
+
+        # Сохраняем для последующего Accept/Redo
+        ai_reg_pending[uid]["step"]       = "review"
+        ai_reg_pending[uid]["ai_result"]  = ai_result
+        ai_reg_pending[uid]["mapped"]     = mapped
+        ai_reg_pending[uid]["image_bytes"] = image_bytes
+
+        preview = _format_ai_preview(lobby, ai_result, mapped)
+        kb = types.InlineKeyboardMarkup(row_width=1)
+        kb.add(
+            types.InlineKeyboardButton("✅ Принять и зарегистрировать", callback_data=f"ai_reg_accept|{match_key}"),
+            types.InlineKeyboardButton("🔄 Перегнать (AI ещё раз)",     callback_data=f"ai_reg_redo|{match_key}"),
+            types.InlineKeyboardButton("📝 Зарегистрировать вручную",   callback_data=f"ai_reg_manual|{match_key}"),
+        )
+        # Отправляем превью в ветку матча (или ЛС если нет ветки)
+        reply_chat_id   = pending.get("reply_chat_id", uid)
+        reply_thread_id = pending.get("reply_thread_id")
+        send_kw = {"parse_mode": "HTML", "reply_markup": kb}
+        if reply_thread_id:
+            send_kw["message_thread_id"] = reply_thread_id
+        bot.send_message(reply_chat_id, preview, **send_kw)
+
+    threading.Thread(target=_analyze, daemon=True).start()
+
+
+@bot.callback_query_handler(func=lambda c: c.data.startswith("ai_reg_accept|"))
+def cb_ai_reg_accept(c):
+    """Админ принял AI-результат — финализируем матч."""
+    uid = c.from_user.id
+    if not is_game_reg_check(uid):
+        bot.answer_callback_query(c.id, "❌ Нет доступа")
+        return
+    match_key = c.data.split("|", 1)[1]
+    pending = ai_reg_pending.pop(uid, {})
+    if pending.get("match_key") != match_key:
+        bot.answer_callback_query(c.id, "❌ Данные не найдены")
+        return
+
+    ai_result = pending.get("ai_result", {})
+    lobby = running_matches.get(match_key)
+    if not lobby:
+        bot.answer_callback_query(c.id, "❌ Матч не найден")
+        return
+
+    winner   = ai_result.get("winner", "ct")
+    score_ct = ai_result.get("score_ct", 0)
+    score_t  = ai_result.get("score_t",  0)
+    ACore_w  = score_ct if winner == "ct" else score_t
+    ACore_l  = score_t  if winner == "ct" else score_ct
+    mapped   = pending.get("mapped", {})
+
+    # Строим kills_data: uid -> {kills, deaths, assists}
+    kills_data = {}
+    ct_uids = lobby.get("team_ct", [])
+    t_uids  = lobby.get("team_t",  [])
+
+    for team_key, players_list in (("ct", ai_result.get("ct_players", [])),
+                                   ("t",  ai_result.get("t_players",  []))):
+        team_uids = ct_uids if team_key == "ct" else t_uids
+        for pl in players_list:
+            name = pl.get("name", "")
+            p_uid = mapped.get(name)
+            if p_uid and p_uid in (ct_uids + t_uids):
+                kills_data[p_uid] = {
+                    "kills":   pl.get("kills",   0),
+                    "deaths":  pl.get("deaths",  0),
+                    "assists": pl.get("assists",  0),
+                }
+
+    # Для игроков которых не нашли — ставим 0/10/0 (default miss)
+    for p_uid in ct_uids + t_uids:
+        if not is_bot_player(p_uid) and p_uid not in kills_data:
+            kills_data[p_uid] = {"kills": 0, "deaths": 10, "assists": 0}
+
+    # Инжектируем в match_registration и финализируем
+    reply_chat_id   = pending.get("reply_chat_id", uid)
+    reply_thread_id = pending.get("reply_thread_id")
+    match_registration[uid] = {
+        "match_key":      match_key,
+        "step":           "done",
+        "reply_chat_id":  reply_chat_id,
+        "reply_thread_id": reply_thread_id,
+        "winner":         winner,
+        "ACore_w":        ACore_w,
+        "ACore_l":        ACore_l,
+        "kills_data":     kills_data,
+        "ct_players":     [u for u in ct_uids if not is_bot_player(u)],
+        "t_players":      [u for u in t_uids  if not is_bot_player(u)],
+    }
+    bot.answer_callback_query(c.id, "✅ Регистрируем матч...")
+    try:
+        bot.edit_message_reply_markup(c.message.chat.id, c.message.message_id, reply_markup=None)
+    except Exception:
+        pass
+    try:
+        _finalize_match(uid, match_key)
+    except Exception as _e:
+        bot.send_message(uid, f"❌ Ошибка при регистрации: {_e}")
+
+
+@bot.callback_query_handler(func=lambda c: c.data.startswith("ai_reg_redo|"))
+def cb_ai_reg_redo(c):
+    """Перегнать: просим прислать скрин ещё раз."""
+    uid = c.from_user.id
+    if not is_game_reg_check(uid):
+        bot.answer_callback_query(c.id, "❌ Нет доступа")
+        return
+    match_key = c.data.split("|", 1)[1]
+    pending = ai_reg_pending.get(uid, {})
+    if pending.get("match_key") != match_key:
+        bot.answer_callback_query(c.id, "❌ Данные не найдены")
+        return
+
+    # Если есть сохранённый скрин — анализируем его снова
+    image_bytes = pending.get("image_bytes")
+    if image_bytes:
+        ai_reg_pending[uid]["step"] = "awaiting_photo"
+        bot.answer_callback_query(c.id, "🔄 Повторный анализ...")
+        try:
+            bot.edit_message_reply_markup(c.message.chat.id, c.message.message_id, reply_markup=None)
+        except Exception:
+            pass
+        # Создаём фейковый message для повторного анализа — просто запускаем поток
+        lobby = running_matches.get(match_key)
+        def _redo():
+            try:
+                ai_result = _call_openai_vision(image_bytes)
+            except Exception as _e:
+                bot.send_message(uid, f"❌ Ошибка AI: {_e}")
+                return
+            ct_uids = lobby.get("team_ct", []) if lobby else []
+            t_uids  = lobby.get("team_t",  []) if lobby else []
+            all_players = [p for u in ct_uids + t_uids for p in [get_player(u)] if p]
+            mapped = {}
+            for pl in ai_result.get("ct_players", []) + ai_result.get("t_players", []):
+                name = pl.get("name", "")
+                if name:
+                    mapped[name] = _fuzzy_match_nick(name, all_players)
+            ai_reg_pending[uid]["step"]       = "review"
+            ai_reg_pending[uid]["ai_result"]  = ai_result
+            ai_reg_pending[uid]["mapped"]     = mapped
+            preview = _format_ai_preview(lobby, ai_result, mapped)
+            kb = types.InlineKeyboardMarkup(row_width=1)
+            kb.add(
+                types.InlineKeyboardButton("✅ Принять и зарегистрировать", callback_data=f"ai_reg_accept|{match_key}"),
+                types.InlineKeyboardButton("🔄 Перегнать (AI ещё раз)",     callback_data=f"ai_reg_redo|{match_key}"),
+                types.InlineKeyboardButton("📝 Зарегистрировать вручную",   callback_data=f"ai_reg_manual|{match_key}"),
+            )
+            reply_chat_id   = pending.get("reply_chat_id", uid)
+            reply_thread_id = pending.get("reply_thread_id")
+            send_kw = {"parse_mode": "HTML", "reply_markup": kb}
+            if reply_thread_id:
+                send_kw["message_thread_id"] = reply_thread_id
+            bot.send_message(reply_chat_id, preview, **send_kw)
+        threading.Thread(target=_redo, daemon=True).start()
+    else:
+        # Нет скрина — просим прислать заново
+        ai_reg_pending[uid]["step"] = "awaiting_photo"
+        bot.answer_callback_query(c.id)
+        try:
+            bot.edit_message_reply_markup(c.message.chat.id, c.message.message_id, reply_markup=None)
+        except Exception:
+            pass
+        bot.send_message(uid, "📸 Отправь скрин статистики матча в ЛС с ботом.", parse_mode="HTML")
+
+
+@bot.callback_query_handler(func=lambda c: c.data.startswith("ai_reg_manual|"))
+def cb_ai_reg_manual(c):
+    """Из AI-режима перешли в ручной — восстанавливаем match_registration."""
+    uid = c.from_user.id
+    if not is_game_reg_check(uid):
+        bot.answer_callback_query(c.id, "❌ Нет доступа")
+        return
+    match_key = c.data.split("|", 1)[1]
+    pending = ai_reg_pending.pop(uid, {})
+    if pending.get("match_key") != match_key:
+        bot.answer_callback_query(c.id, "❌ Данные не найдены")
+        return
+    reply_chat_id   = pending.get("reply_chat_id", uid)
+    reply_thread_id = pending.get("reply_thread_id")
+    match_registration[uid] = {
+        "match_key":      match_key,
+        "step":           "ACore",
+        "reply_chat_id":  reply_chat_id,
+        "reply_thread_id": reply_thread_id,
+    }
+    bot.answer_callback_query(c.id)
+    try:
+        bot.edit_message_reply_markup(c.message.chat.id, c.message.message_id, reply_markup=None)
+    except Exception:
+        pass
+    send_kw = {"parse_mode": "HTML"}
+    if reply_thread_id:
+        send_kw["message_thread_id"] = reply_thread_id
+    bot.send_message(
+        reply_chat_id,
+        "<b>Шаг 1/3</b> — Введи счёт матча:\nФормат: <code>13:11</code>",
+        **send_kw,
+    )
 
 
 @bot.callback_query_handler(func=lambda c: c.data.startswith("reg_release|"))
