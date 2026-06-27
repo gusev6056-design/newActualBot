@@ -2664,16 +2664,20 @@ def main_menu(uid):
             types.InlineKeyboardButton("👤 Профиль", callback_data="profile"),
             types.InlineKeyboardButton("🎮 Найти матч", callback_data="find"),
         )
-    kb.add(
+    _menu_btns = [
         types.InlineKeyboardButton("🏆 Топ", callback_data="top"),
-        types.InlineKeyboardButton("🏅 О сезоне", callback_data="season_info"),
+    ]
+    if get_user_private(uid) == "fade":
+        _menu_btns.append(types.InlineKeyboardButton("🏅 О сезоне", callback_data="season_info"))
+    _menu_btns += [
         types.InlineKeyboardButton("🛒 Магазин", callback_data="shop"),
         types.InlineKeyboardButton("🎒 Инвентарь", callback_data="inv"),
         types.InlineKeyboardButton("💳 Купить монеты", callback_data="buy_coins"),
         types.InlineKeyboardButton("🎰 Слоты", callback_data="slots_menu"),
         types.InlineKeyboardButton("🎁 Промокод", callback_data="promo"),
         types.InlineKeyboardButton("🎟 Тикет / Жалоба", callback_data="ticket_start"),
-    )
+    ]
+    kb.add(*_menu_btns)
     in_party = uid in user_party
     kb.add(types.InlineKeyboardButton(
         "👥 Моя пати" if in_party else "➕ Создать пати", callback_data="party_menu"
@@ -3214,11 +3218,6 @@ def cb_switch_private(c):
     if uid in user_lobby:
         bot.answer_callback_query(c.id, "❌ Нельзя сменить приватку находясь в лобби", show_alert=True)
         return
-    # Копия словаря чтобы не крашиться при изменении из другого потока
-    for mk, lobby in list(running_matches.items()):
-        if uid in lobby.get("players", []):
-            bot.answer_callback_query(c.id, "❌ Нельзя сменить приватку во время матча", show_alert=True)
-            return
     old_key = get_user_private(uid)
     if old_key == target_key:
         bot.answer_callback_query(c.id, "ℹ️ Вы уже в этой приватке", show_alert=True)
