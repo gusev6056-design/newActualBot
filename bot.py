@@ -3206,15 +3206,16 @@ def cb_rejoin_lobby(c):
 @bot.callback_query_handler(func=lambda c: c.data.startswith("switch_private_"))
 def cb_switch_private(c):
     uid = c.from_user.id
-    bot.answer_callback_query(c.id)
     target_key = c.data.replace("switch_private_", "")
+
     if target_key not in PRIVATE_CONFIG:
         bot.answer_callback_query(c.id, "❌ Неизвестная приватка", show_alert=True)
         return
     if uid in user_lobby:
         bot.answer_callback_query(c.id, "❌ Нельзя сменить приватку находясь в лобби", show_alert=True)
         return
-    for mk, lobby in running_matches.items():
+    # Копия словаря чтобы не крашиться при изменении из другого потока
+    for mk, lobby in list(running_matches.items()):
         if uid in lobby.get("players", []):
             bot.answer_callback_query(c.id, "❌ Нельзя сменить приватку во время матча", show_alert=True)
             return
@@ -3222,10 +3223,14 @@ def cb_switch_private(c):
     if old_key == target_key:
         bot.answer_callback_query(c.id, "ℹ️ Вы уже в этой приватке", show_alert=True)
         return
+
+    bot.answer_callback_query(c.id)  # отвечаем только один раз, после всех проверок
+
     user_private[uid] = target_key
     save_user_private(uid, target_key)
     cfg = PRIVATE_CONFIG[target_key]
     priv_display = f"{cfg['emoji']} {cfg['display']}"
+
     # Если пользователь не зарегистрирован в новой приватке — предлагаем зарегистрироваться
     p = get_current_player(uid)
     if not p or not p[12]:
@@ -6538,7 +6543,7 @@ def cb_reg_release(c):
 
 @bot.callback_query_handler(func=lambda c: c.data.startswith("reg_abandon|"))
 def cb_reg_abandon(c):
-    """Регистратор нажал «Освободить» — показываем подтверждение."""
+    """Регистратор нажал «Освободить» — показываем подтверждение в чате регистрации."""
     uid = c.from_user.id
     if not is_game_reg_check(uid):
         bot.answer_callback_query(c.id, "❌ Нет доступа")
@@ -6559,18 +6564,31 @@ def cb_reg_abandon(c):
         types.InlineKeyboardButton("✅ Да, освободить регистрацию", callback_data=f"reg_abandon_confirm|{match_key}"),
         types.InlineKeyboardButton("❌ Нет, продолжаю регистрацию", callback_data="match_noop"),
     )
+    # Отправляем подтверждение в чат регистрации (группа/ветка), а не в личку
+    data = match_registration.get(uid, {})
+    reply_chat_id   = data.get("reply_chat_id")
+    reply_thread_id = data.get("reply_thread_id")
+    # Фолбэк: если match_registration не заполнен — берём ветку из лобби
+    if not reply_chat_id:
+        if lobby.get("admin_thread_id") and ADMIN_CHAT_ID:
+            reply_chat_id   = ADMIN_CHAT_ID
+            reply_thread_id = lobby.get("admin_thread_id")
+        else:
+            reply_chat_id   = uid   # крайний фолбэк — лс
+            reply_thread_id = None
+    send_kw = {"parse_mode": "HTML", "reply_markup": kb_confirm}
+    if reply_thread_id:
+        send_kw["message_thread_id"] = reply_thread_id
     try:
         bot.send_message(
-            uid,
+            reply_chat_id,
             f"⚠️ <b>Отмена регистрации матча #{match_code}</b>\n\n"
             f"Ты уверен что хочешь освободить регистрацию?\n"
             f"Матч будет доступен другим game reg.",
-            reply_markup=kb_confirm,
-            parse_mode="HTML",
+            **send_kw,
         )
     except Exception:
         pass
-    return
 
 
 @bot.callback_query_handler(func=lambda c: c.data.startswith("reg_abandon_confirm|"))
@@ -6589,37 +6607,36 @@ def cb_reg_abandon_confirm(c):
     if taken and taken != uid:
         bot.answer_callback_query(c.id, "❌ Только тот, кто взял регистрацию, может её освободить", show_alert=True)
         return
-    # Убираем кнопки подтверждения
+    bot.answer_callback_query(c.id, "🚫 Вы отказались от регистрации")
+    # Убираем кнопки подтверждения из сообщения в чате
     try:
         bot.edit_message_reply_markup(c.message.chat.id, c.message.message_id, reply_markup=None)
     except Exception:
         pass
     lobby["reg_taken_by"] = None
-    # Очищаем match_registration для регистратора этого матча (а не только для себя)
+    # Очищаем match_registration для регистратора этого матча
     for _adm in list(match_registration.keys()):
         if match_registration[_adm].get("match_key") == match_key:
             match_registration.pop(_adm, None)
     match_id   = lobby.get("match_id", "?")
     match_code = lobby.get("match_code", str(match_id))
     AC = lobby.get("ACreenshots_count", 0)
-    try:
-        new_kb = _build_admin_match_kb(match_key, match_code, AC, taken_by=None)
-        thread_id = lobby.get("admin_thread_id")
-        edit_kw = {"reply_markup": new_kb}
-        if thread_id:
-            edit_kw["message_thread_id"] = thread_id
-        bot.edit_message_reply_markup(c.message.chat.id, c.message.message_id, **edit_kw)
-    except Exception:
-        pass
-    bot.answer_callback_query(c.id, "🚫 Вы отказались от регистрации")
+    # Обновляем клавиатуру в ADMIN-панели (не в сообщении подтверждения)
+    admin_msg_id   = lobby.get("admin_msg_id")
+    admin_thread_id = lobby.get("admin_thread_id")
+    if admin_msg_id and ADMIN_CHAT_ID:
+        try:
+            new_kb = _build_admin_match_kb(match_key, match_code, AC, taken_by=None)
+            bot.edit_message_reply_markup(ADMIN_CHAT_ID, admin_msg_id, reply_markup=new_kb)
+        except Exception:
+            pass
     # Уведомление в ветку
     admin_p = get_player(uid)
     admin_name = admin_p[1] if admin_p else str(uid)
-    thread_id = lobby.get("admin_thread_id")
     try:
         kw_notify = {"parse_mode": "HTML"}
-        if thread_id:
-            kw_notify["message_thread_id"] = thread_id
+        if admin_thread_id:
+            kw_notify["message_thread_id"] = admin_thread_id
         bot.send_message(
             ADMIN_CHAT_ID,
             f"🚫 Администратор <b>{admin_name}</b> отказался от регистрации матча #{match_code}",
@@ -7103,7 +7120,9 @@ def handle_cancel_reason(msg):
             pass
     _cleanup_match_messages(lobby)
     lobby["status"] = "cancelled"
-    running_matches.pop(match_key, None)
+    lobby["cancel_reason"] = reason
+    # НЕ удаляем из running_matches — оставляем чтобы кнопка «Перерегать» работала
+    # Матч с status='cancelled' не восстанавливается после рестарта (restore_active_matches пропускает его)
     # Сохраняем отменённый матч в БД
     try:
         save_match_cancelled(lobby, reason)
@@ -7138,7 +7157,9 @@ def handle_cancel_reason(msg):
     # Отправляем отменённый матч в чат проверки (настраивается через /setmatchreg)
     if _dynamic_match_reg_chat_id:
         try:
-            _kw_cancel = {"parse_mode": "HTML"}
+            _kb_cancel = types.InlineKeyboardMarkup()
+            _kb_cancel.add(types.InlineKeyboardButton("🔄 Перерегать", callback_data=f"reregister_match|{match_key}"))
+            _kw_cancel = {"parse_mode": "HTML", "reply_markup": _kb_cancel}
             if _dynamic_match_reg_thread_id:
                 _kw_cancel["message_thread_id"] = _dynamic_match_reg_thread_id
             bot.send_message(
@@ -7164,14 +7185,16 @@ def cb_reregister_match(c):
     if not lobby:
         bot.answer_callback_query(c.id, "❌ Матч не найден")
         return
+    was_cancelled = lobby.get("status") == "cancelled"
     lobby["reg_taken_by"] = None
     match_registration.pop(uid, None)
-    # Откатываем ранее начисленную статистику (ELO, wins/losses, kills, coins, MVP)
-    rollback_match_stats(lobby)
+    # Откатываем статистику только если матч был зарегистрирован (не при отмене)
+    if not was_cancelled:
+        rollback_match_stats(lobby)
     lobby["status"] = "active"
     match_id   = lobby.get("match_id", "?")
     match_code = lobby.get("match_code", str(match_id))
-    # Сбрасываем статус в БД чтобы после рестарта бота матч восстановился корректно
+    # Сбрасываем статус в БД
     try:
         _rconn = _db()
         _rcur  = _rconn.cursor()
@@ -7180,7 +7203,11 @@ def cb_reregister_match(c):
         _rconn.close()
     except Exception as _re:
         print(f"[reregister status reset] {_re}")
-    bot.answer_callback_query(c.id, "🔄 Регистрация сброшена, статистика откатана")
+
+    if was_cancelled:
+        bot.answer_callback_query(c.id, "🔄 Матч возвращён в очередь регистрации")
+    else:
+        bot.answer_callback_query(c.id, "🔄 Регистрация сброшена, статистика откатана")
 
     # Переоткрываем тему если была закрыта
     thread_id = lobby.get("admin_thread_id")
@@ -7194,6 +7221,18 @@ def cb_reregister_match(c):
             new_kb = _build_admin_match_kb(match_key, match_code, AC, taken_by=None)
             kw = {"parse_mode": "HTML", "reply_markup": new_kb, "message_thread_id": thread_id}
             bot.send_message(ADMIN_CHAT_ID, f"🔄 Матч #{match_code} отправлен на перерегистрацию.", **kw)
+        except Exception:
+            pass
+    elif ADMIN_CHAT_ID:
+        # Нет форумной ветки — шлём в общий чат
+        try:
+            AC = lobby.get("ACreenshots_count", 0)
+            new_kb = _build_admin_match_kb(match_key, match_code, AC, taken_by=None)
+            bot.send_message(
+                ADMIN_CHAT_ID,
+                f"🔄 Матч #{match_code} отправлен на перерегистрацию.",
+                parse_mode="HTML", reply_markup=new_kb,
+            )
         except Exception:
             pass
 
