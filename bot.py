@@ -1240,11 +1240,11 @@ def has_quals_access(uid):
     return bool(row and row[0] and row[0] > int(time.time()))
 
 def has_active_premium(uid):
-    """Возвращает True, если у игрока действует Premium (premium_until > now)."""
+    """Возвращает True, если у игрока действует Premium (premium_until > now).
+    Premium глобальный — всегда читается из таблицы players."""
     conn = _db()
     cur = conn.cursor()
-    table = get_user_table(uid)
-    cur.execute(f"SELECT premium_until FROM {table} WHERE user_id=%s", (uid,))
+    cur.execute("SELECT premium_until FROM players WHERE user_id=%s", (uid,))
     row = cur.fetchone()
     conn.close()
     return bool(row and row[0] and row[0] > int(time.time()))
@@ -2215,20 +2215,22 @@ def _apply_single_reward(cur, table, uid, reward: dict, now: int) -> str:
         cur.execute(f"UPDATE {table} SET coins=coins+%s WHERE user_id=%s", (v, uid))
         return f"💰 <b>{v} AC</b>"
     elif t == "premium":
+        # Premium глобальный — всегда players
         days = reward.get("days", 30)
-        cur.execute(f"SELECT premium_until FROM {table} WHERE user_id=%s", (uid,))
+        cur.execute("SELECT premium_until FROM players WHERE user_id=%s", (uid,))
         prow = cur.fetchone()
         base = max((prow[0] or 0), now) if prow else now
         new_until = base + days * 24 * 3600
-        cur.execute(f"UPDATE {table} SET premium_until=%s WHERE user_id=%s", (new_until, uid))
+        cur.execute("UPDATE players SET premium_until=%s WHERE user_id=%s", (new_until, uid))
         return f"👑 <b>Premium {days} дн.</b> (до {fmt_dt(new_until)})"
     elif t == "quals":
+        # Quals глобальный — всегда players
         days = reward.get("days", 30)
-        cur.execute(f"SELECT quals_until FROM {table} WHERE user_id=%s", (uid,))
+        cur.execute("SELECT quals_until FROM players WHERE user_id=%s", (uid,))
         qrow = cur.fetchone()
         base = max((qrow[0] or 0), now) if qrow else now
         new_until = base + days * 24 * 3600
-        cur.execute(f"UPDATE {table} SET quals_until=%s, quals_access=1 WHERE user_id=%s", (new_until, uid))
+        cur.execute("UPDATE players SET quals_until=%s, quals_access=1 WHERE user_id=%s", (new_until, uid))
         return f"⭐ <b>Quals {days} дн.</b> (до {fmt_dt(new_until)})"
     return ""
 
@@ -2376,29 +2378,29 @@ def buy_item(uid, item_id):
         return False, f"❌ Недостаточно SareCoin!\nНужно: {price} AC\nУ вас: {p[5]} AC"
     stackable = {"sticker", "unwarn", "x2coins", "rename"}
     # premium и quals обрабатываются напрямую (без инвентаря)
+    # Монеты всегда списываются из players (глобальные), premium/quals тоже глобальные
     if item_type in ("premium", "quals"):
         conn = _db()
         cur = conn.cursor()
-        table = get_user_table(uid)
-        cur.execute(f"UPDATE {table} SET coins=coins-%s WHERE user_id=%s", (price, uid))
+        cur.execute("UPDATE players SET coins=coins-%s WHERE user_id=%s", (price, uid))
         now = int(time.time())
         days30 = 30 * 24 * 3600
         if item_type == "premium":
-            # Продлеваем, если уже есть активный
-            cur.execute(f"SELECT premium_until FROM {table} WHERE user_id=%s", (uid,))
+            # Продлеваем от текущего остатка если премиум ещё активен
+            cur.execute("SELECT premium_until FROM players WHERE user_id=%s", (uid,))
             row = cur.fetchone()
             base = max(row[0] or 0, now)
             new_until = base + days30
-            cur.execute(f"UPDATE {table} SET premium_until=%s WHERE user_id=%s", (new_until, uid))
+            cur.execute("UPDATE players SET premium_until=%s WHERE user_id=%s", (new_until, uid))
             dt = fmt_dt(new_until)
             conn.commit(); conn.close()
             return True, f"👑 <b>Premium активирован на 30 дней!</b>\nДействует до: {dt}"
         else:  # quals
-            cur.execute(f"SELECT quals_until FROM {table} WHERE user_id=%s", (uid,))
+            cur.execute("SELECT quals_until FROM players WHERE user_id=%s", (uid,))
             row = cur.fetchone()
             base = max(row[0] or 0, now)
             new_until = base + days30
-            cur.execute(f"UPDATE {table} SET quals_until=%s, quals_access=1 WHERE user_id=%s", (new_until, uid))
+            cur.execute("UPDATE players SET quals_until=%s, quals_access=1 WHERE user_id=%s", (new_until, uid))
             dt = fmt_dt(new_until)
             conn.commit(); conn.close()
             return True, f"⭐ <b>Quals доступ выдан на 30 дней!</b>\nДействует до: {dt}"
@@ -2440,21 +2442,21 @@ def activate_inventory_item(inv_id, uid, item_type, item_name):
         conn.close()
         return "rename", "✏️ Введите новый никнейм (2-20 символов):"
     elif item_type == "premium":
-        table = get_user_table(uid)
+        # Premium глобальный — всегда players
         now = int(time.time())
-        cur.execute(f"SELECT premium_until FROM {table} WHERE user_id=%s", (uid,))
+        cur.execute("SELECT premium_until FROM players WHERE user_id=%s", (uid,))
         row = cur.fetchone()
         base = max(row[0] or 0, now)
         new_until = base + 30 * 24 * 3600
-        cur.execute(f"UPDATE {table} SET premium_until=%s WHERE user_id=%s", (new_until, uid))
+        cur.execute("UPDATE players SET premium_until=%s WHERE user_id=%s", (new_until, uid))
     elif item_type == "quals":
-        table = get_user_table(uid)
+        # Quals глобальный — всегда players
         now = int(time.time())
-        cur.execute(f"SELECT quals_until FROM {table} WHERE user_id=%s", (uid,))
+        cur.execute("SELECT quals_until FROM players WHERE user_id=%s", (uid,))
         row = cur.fetchone()
         base = max(row[0] or 0, now)
         new_until = base + 30 * 24 * 3600
-        cur.execute(f"UPDATE {table} SET quals_until=%s, quals_access=1 WHERE user_id=%s", (new_until, uid))
+        cur.execute("UPDATE players SET quals_until=%s, quals_access=1 WHERE user_id=%s", (new_until, uid))
     elif item_type == "frame":
         cur.execute(
             """UPDATE inventory SET is_activated=0
@@ -9926,57 +9928,50 @@ def auto_unban_loop():
                     f"📅 Срок мута истёк."
                 )
 
-            # --- Авто-снятие Premium и Quals по всем приваткам ---
+            # --- Авто-снятие Premium и Quals ---
+            # Premium и Quals глобальные — хранятся только в таблице players
             total_expired_premiums = 0
             total_expired_quals    = 0
-            all_priv_tables = list({cfg["table"] for cfg in PRIVATE_CONFIG.values()})
-            for priv_table in all_priv_tables:
-                try:
-                    # Premium
-                    cur.execute(
-                        f"SELECT user_id, username FROM {priv_table} WHERE premium_until > 0 AND premium_until <= %s",
-                        (now,)
-                    )
-                    expired_premiums = cur.fetchall()
-                    for (puid, puname) in expired_premiums:
-                        cur.execute(
-                            f"UPDATE {priv_table} SET premium_until=0 WHERE user_id=%s",
-                            (puid,)
+            try:
+                # Premium
+                cur.execute(
+                    "SELECT user_id, username FROM players WHERE premium_until > 0 AND premium_until <= %s",
+                    (now,)
+                )
+                expired_premiums = cur.fetchall()
+                for (puid, puname) in expired_premiums:
+                    cur.execute("UPDATE players SET premium_until=0 WHERE user_id=%s", (puid,))
+                    conn.commit()
+                    total_expired_premiums += 1
+                    try:
+                        bot.send_message(
+                            puid,
+                            "👑 <b>Ваш Premium истёк.</b>\n\nВы можете продлить его в 🛒 Магазине.",
+                            parse_mode="HTML"
                         )
-                        conn.commit()
-                        total_expired_premiums += 1
-                        try:
-                            bot.send_message(
-                                puid,
-                                "👑 <b>Ваш Premium истёк.</b>\n\nВы можете продлить его в 🛒 Магазине.",
-                                parse_mode="HTML"
-                            )
-                        except Exception:
-                            pass
+                    except Exception:
+                        pass
 
-                    # Quals
-                    cur.execute(
-                        f"SELECT user_id, username FROM {priv_table} WHERE quals_until > 0 AND quals_until <= %s AND quals_access=1",
-                        (now,)
-                    )
-                    expired_quals = cur.fetchall()
-                    for (puid, puname) in expired_quals:
-                        cur.execute(
-                            f"UPDATE {priv_table} SET quals_until=0, quals_access=0 WHERE user_id=%s",
-                            (puid,)
+                # Quals
+                cur.execute(
+                    "SELECT user_id, username FROM players WHERE quals_until > 0 AND quals_until <= %s AND quals_access=1",
+                    (now,)
+                )
+                expired_quals = cur.fetchall()
+                for (puid, puname) in expired_quals:
+                    cur.execute("UPDATE players SET quals_until=0, quals_access=0 WHERE user_id=%s", (puid,))
+                    conn.commit()
+                    total_expired_quals += 1
+                    try:
+                        bot.send_message(
+                            puid,
+                            "⭐ <b>Ваш доступ к QUALS истёк.</b>\n\nВы можете продлить его в 🛒 Магазине.",
+                            parse_mode="HTML"
                         )
-                        conn.commit()
-                        total_expired_quals += 1
-                        try:
-                            bot.send_message(
-                                puid,
-                                "⭐ <b>Ваш доступ к QUALS истёк.</b>\n\nВы можете продлить его в 🛒 Магазине.",
-                                parse_mode="HTML"
-                            )
-                        except Exception:
-                            pass
-                except Exception as _tbl_err:
-                    print(f"[auto_unban] Ошибка таблицы {priv_table}: {_tbl_err}")
+                    except Exception:
+                        pass
+            except Exception as _tbl_err:
+                print(f"[auto_unban] Ошибка при снятии premium/quals: {_tbl_err}")
 
             conn.close()
 
