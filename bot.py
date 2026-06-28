@@ -22,6 +22,13 @@ def fmt_dt(ts: int) -> str:
     """Форматирует unix-timestamp в московское время."""
     return datetime.datetime.fromtimestamp(ts, tz=MSK).strftime("%H:%M %d.%m")
 
+def safe_answer(callback_id, text="", show_alert=False, **kwargs):
+    """answer_callback_query без краша если query устарела (>15 сек) или уже отвечена."""
+    try:
+        bot.answer_callback_query(callback_id, text, show_alert=show_alert, **kwargs)
+    except Exception:
+        pass
+
 # Очередь сообщений для авто-удаления: список (chat_id, msg_id, delete_at)
 _delete_queue: list = []
 _delete_lock = threading.Lock()
@@ -3137,13 +3144,9 @@ def cb_check_sub(c):
     not_subbed = check_subACriptions(uid)
     if not_subbed:
         names = " и ".join(ch["name"] for ch in not_subbed)
-        bot.answer_callback_query(
-            c.id,
-            f"❌ Вы не подписаны на: {names}. Подпишитесь и попробуйте снова.",
-            show_alert=True,
-        )
+        safe_answer(c.id, f"❌ Вы не подписаны на: {names}. Подпишитесь и попробуйте снова.", show_alert=True)
         return
-    bot.answer_callback_query(c.id, "✅ Подписка подтверждена!")
+    safe_answer(c.id, "✅ Подписка подтверждена!")
     try:
         bot.delete_message(c.message.chat.id, c.message.message_id)
     except Exception:
@@ -3178,7 +3181,7 @@ def cb_check_sub(c):
 @bot.callback_query_handler(func=lambda c: c.data == "back_main")
 def cb_back_main(c):
     uid = c.from_user.id
-    bot.answer_callback_query(c.id)
+    safe_answer(c.id)
     try:
         bot.edit_message_text(main_menu_text(uid), c.message.chat.id, c.message.message_id,
                               reply_markup=main_menu(uid), parse_mode="HTML")
@@ -3191,12 +3194,12 @@ def cb_rejoin_lobby(c):
     uid = c.from_user.id
     lobby_id = user_lobby.get(uid)
     if not lobby_id:
-        bot.answer_callback_query(c.id, "❌ Вы не в лобби")
+        safe_answer(c.id, "❌ Вы не в лобби")
         bot.edit_message_text(main_menu_text(uid), c.message.chat.id, c.message.message_id, reply_markup=main_menu(uid), parse_mode="HTML")
         return
     lobby = active_lobbies.get(lobby_id)
     if not lobby or lobby.get("status") != "waiting":
-        bot.answer_callback_query(c.id, "❌ Лобби недоступно")
+        safe_answer(c.id, "❌ Лобби недоступно")
         bot.edit_message_text(main_menu_text(uid), c.message.chat.id, c.message.message_id, reply_markup=main_menu(uid), parse_mode="HTML")
         return
     text = build_lobby_text(lobby_id)
@@ -3205,7 +3208,7 @@ def cb_rejoin_lobby(c):
     if lobby_player_messages.get(lobby_id) is None:
         lobby_player_messages[lobby_id] = {}
     lobby_player_messages[lobby_id][uid] = (c.message.chat.id, c.message.message_id)
-    bot.answer_callback_query(c.id)
+    safe_answer(c.id)
 
 
 # ==================== ПЕРЕКЛЮЧЕНИЕ ПРИВАТКИ ====================
@@ -3215,17 +3218,17 @@ def cb_switch_private(c):
     target_key = c.data.replace("switch_private_", "")
 
     if target_key not in PRIVATE_CONFIG:
-        bot.answer_callback_query(c.id, "❌ Неизвестная приватка", show_alert=True)
+        safe_answer(c.id, "❌ Неизвестная приватка", show_alert=True)
         return
     if uid in user_lobby:
-        bot.answer_callback_query(c.id, "❌ Нельзя сменить приватку находясь в лобби", show_alert=True)
+        safe_answer(c.id, "❌ Нельзя сменить приватку находясь в лобби", show_alert=True)
         return
     old_key = get_user_private(uid)
     if old_key == target_key:
-        bot.answer_callback_query(c.id, "ℹ️ Вы уже в этой приватке", show_alert=True)
+        safe_answer(c.id, "ℹ️ Вы уже в этой приватке", show_alert=True)
         return
 
-    bot.answer_callback_query(c.id)  # отвечаем только один раз, после всех проверок
+    safe_answer(c.id)  # отвечаем только один раз, после всех проверок
 
     user_private[uid] = target_key
     save_user_private(uid, target_key)
@@ -3268,13 +3271,13 @@ def cb_promo(c):
     uid = c.from_user.id
     err = check_blocked(uid)
     if err:
-        bot.answer_callback_query(c.id, "⚠️ Доступ ограничен", show_alert=True)
+        safe_answer(c.id, "⚠️ Доступ ограничен", show_alert=True)
         return
     if not is_registered(uid):
-        bot.answer_callback_query(c.id, "❌ Сначала зарегистрируйтесь /start")
+        safe_answer(c.id, "❌ Сначала зарегистрируйтесь /start")
         return
     promo_flow[uid] = True
-    bot.answer_callback_query(c.id)
+    safe_answer(c.id)
     kb = types.InlineKeyboardMarkup()
     kb.add(types.InlineKeyboardButton("❌ Отмена", callback_data="promo_cancel"))
     bot.send_message(uid, "🎁 Введите промокод:", reply_markup=kb)
@@ -3283,7 +3286,7 @@ def cb_promo(c):
 def cb_promo_cancel(c):
     uid = c.from_user.id
     promo_flow.pop(uid, None)
-    bot.answer_callback_query(c.id)
+    safe_answer(c.id)
     try:
         bot.delete_message(c.message.chat.id, c.message.message_id)
     except Exception:
@@ -3365,7 +3368,7 @@ def cb_change_own(c):
     uid = c.from_user.id
     field = "nick" if c.data == "change_nick" else "game_id"
     change_flow[uid] = {"field": field}
-    bot.answer_callback_query(c.id)
+    safe_answer(c.id)
     if field == "nick":
         bot.send_message(uid, "✏️ Введите новый никнейм (2-20 символов):")
     else:
@@ -3458,7 +3461,7 @@ def cb_profile(c):
     p = get_current_player(uid)
     if not p:
         bot.edit_message_text("❌ Ошибка", c.message.chat.id, c.message.message_id)
-        bot.answer_callback_query(c.id)
+        safe_answer(c.id)
         return
 
     games   = p[6] + p[7]
@@ -3554,7 +3557,7 @@ def cb_profile(c):
                 reply_markup = kb,
                 parse_mode = "HTML",
             )
-            bot.answer_callback_query(c.id)
+            safe_answer(c.id)
             return
         except Exception as e:
             send_error_log("card_profile (Default)", e)
@@ -3574,7 +3577,7 @@ def cb_profile(c):
         f"🔫 K: {p[8]} · 💀 D: {p[9]} · 🤝 A: {p[10]} · K/D: {kd}"
     )
     bot.edit_message_text(text, c.message.chat.id, c.message.message_id, reply_markup=kb)
-    bot.answer_callback_query(c.id)
+    safe_answer(c.id)
 
 
 # ==================== ПЕРЕВОД МОНЕТ ====================
@@ -3588,14 +3591,14 @@ def cb_transfer_coins_start(c):
     uid = c.from_user.id
     err = check_blocked(uid)
     if err:
-        bot.answer_callback_query(c.id, "⚠️ Доступ ограничен", show_alert=True)
+        safe_answer(c.id, "⚠️ Доступ ограничен", show_alert=True)
         return
     if not is_registered(uid):
-        bot.answer_callback_query(c.id, "❌ Сначала зарегистрируйтесь", show_alert=True)
+        safe_answer(c.id, "❌ Сначала зарегистрируйтесь", show_alert=True)
         return
     p = get_player(uid)
     coins = p[5] if p and len(p) > 5 else 0
-    bot.answer_callback_query(c.id)
+    safe_answer(c.id)
     _transfer_flow[uid] = {"step": "target"}
     sent = bot.send_message(
         uid,
@@ -3747,12 +3750,12 @@ def _transfer_step_amount(msg):
 def cb_profile_quals(c):
     uid = c.from_user.id
     if not has_quals_access(uid):
-        bot.answer_callback_query(c.id, "❌ Нет доступа к Quals лиге", show_alert=True)
+        safe_answer(c.id, "❌ Нет доступа к Quals лиге", show_alert=True)
         return
     _priv_table_q = get_user_table(uid)
     p = get_player_from_table(uid, _priv_table_q) or get_player(uid)
     if not p:
-        bot.answer_callback_query(c.id)
+        safe_answer(c.id)
         return
 
     qs = get_player_quals_stats(uid, _priv_table_q)
@@ -3824,7 +3827,7 @@ def cb_profile_quals(c):
             )
             bot.send_photo(c.message.chat.id, img_buf,
                            caption=caption, reply_markup=kb, parse_mode="HTML")
-            bot.answer_callback_query(c.id)
+            safe_answer(c.id)
             return
         except Exception as e:
             send_error_log("card_profile (Quals)", e)
@@ -3841,7 +3844,7 @@ def cb_profile_quals(c):
     )
     bot.edit_message_text(text, c.message.chat.id, c.message.message_id,
                           reply_markup=kb, parse_mode="HTML")
-    bot.answer_callback_query(c.id)
+    safe_answer(c.id)
 
 
 # ==================== ТОП (меню выбора) ====================
@@ -3865,7 +3868,7 @@ def cb_top(c):
             pass
         bot.send_message(c.message.chat.id, "🏆 <b>Выберите таблицу лидеров:</b>",
                          reply_markup=kb, parse_mode="HTML")
-    bot.answer_callback_query(c.id)
+    safe_answer(c.id)
 
 
 @bot.callback_query_handler(func=lambda c: c.data == "top_default")
@@ -3882,7 +3885,7 @@ def cb_top_default(c):
     if not players:
         bot.edit_message_text(f"🏆 <b>ТОП {priv_display}</b>\n\nИгроков нет.", c.message.chat.id,
                               c.message.message_id, reply_markup=kb, parse_mode="HTML")
-        bot.answer_callback_query(c.id)
+        safe_answer(c.id)
         return
     if CARDS_ENABLED:
         try:
@@ -3912,7 +3915,7 @@ def cb_top_default(c):
             bot.send_photo(c.message.chat.id, img_buf,
                            caption="🏆 <b>ТОП ИГРОКОВ ПО ELO</b>",
                            reply_markup=kb, parse_mode="HTML")
-            bot.answer_callback_query(c.id)
+            safe_answer(c.id)
             return
         except Exception as e:
             print(f"[card_top_default] error: {e}")
@@ -3936,7 +3939,7 @@ def cb_top_default(c):
         except Exception:
             pass
         bot.send_message(c.message.chat.id, text, reply_markup=kb, parse_mode="HTML")
-    bot.answer_callback_query(c.id)
+    safe_answer(c.id)
 
 
 @bot.callback_query_handler(func=lambda c: c.data == "top_quals")
@@ -3955,7 +3958,7 @@ def cb_top_quals(c):
             f"⭐ <b>QUALS ТОП {priv_display}</b>\n\nНет игроков с доступом к Quals.",
             c.message.chat.id, c.message.message_id, reply_markup=kb, parse_mode="HTML"
         )
-        bot.answer_callback_query(c.id)
+        safe_answer(c.id)
         return
     if CARDS_ENABLED:
         try:
@@ -3985,7 +3988,7 @@ def cb_top_quals(c):
             bot.send_photo(c.message.chat.id, img_buf,
                            caption="⭐ <b>QUALS ТОП ИГРОКОВ</b>",
                            reply_markup=kb, parse_mode="HTML")
-            bot.answer_callback_query(c.id)
+            safe_answer(c.id)
             return
         except Exception as e:
             print(f"[card_top_quals] error: {e}")
@@ -4008,7 +4011,7 @@ def cb_top_quals(c):
         except Exception:
             pass
         bot.send_message(c.message.chat.id, text, reply_markup=kb, parse_mode="HTML")
-    bot.answer_callback_query(c.id)
+    safe_answer(c.id)
 
 
 # ==================== О СЕЗОНЕ ====================
@@ -4055,7 +4058,7 @@ def cb_season_info(c):
         except Exception:
             pass
         bot.send_message(c.message.chat.id, text, reply_markup=kb, parse_mode="HTML")
-    bot.answer_callback_query(c.id)
+    safe_answer(c.id)
 
 
 # ==================== НАЗАД ====================
@@ -4074,7 +4077,7 @@ def cb_back(c):
             pass
         bot.send_message(c.message.chat.id, main_menu_text(uid),
                          reply_markup=main_menu(uid), parse_mode="HTML")
-    bot.answer_callback_query(c.id)
+    safe_answer(c.id)
 
 
 # ==================== ЛОББИ ====================
@@ -4165,7 +4168,7 @@ def cb_find(c):
     uid = c.from_user.id
     err = check_blocked(uid)
     if err:
-        bot.answer_callback_query(c.id, "⚠️ Доступ ограничен", show_alert=True)
+        safe_answer(c.id, "⚠️ Доступ ограничен", show_alert=True)
         return
     kb = types.InlineKeyboardMarkup(row_width=2)
     kb.add(
@@ -4174,7 +4177,7 @@ def cb_find(c):
         types.InlineKeyboardButton("🔙 Назад", callback_data="back"),
     )
     bot.edit_message_text("🎮 Выбери лигу:", c.message.chat.id, c.message.message_id, reply_markup=kb)
-    bot.answer_callback_query(c.id)
+    safe_answer(c.id)
 
 
 @bot.callback_query_handler(func=lambda c: c.data.startswith("lobby_") and len(c.data.split("_")) == 2)
@@ -4184,7 +4187,7 @@ def cb_lobby(c):
     private_key  = get_user_private(uid)
     priv_display = get_user_private_display(uid)
     if league == "quals" and not has_quals_access(uid):
-        bot.answer_callback_query(c.id, "⭐ Доступ к QUALS закрыт!", show_alert=True)
+        safe_answer(c.id, "⭐ Доступ к QUALS закрыт!", show_alert=True)
         return
     max_size = _lobby_max_size(league)
     text = f"🎮 <b>ЛОББИ {priv_display} — {league.upper()}</b>\n\nPC и Mobile могут играть вместе\n\n"
@@ -4202,7 +4205,7 @@ def cb_lobby(c):
         )
     kb.add(types.InlineKeyboardButton("🔙 Назад", callback_data="find"))
     bot.edit_message_text(text, c.message.chat.id, c.message.message_id, reply_markup=kb)
-    bot.answer_callback_query(c.id)
+    safe_answer(c.id)
 
 
 @bot.callback_query_handler(func=lambda c: c.data.startswith("join_"))
@@ -4210,7 +4213,7 @@ def cb_join(c):
     try:
         parts = c.data.split("_")
         if len(parts) < 5:
-            bot.answer_callback_query(c.id, "❌ Ошибка формата")
+            safe_answer(c.id, "❌ Ошибка формата")
             return
         private_key, league, device, slot = parts[1], parts[2], parts[3], int(parts[4])
         uid = c.from_user.id
@@ -4218,17 +4221,17 @@ def cb_join(c):
             update_tg_username(uid, c.from_user.username)
         err = check_blocked(uid)
         if err:
-            bot.answer_callback_query(c.id, "⚠️ Доступ ограничен", show_alert=True)
+            safe_answer(c.id, "⚠️ Доступ ограничен", show_alert=True)
             return
         if league == "quals" and not has_quals_access(uid):
-            bot.answer_callback_query(c.id, "⭐ Доступ к QUALS закрыт!", show_alert=True)
+            safe_answer(c.id, "⭐ Доступ к QUALS закрыт!", show_alert=True)
             return
         if not is_registered(uid):
-            bot.answer_callback_query(c.id, "❌ Вы не зарегистрированы! Напишите /start")
+            safe_answer(c.id, "❌ Вы не зарегистрированы! Напишите /start")
             return
         if is_muted_check(uid):
             mins = get_mute_remaining(uid) // 60
-            bot.answer_callback_query(c.id, f"🔇 Вы замучены! Осталось: {mins} мин.", show_alert=True)
+            safe_answer(c.id, f"🔇 Вы замучены! Осталось: {mins} мин.", show_alert=True)
             return
         lobby_id = f"{private_key}_{league}_{device}_{slot}"
         old = user_lobby.get(uid)
@@ -4245,24 +4248,20 @@ def cb_join(c):
             active_lobbies[lobby_id] = {"players": [], "league": league, "device": device, "slot": slot, "status": "waiting", "private": private_key}
         lobby = active_lobbies[lobby_id]
         if lobby["status"] != "waiting":
-            bot.answer_callback_query(c.id, "❌ Лобби уже в игре!", show_alert=True)
+            safe_answer(c.id, "❌ Лобби уже в игре!", show_alert=True)
             return
         if len(lobby["players"]) >= _lobby_max_size(league):
-            bot.answer_callback_query(c.id, "❌ Лобби полное!", show_alert=True)
+            safe_answer(c.id, "❌ Лобби полное!", show_alert=True)
             return
         if uid in lobby["players"]:
-            bot.answer_callback_query(c.id, "✅ Вы уже в этом лобби!")
+            safe_answer(c.id, "✅ Вы уже в этом лобби!")
             return
         party_obj = get_party_of(uid)
         party_leader = party_obj["leader"] if party_obj else None
 
         # Проверка: QUALS — только соло, пати запрещено
         if league == "quals" and party_obj and len(party_obj["members"]) > 1:
-            bot.answer_callback_query(
-                c.id,
-                "⭐ В QUALS лигу нельзя заходить с пати! Выйдите из пати и попробуйте снова.",
-                show_alert=True,
-            )
+            safe_answer(c.id, "⭐ В QUALS лигу нельзя заходить с пати! Выйдите из пати и попробуйте снова.", show_alert=True)
             return
 
         # Проверка: если в пати есть участники с другой приваткой — предупредить
@@ -4274,11 +4273,7 @@ def cb_join(c):
                     mname = mp[1] if mp else str(m)
                     different_priv_members.append(mname)
             if different_priv_members:
-                bot.answer_callback_query(
-                    c.id,
-                    f"⚠️ Члены пати играют в другой приватке! Попросите их сменить приватку: {', '.join(different_priv_members)}",
-                    show_alert=True,
-                )
+                safe_answer(c.id, f"⚠️ Члены пати играют в другой приватке! Попросите их сменить приватку: {', '.join(different_priv_members)}", show_alert=True)
                 return
 
         # Пати больше не тянет участников автоматически — каждый заходит сам
@@ -4293,13 +4288,13 @@ def cb_join(c):
             lobby_player_messages[lobby_id][uid] = (c.message.chat.id, c.message.message_id)
         except Exception:
             pass
-        bot.answer_callback_query(c.id, f"✅ Вы вошли в лобби #{slot}!")
+        safe_answer(c.id, f"✅ Вы вошли в лобби #{slot}!")
         broadcast_lobby_update(lobby_id, exclude_uid=uid)
         if len(lobby["players"]) >= _lobby_max_size(league):
             start_accept_phase(lobby_id)
     except Exception as e:
         print(f"Join error: {e}")
-        bot.answer_callback_query(c.id, "❌ Ошибка")
+        safe_answer(c.id, "❌ Ошибка")
 
 
 @bot.callback_query_handler(func=lambda c: c.data.startswith("leave_"))
@@ -4308,7 +4303,7 @@ def cb_leave(c):
     lobby_id = c.data.split("leave_", 1)[1]
     lobby = active_lobbies.get(lobby_id)
     if lobby and lobby.get("status") == "accepting":
-        bot.answer_callback_query(c.id, "❌ Нельзя выйти во время принятия матча!", show_alert=True)
+        safe_answer(c.id, "❌ Нельзя выйти во время принятия матча!", show_alert=True)
         return
     if lobby and uid in lobby.get("players", []):
         lobby["players"].remove(uid)
@@ -4319,13 +4314,13 @@ def cb_leave(c):
         else:
             broadcast_lobby_update(lobby_id)
         user_lobby.pop(uid, None)
-        bot.answer_callback_query(c.id, "✅ Вы вышли из лобби")
+        safe_answer(c.id, "✅ Вы вышли из лобби")
         bot.edit_message_text(main_menu_text(uid), c.message.chat.id, c.message.message_id, reply_markup=main_menu(uid), parse_mode="HTML")
     else:
         # Игрок не найден в лобби (лобби удалено или игрок уже вышел)
         # Всё равно чистим зависший user_lobby
         user_lobby.pop(uid, None)
-        bot.answer_callback_query(c.id, "❌ Лобби недоступно")
+        safe_answer(c.id, "❌ Лобби недоступно")
         try:
             bot.edit_message_text(main_menu_text(uid), c.message.chat.id, c.message.message_id, reply_markup=main_menu(uid), parse_mode="HTML")
         except Exception:
@@ -4518,11 +4513,11 @@ def cb_accept(c):
     lobby_id = c.data.split("accept_", 1)[1]
     lobby = active_lobbies.get(lobby_id)
     if not lobby or lobby["status"] not in ("accepting",):
-        bot.answer_callback_query(c.id, "❌ Матч уже недоступен")
+        safe_answer(c.id, "❌ Матч уже недоступен")
         return
     if uid not in lobby.get("accepted", []):
         lobby["accepted"].append(uid)
-    bot.answer_callback_query(c.id, "✅ Принято!")
+    safe_answer(c.id, "✅ Принято!")
     try:
         bot.delete_message(c.message.chat.id, c.message.message_id)
     except Exception:
@@ -4837,17 +4832,17 @@ def cb_ban_map(c):
     lobby_id = "_".join(raw_parts[:-1])
     lobby = active_lobbies.get(lobby_id)
     if not lobby or lobby["status"] != "mapban":
-        bot.answer_callback_query(c.id, "❌ Фаза бана уже завершена")
+        safe_answer(c.id, "❌ Фаза бана уже завершена")
         return
     turn = lobby["ban_turn"]
     expected_cap = lobby["ct_captain"] if turn == "ct" else lobby["t_captain"]
     if uid != expected_cap:
-        bot.answer_callback_query(c.id, "❌ Сейчас не ваш ход!", show_alert=True)
+        safe_answer(c.id, "❌ Сейчас не ваш ход!", show_alert=True)
         return
     if map_name not in lobby["maps_remaining"]:
-        bot.answer_callback_query(c.id, "❌ Карта уже забанена")
+        safe_answer(c.id, "❌ Карта уже забанена")
         return
-    bot.answer_callback_query(c.id, f"✅ {map_name} забанена!")
+    safe_answer(c.id, f"✅ {map_name} забанена!")
     try:
         bot.delete_message(c.message.chat.id, c.message.message_id)
     except Exception:
@@ -5384,19 +5379,19 @@ def cb_draft_pick(c):
     # lobby_id contains underscores → rsplit from right for the last 2 tokens
     parts = raw.rsplit("_", 2)
     if len(parts) < 3:
-        bot.answer_callback_query(c.id, "❌ Ошибка формата")
+        safe_answer(c.id, "❌ Ошибка формата")
         return
     lobby_id = parts[0]
     try:
         nonce    = int(parts[1])   # turn_count at the time keyboard was sent
         unit_idx = int(parts[2])
     except ValueError:
-        bot.answer_callback_query(c.id, "❌ Ошибка")
+        safe_answer(c.id, "❌ Ошибка")
         return
 
     lobby = active_lobbies.get(lobby_id)
     if not lobby or lobby.get("status") != "draft":
-        bot.answer_callback_query(c.id, "❌ Фаза выбора уже завершена")
+        safe_answer(c.id, "❌ Фаза выбора уже завершена")
         return
 
     draft   = lobby.get("draft", {})
@@ -5404,21 +5399,21 @@ def cb_draft_pick(c):
     cap_uid = lobby.get("ct_captain") if turn == "ct" else lobby.get("t_captain")
 
     if uid != cap_uid:
-        bot.answer_callback_query(c.id, "❌ Сейчас не ваш ход!", show_alert=True)
+        safe_answer(c.id, "❌ Сейчас не ваш ход!", show_alert=True)
         return
 
     # Reject stale keyboard from a previous turn
     if nonce != draft.get("turn_count", 0):
-        bot.answer_callback_query(c.id, "⏰ Эта клавиатура устарела — ход уже был сделан")
+        safe_answer(c.id, "⏰ Эта клавиатура устарела — ход уже был сделан")
         return
 
     units = draft.get("units", [])
     if unit_idx >= len(units):
-        bot.answer_callback_query(c.id, "❌ Игрок уже был выбран — список обновился")
+        safe_answer(c.id, "❌ Игрок уже был выбран — список обновился")
         return
 
     chosen = units[unit_idx]
-    bot.answer_callback_query(c.id, "✅ Выбрано!")
+    safe_answer(c.id, "✅ Выбрано!")
 
     try:
         bot.delete_message(c.message.chat.id, c.message.message_id)
@@ -5795,7 +5790,7 @@ def _build_admin_match_kb(match_key, match_code, ACreenshots_count, taken_by=Non
 @bot.callback_query_handler(func=lambda c: c.data == "match_noop")
 def cb_match_noop(c):
     """Заглушка для неактивных кнопок в карточке матча."""
-    bot.answer_callback_query(c.id, "🔒 Матч уже взят в работу", show_alert=False)
+    safe_answer(c.id, "🔒 Матч уже взят в работу", show_alert=False)
 
 
 # ==================== СКРИНШОТЫ ====================
@@ -5805,10 +5800,10 @@ def cb_send_result(c):
     match_key = c.data.split("send_result_", 1)[1]
     lobby = running_matches.get(match_key)
     if not lobby or lobby.get("status") != "active":
-        bot.answer_callback_query(c.id, "❌ Матч уже завершён", show_alert=True)
+        safe_answer(c.id, "❌ Матч уже завершён", show_alert=True)
         return
     awaiting_ACreenshot[uid] = match_key
-    bot.answer_callback_query(c.id)
+    safe_answer(c.id)
     try:
         bot.edit_message_reply_markup(c.message.chat.id, c.message.message_id, reply_markup=None)
     except Exception:
@@ -6040,29 +6035,25 @@ def reg_send(uid, text, **kwargs):
 def cb_reg_match(c):
     uid = c.from_user.id
     if not is_game_reg_check(uid):
-        bot.answer_callback_query(c.id, "❌ Нет доступа")
+        safe_answer(c.id, "❌ Нет доступа")
         return
     match_key = c.data.split("|", 1)[1]
     lobby = running_matches.get(match_key)
     if not lobby or lobby.get("status") != "active":
-        bot.answer_callback_query(c.id, "❌ Матч не найден или завершён", show_alert=True)
+        safe_answer(c.id, "❌ Матч не найден или завершён", show_alert=True)
         return
 
     # ── Защита от двойного взятия (атомарная проверка + lock) ──────────────
     taken = lobby.get("reg_taken_by")
     if taken and taken != uid:
         p = get_player(taken)
-        bot.answer_callback_query(c.id, f"🔒 Уже взято: {p[1] if p else taken}", show_alert=True)
+        safe_answer(c.id, f"🔒 Уже взято: {p[1] if p else taken}", show_alert=True)
         return
     # Проверяем, не ведёт ли этот же матч кто-то через match_registration
     for _adm, _rdata in list(match_registration.items()):
         if _rdata.get("match_key") == match_key and _adm != uid:
             _ap = get_player(_adm)
-            bot.answer_callback_query(
-                c.id,
-                f"🔒 {_ap[1] if _ap else _adm} уже регистрирует этот матч",
-                show_alert=True,
-            )
+            safe_answer(c.id, f"🔒 {_ap[1] if _ap else _adm} уже регистрирует этот матч", show_alert=True)
             return
     # Блокируем — сначала записываем, потом отвечаем (чтобы вторая попытка сразу видела блок)
     lobby["reg_taken_by"] = uid
@@ -6075,7 +6066,7 @@ def cb_reg_match(c):
         bot.edit_message_reply_markup(c.message.chat.id, c.message.message_id, reply_markup=new_kb)
     except Exception:
         pass
-    bot.answer_callback_query(c.id, "✅ Регистрация захвачена! Кнопка «Освободить» появилась в чате матча.")
+    safe_answer(c.id, "✅ Регистрация захвачена! Кнопка «Освободить» появилась в чате матча.")
 
     # Уведомление в ветку: "Администратор X начал обработку матча"
     admin_p = get_player(uid)
@@ -6154,16 +6145,16 @@ def cb_reg_manual(c):
     """Ручная регистрация — запускает стандартный Шаг 1/3."""
     uid = c.from_user.id
     if not is_game_reg_check(uid):
-        bot.answer_callback_query(c.id, "❌ Нет доступа")
+        safe_answer(c.id, "❌ Нет доступа")
         return
     match_key = c.data.split("|", 1)[1]
     data = match_registration.get(uid, {})
     if data.get("match_key") != match_key:
-        bot.answer_callback_query(c.id, "❌ Нет активной регистрации")
+        safe_answer(c.id, "❌ Нет активной регистрации")
         return
     data["step"] = "ACore"
     match_registration[uid] = data
-    bot.answer_callback_query(c.id)
+    safe_answer(c.id)
     try:
         bot.edit_message_reply_markup(c.message.chat.id, c.message.message_id, reply_markup=None)
     except Exception:
@@ -6185,17 +6176,17 @@ def cb_reg_ai_photo(c):
     """Начало AI-регистрации — просим прислать скрин в ЛС."""
     uid = c.from_user.id
     if not is_game_reg_check(uid):
-        bot.answer_callback_query(c.id, "❌ Нет доступа")
+        safe_answer(c.id, "❌ Нет доступа")
         return
     if not OPENAI_API_KEY:
-        bot.answer_callback_query(c.id, "❌ OPENAI_API_KEY не задан — используй ручной режим", show_alert=True)
+        safe_answer(c.id, "❌ OPENAI_API_KEY не задан — используй ручной режим", show_alert=True)
         return
     match_key = c.data.split("|", 1)[1]
     data = match_registration.get(uid, {})
     if data.get("match_key") != match_key:
-        bot.answer_callback_query(c.id, "❌ Нет активной регистрации")
+        safe_answer(c.id, "❌ Нет активной регистрации")
         return
-    bot.answer_callback_query(c.id)
+    safe_answer(c.id)
     try:
         bot.edit_message_reply_markup(c.message.chat.id, c.message.message_id, reply_markup=None)
     except Exception:
@@ -6322,18 +6313,18 @@ def cb_ai_reg_accept(c):
     """Админ принял AI-результат — финализируем матч."""
     uid = c.from_user.id
     if not is_game_reg_check(uid):
-        bot.answer_callback_query(c.id, "❌ Нет доступа")
+        safe_answer(c.id, "❌ Нет доступа")
         return
     match_key = c.data.split("|", 1)[1]
     pending = ai_reg_pending.pop(uid, {})
     if pending.get("match_key") != match_key:
-        bot.answer_callback_query(c.id, "❌ Данные не найдены")
+        safe_answer(c.id, "❌ Данные не найдены")
         return
 
     ai_result = pending.get("ai_result", {})
     lobby = running_matches.get(match_key)
     if not lobby:
-        bot.answer_callback_query(c.id, "❌ Матч не найден")
+        safe_answer(c.id, "❌ Матч не найден")
         return
 
     winner   = ai_result.get("winner", "ct")
@@ -6381,7 +6372,7 @@ def cb_ai_reg_accept(c):
         "ct_players":     [u for u in ct_uids if not is_bot_player(u)],
         "t_players":      [u for u in t_uids  if not is_bot_player(u)],
     }
-    bot.answer_callback_query(c.id, "✅ Регистрируем матч...")
+    safe_answer(c.id, "✅ Регистрируем матч...")
     try:
         bot.edit_message_reply_markup(c.message.chat.id, c.message.message_id, reply_markup=None)
     except Exception:
@@ -6397,19 +6388,19 @@ def cb_ai_reg_redo(c):
     """Перегнать: просим прислать скрин ещё раз."""
     uid = c.from_user.id
     if not is_game_reg_check(uid):
-        bot.answer_callback_query(c.id, "❌ Нет доступа")
+        safe_answer(c.id, "❌ Нет доступа")
         return
     match_key = c.data.split("|", 1)[1]
     pending = ai_reg_pending.get(uid, {})
     if pending.get("match_key") != match_key:
-        bot.answer_callback_query(c.id, "❌ Данные не найдены")
+        safe_answer(c.id, "❌ Данные не найдены")
         return
 
     # Если есть сохранённый скрин — анализируем его снова
     image_bytes = pending.get("image_bytes")
     if image_bytes:
         ai_reg_pending[uid]["step"] = "awaiting_photo"
-        bot.answer_callback_query(c.id, "🔄 Повторный анализ...")
+        safe_answer(c.id, "🔄 Повторный анализ...")
         try:
             bot.edit_message_reply_markup(c.message.chat.id, c.message.message_id, reply_markup=None)
         except Exception:
@@ -6450,7 +6441,7 @@ def cb_ai_reg_redo(c):
     else:
         # Нет скрина — просим прислать заново
         ai_reg_pending[uid]["step"] = "awaiting_photo"
-        bot.answer_callback_query(c.id)
+        safe_answer(c.id)
         try:
             bot.edit_message_reply_markup(c.message.chat.id, c.message.message_id, reply_markup=None)
         except Exception:
@@ -6463,12 +6454,12 @@ def cb_ai_reg_manual(c):
     """Из AI-режима перешли в ручной — восстанавливаем match_registration."""
     uid = c.from_user.id
     if not is_game_reg_check(uid):
-        bot.answer_callback_query(c.id, "❌ Нет доступа")
+        safe_answer(c.id, "❌ Нет доступа")
         return
     match_key = c.data.split("|", 1)[1]
     pending = ai_reg_pending.pop(uid, {})
     if pending.get("match_key") != match_key:
-        bot.answer_callback_query(c.id, "❌ Данные не найдены")
+        safe_answer(c.id, "❌ Данные не найдены")
         return
     reply_chat_id   = pending.get("reply_chat_id", uid)
     reply_thread_id = pending.get("reply_thread_id")
@@ -6478,7 +6469,7 @@ def cb_ai_reg_manual(c):
         "reply_chat_id":  reply_chat_id,
         "reply_thread_id": reply_thread_id,
     }
-    bot.answer_callback_query(c.id)
+    safe_answer(c.id)
     try:
         bot.edit_message_reply_markup(c.message.chat.id, c.message.message_id, reply_markup=None)
     except Exception:
@@ -6498,12 +6489,12 @@ def cb_reg_release(c):
     """Force-release: любой game_reg может освободить занятый матч."""
     uid = c.from_user.id
     if not is_game_reg_check(uid):
-        bot.answer_callback_query(c.id, "❌ Нет доступа")
+        safe_answer(c.id, "❌ Нет доступа")
         return
     match_key = c.data.split("|", 1)[1]
     lobby = running_matches.get(match_key)
     if not lobby:
-        bot.answer_callback_query(c.id, "❌ Матч не найден")
+        safe_answer(c.id, "❌ Матч не найден")
         return
     prev_taker = lobby.get("reg_taken_by")
     lobby["reg_taken_by"] = None
@@ -6525,7 +6516,7 @@ def cb_reg_release(c):
         pass
     admin_p = get_player(uid)
     admin_name = admin_p[1] if admin_p else str(uid)
-    bot.answer_callback_query(c.id, "🔓 Регистрация освобождена")
+    safe_answer(c.id, "🔓 Регистрация освобождена")
     thread_id = lobby.get("admin_thread_id")
     try:
         kw = {"parse_mode": "HTML"}
@@ -6547,19 +6538,19 @@ def cb_reg_abandon(c):
     """Регистратор нажал «Освободить» — показываем подтверждение в чате регистрации."""
     uid = c.from_user.id
     if not is_game_reg_check(uid):
-        bot.answer_callback_query(c.id, "❌ Нет доступа")
+        safe_answer(c.id, "❌ Нет доступа")
         return
     match_key = c.data.split("|", 1)[1]
     lobby = running_matches.get(match_key)
     if not lobby:
-        bot.answer_callback_query(c.id, "❌ Матч не найден")
+        safe_answer(c.id, "❌ Матч не найден")
         return
     taken = lobby.get("reg_taken_by")
     if taken and taken != uid:
-        bot.answer_callback_query(c.id, "❌ Только тот, кто взял регистрацию, может её освободить", show_alert=True)
+        safe_answer(c.id, "❌ Только тот, кто взял регистрацию, может её освободить", show_alert=True)
         return
     match_code = lobby.get("match_code", str(lobby.get("match_id", "?")))
-    bot.answer_callback_query(c.id)
+    safe_answer(c.id)
     kb_confirm = types.InlineKeyboardMarkup(row_width=1)
     kb_confirm.add(
         types.InlineKeyboardButton("✅ Да, освободить регистрацию", callback_data=f"reg_abandon_confirm|{match_key}"),
@@ -6597,18 +6588,18 @@ def cb_reg_abandon_confirm(c):
     """Подтверждённый отказ от регистрации."""
     uid = c.from_user.id
     if not is_game_reg_check(uid):
-        bot.answer_callback_query(c.id, "❌ Нет доступа")
+        safe_answer(c.id, "❌ Нет доступа")
         return
     match_key = c.data.split("|", 1)[1]
     lobby = running_matches.get(match_key)
     if not lobby:
-        bot.answer_callback_query(c.id, "❌ Матч не найден")
+        safe_answer(c.id, "❌ Матч не найден")
         return
     taken = lobby.get("reg_taken_by")
     if taken and taken != uid:
-        bot.answer_callback_query(c.id, "❌ Только тот, кто взял регистрацию, может её освободить", show_alert=True)
+        safe_answer(c.id, "❌ Только тот, кто взял регистрацию, может её освободить", show_alert=True)
         return
-    bot.answer_callback_query(c.id, "🚫 Вы отказались от регистрации")
+    safe_answer(c.id, "🚫 Вы отказались от регистрации")
     # Убираем кнопки подтверждения из сообщения в чате
     try:
         bot.edit_message_reply_markup(c.message.chat.id, c.message.message_id, reply_markup=None)
@@ -6694,10 +6685,10 @@ def reg_step_ACore(msg):
 def reg_winner(c):
     uid = c.from_user.id
     if not is_game_reg_check(uid):
-        bot.answer_callback_query(c.id, "❌ Нет доступа")
+        safe_answer(c.id, "❌ Нет доступа")
         return
     if uid not in match_registration or match_registration[uid].get("step") != "winner":
-        bot.answer_callback_query(c.id, "❌ Нет активной регистрации")
+        safe_answer(c.id, "❌ Нет активной регистрации")
         return
     raw = c.data[len("reg_winner_"):]
     parts = raw.split("|", 1)
@@ -6705,7 +6696,7 @@ def reg_winner(c):
     match_key = parts[1] if len(parts) > 1 else match_registration[uid]["match_key"]
     match_registration[uid]["winner"] = winner
     match_registration[uid]["step"] = "all_kills"
-    bot.answer_callback_query(c.id)
+    safe_answer(c.id)
     try:
         bot.edit_message_reply_markup(c.message.chat.id, c.message.message_id, reply_markup=None)
     except Exception:
@@ -7068,13 +7059,13 @@ def _finalize_match(reg_uid, match_key):
 def cb_cancel_match(c):
     uid = c.from_user.id
     if not is_game_reg_check(uid):
-        bot.answer_callback_query(c.id, "❌ Нет доступа")
+        safe_answer(c.id, "❌ Нет доступа")
         return
     match_key = c.data.split("|", 1)[1]
     lobby = running_matches.get(match_key)
     if not lobby:
         # Матч уже завершён, но ветка закрыта и нажали кнопку — ничего не делаем
-        bot.answer_callback_query(c.id, "❌ Матч не найден")
+        safe_answer(c.id, "❌ Матч не найден")
         return
     # Запрашиваем причину отмены
     cancel_flow[uid] = {
@@ -7083,7 +7074,7 @@ def cb_cancel_match(c):
         "thread_id": getattr(c.message, "message_thread_id", None),
         "msg_id": c.message.message_id,
     }
-    bot.answer_callback_query(c.id)
+    safe_answer(c.id)
     send_kw = {"parse_mode": "HTML"}
     thread_id = getattr(c.message, "message_thread_id", None)
     if thread_id:
@@ -7179,12 +7170,12 @@ def handle_cancel_reason(msg):
 def cb_reregister_match(c):
     uid = c.from_user.id
     if not is_game_reg_check(uid):
-        bot.answer_callback_query(c.id, "❌ Нет доступа")
+        safe_answer(c.id, "❌ Нет доступа")
         return
     match_key = c.data.split("|", 1)[1]
     lobby = running_matches.get(match_key)
     if not lobby:
-        bot.answer_callback_query(c.id, "❌ Матч не найден")
+        safe_answer(c.id, "❌ Матч не найден")
         return
     was_cancelled = lobby.get("status") == "cancelled"
     lobby["reg_taken_by"] = None
@@ -7206,9 +7197,9 @@ def cb_reregister_match(c):
         print(f"[reregister status reset] {_re}")
 
     if was_cancelled:
-        bot.answer_callback_query(c.id, "🔄 Матч возвращён в очередь регистрации")
+        safe_answer(c.id, "🔄 Матч возвращён в очередь регистрации")
     else:
-        bot.answer_callback_query(c.id, "🔄 Регистрация сброшена, статистика откатана")
+        safe_answer(c.id, "🔄 Регистрация сброшена, статистика откатана")
 
     # Переоткрываем тему если была закрыта
     thread_id = lobby.get("admin_thread_id")
@@ -7243,7 +7234,7 @@ def cb_activate_match(c):
     """Подтвердить зарегистрированный матч — сделать его «активным» (принять как есть)."""
     uid = c.from_user.id
     if not is_game_reg_check(uid) and not is_admin(uid):
-        bot.answer_callback_query(c.id, "❌ Нет доступа")
+        safe_answer(c.id, "❌ Нет доступа")
         return
     match_key = c.data.split("|", 1)[1]
     lobby = running_matches.get(match_key)
@@ -7254,7 +7245,7 @@ def cb_activate_match(c):
         bot.edit_message_reply_markup(c.message.chat.id, c.message.message_id, reply_markup=None)
     except Exception:
         pass
-    bot.answer_callback_query(c.id, f"✅ Матч #{match_code} сделан активным")
+    safe_answer(c.id, f"✅ Матч #{match_code} сделан активным")
     try:
         bot.send_message(
             c.message.chat.id,
@@ -7281,7 +7272,7 @@ def cb_activate_match(c):
 
 @bot.callback_query_handler(func=lambda c: c.data == "noop")
 def cb_noop(c):
-    bot.answer_callback_query(c.id)
+    safe_answer(c.id)
 
 
 # ==================== МАГАЗИН ====================
@@ -7290,7 +7281,7 @@ def cb_shop(c):
     uid = c.from_user.id
     err = check_blocked(uid)
     if err:
-        bot.answer_callback_query(c.id, "⚠️ Доступ ограничен", show_alert=True)
+        safe_answer(c.id, "⚠️ Доступ ограничен", show_alert=True)
         return
     kb = types.InlineKeyboardMarkup(row_width=1)
     for cat, name in CATEGORY_NAMES.items():
@@ -7300,7 +7291,7 @@ def cb_shop(c):
             kb.add(types.InlineKeyboardButton(name, callback_data=f"shop_cat_{cat}"))
     kb.add(types.InlineKeyboardButton("🔙 Назад", callback_data="back"))
     bot.edit_message_text("🛒 <b>МАГАЗИН</b>\n\nВыберите категорию:", c.message.chat.id, c.message.message_id, reply_markup=kb)
-    bot.answer_callback_query(c.id)
+    safe_answer(c.id)
 
 
 @bot.callback_query_handler(func=lambda c: c.data.startswith("shop_cat_"))
@@ -7317,7 +7308,7 @@ def cb_shop_category(c):
             "Приносим извинения за неудобства!",
             c.message.chat.id, c.message.message_id, reply_markup=kb, parse_mode="HTML",
         )
-        bot.answer_callback_query(c.id)
+        safe_answer(c.id)
         return
     items = get_shop_items_by_category(category)
     p = get_player(uid)
@@ -7333,7 +7324,7 @@ def cb_shop_category(c):
         f"{cat_name}\n💰 Баланс: <b>{coins} AC</b>\n\nВыберите товар:",
         c.message.chat.id, c.message.message_id, reply_markup=kb,
     )
-    bot.answer_callback_query(c.id)
+    safe_answer(c.id)
 
 
 @bot.callback_query_handler(func=lambda c: c.data.startswith("shop_item_"))
@@ -7342,7 +7333,7 @@ def cb_shop_item(c):
     item_id = int(c.data.split("shop_item_")[1])
     item = get_shop_item(item_id)
     if not item:
-        bot.answer_callback_query(c.id, "❌ Товар не найден")
+        safe_answer(c.id, "❌ Товар не найден")
         return
     _, name, deAC, category, price, item_type = item
     p = get_player(uid)
@@ -7361,7 +7352,7 @@ def cb_shop_item(c):
         kb.add(types.InlineKeyboardButton(f"💳 Купить за {price} AC", callback_data=f"shop_buy_{item_id}"))
     kb.add(types.InlineKeyboardButton("🔙 Назад", callback_data=f"shop_cat_{category}"))
     bot.edit_message_text(text, c.message.chat.id, c.message.message_id, reply_markup=kb)
-    bot.answer_callback_query(c.id)
+    safe_answer(c.id)
 
 
 @bot.callback_query_handler(func=lambda c: c.data.startswith("shop_buy_"))
@@ -7371,10 +7362,10 @@ def cb_shop_buy(c):
     # Блокируем покупку декора — раздел на тех. работах
     _item_check = get_shop_item(item_id)
     if _item_check and _item_check[3] == "decor":
-        bot.answer_callback_query(c.id, "🔧 Декор временно недоступен (тех. работы)", show_alert=True)
+        safe_answer(c.id, "🔧 Декор временно недоступен (тех. работы)", show_alert=True)
         return
     ok, msg = buy_item(uid, item_id)
-    bot.answer_callback_query(c.id, msg[:200], show_alert=not ok)
+    safe_answer(c.id, msg[:200], show_alert=not ok)
     if ok:
         item = get_shop_item(item_id)
         if item:
@@ -7387,7 +7378,7 @@ def cb_inventory(c):
     uid = c.from_user.id
     err = check_blocked(uid)
     if err:
-        bot.answer_callback_query(c.id, "⚠️ Доступ ограничен", show_alert=True)
+        safe_answer(c.id, "⚠️ Доступ ограничен", show_alert=True)
         return
     items = get_inventory(uid)
     if not items:
@@ -7395,7 +7386,7 @@ def cb_inventory(c):
         kb.add(types.InlineKeyboardButton("🛒 В магазин", callback_data="shop"))
         kb.add(types.InlineKeyboardButton("🔙 Назад", callback_data="back"))
         bot.edit_message_text("🎒 <b>Инвентарь пуст</b>", c.message.chat.id, c.message.message_id, reply_markup=kb)
-        bot.answer_callback_query(c.id)
+        safe_answer(c.id)
         return
     kb = types.InlineKeyboardMarkup(row_width=1)
     for inv_id, name, category, item_type, purchased_at, is_activated, shop_id in items:
@@ -7403,7 +7394,7 @@ def cb_inventory(c):
         kb.add(types.InlineKeyboardButton(f"{status}{name}", callback_data=f"inv_item_{inv_id}"))
     kb.add(types.InlineKeyboardButton("🔙 Назад", callback_data="back"))
     bot.edit_message_text("🎒 <b>Ваш инвентарь:</b>", c.message.chat.id, c.message.message_id, reply_markup=kb)
-    bot.answer_callback_query(c.id)
+    safe_answer(c.id)
 
 
 @bot.callback_query_handler(func=lambda c: c.data.startswith("inv_item_"))
@@ -7413,7 +7404,7 @@ def cb_inv_item(c):
     items = get_inventory(uid)
     item = next((i for i in items if i[0] == inv_id), None)
     if not item:
-        bot.answer_callback_query(c.id, "❌ Предмет не найден")
+        safe_answer(c.id, "❌ Предмет не найден")
         return
     inv_id2, name, category, item_type, purchased_at, is_activated, shop_id = item
     dt = datetime.datetime.fromtimestamp(purchased_at).strftime("%d.%m.%Y") if purchased_at else "?"
@@ -7428,7 +7419,7 @@ def cb_inv_item(c):
         kb.add(types.InlineKeyboardButton("⚡ Активировать", callback_data=f"inv_activate_{inv_id}"))
     kb.add(types.InlineKeyboardButton("🔙 Назад", callback_data="inv"))
     bot.edit_message_text(text, c.message.chat.id, c.message.message_id, reply_markup=kb)
-    bot.answer_callback_query(c.id)
+    safe_answer(c.id)
 
 
 @bot.callback_query_handler(func=lambda c: c.data.startswith("inv_activate_"))
@@ -7438,16 +7429,16 @@ def cb_inv_activate(c):
     items = get_inventory(uid)
     item = next((i for i in items if i[0] == inv_id), None)
     if not item:
-        bot.answer_callback_query(c.id, "❌ Предмет не найден")
+        safe_answer(c.id, "❌ Предмет не найден")
         return
     inv_id2, name, category, item_type, purchased_at, is_activated, shop_id = item
     result, msg = activate_inventory_item(inv_id, uid, item_type, name)
     if result == "rename":
         rename_flow[uid] = inv_id
-        bot.answer_callback_query(c.id)
+        safe_answer(c.id)
         bot.send_message(uid, msg)
         return
-    bot.answer_callback_query(c.id, msg[:200], show_alert=not result)
+    safe_answer(c.id, msg[:200], show_alert=not result)
     if result:
         try:
             bot.edit_message_text(msg, c.message.chat.id, c.message.message_id)
@@ -7654,14 +7645,14 @@ def cb_slots_menu(c):
     uid = c.from_user.id
     err = check_blocked(uid)
     if err:
-        bot.answer_callback_query(c.id, "⚠️ Доступ ограничен", show_alert=True)
+        safe_answer(c.id, "⚠️ Доступ ограничен", show_alert=True)
         return
     if not is_registered(uid):
-        bot.answer_callback_query(c.id, "❌ Сначала зарегистрируйтесь /start", show_alert=True)
+        safe_answer(c.id, "❌ Сначала зарегистрируйтесь /start", show_alert=True)
         return
     p = get_player(uid)
     coins = p[5] if p and len(p) > 5 else 0
-    bot.answer_callback_query(c.id)
+    safe_answer(c.id)
     text = _slots_menu_text(coins)
     try:
         bot.edit_message_text(text, c.message.chat.id, c.message.message_id,
@@ -7672,7 +7663,7 @@ def cb_slots_menu(c):
 
 @bot.callback_query_handler(func=lambda c: c.data == "slots_odds")
 def cb_slots_odds(c):
-    bot.answer_callback_query(c.id)
+    safe_answer(c.id)
     n = len(SLOTS_SYMBOLS)  # 7
     total = n ** 3           # 343
     triples = n              # 7
@@ -7709,11 +7700,11 @@ def cb_slots_odds(c):
 def cb_slots_custom_bet(c):
     uid = c.from_user.id
     if not is_registered(uid):
-        bot.answer_callback_query(c.id, "❌ Сначала зарегистрируйтесь", show_alert=True)
+        safe_answer(c.id, "❌ Сначала зарегистрируйтесь", show_alert=True)
         return
     p = get_player(uid)
     coins = p[5] if p and len(p) > 5 else 0
-    bot.answer_callback_query(c.id)
+    safe_answer(c.id)
     sent = bot.send_message(
         uid,
         f"✏️ <b>Введите свою ставку</b>\n\n"
@@ -7758,15 +7749,15 @@ def _handle_slots_custom_bet_input(msg):
 def cb_slots_bet(c):
     uid = c.from_user.id
     if not is_registered(uid):
-        bot.answer_callback_query(c.id, "❌ Сначала зарегистрируйтесь", show_alert=True)
+        safe_answer(c.id, "❌ Сначала зарегистрируйтесь", show_alert=True)
         return
     bet = int(c.data.split("|", 1)[1])
     p = get_player(uid)
     coins = p[5] if p and len(p) > 5 else 0
     if bet > coins:
-        bot.answer_callback_query(c.id, f"❌ Недостаточно монет! У вас {coins} AC", show_alert=True)
+        safe_answer(c.id, f"❌ Недостаточно монет! У вас {coins} AC", show_alert=True)
         return
-    bot.answer_callback_query(c.id)
+    safe_answer(c.id)
     text = _slots_menu_text(coins, selected_bet=bet)
     try:
         bot.edit_message_text(text, c.message.chat.id, c.message.message_id,
@@ -7780,16 +7771,16 @@ def cb_slots_spin(c):
     uid = c.from_user.id
     err = check_blocked(uid)
     if err:
-        bot.answer_callback_query(c.id, "⚠️ Доступ ограничен", show_alert=True)
+        safe_answer(c.id, "⚠️ Доступ ограничен", show_alert=True)
         return
     if not is_registered(uid):
-        bot.answer_callback_query(c.id, "❌ Сначала зарегистрируйтесь", show_alert=True)
+        safe_answer(c.id, "❌ Сначала зарегистрируйтесь", show_alert=True)
         return
     bet = int(c.data.split("|", 1)[1])
     p = get_player(uid)
     coins = p[5] if p and len(p) > 5 else 0
     if coins < bet:
-        bot.answer_callback_query(c.id, f"❌ Недостаточно монет! У вас {coins} AC, нужно {bet} AC", show_alert=True)
+        safe_answer(c.id, f"❌ Недостаточно монет! У вас {coins} AC, нужно {bet} AC", show_alert=True)
         return
     # Списываем ставку
     try:
@@ -7798,7 +7789,7 @@ def cb_slots_spin(c):
         conn.commit(); conn.close()
     except Exception as _se:
         print(f"[slots debit] {_se}")
-        bot.answer_callback_query(c.id, "❌ Ошибка, попробуй ещё раз", show_alert=True)
+        safe_answer(c.id, "❌ Ошибка, попробуй ещё раз", show_alert=True)
         return
     reels = _spin_slots(uid=uid)
     win, result_text = _calc_slots_win(bet, reels)
@@ -7826,7 +7817,7 @@ def cb_slots_spin(c):
         types.InlineKeyboardButton("💰 Сменить ставку", callback_data="slots_menu"),
         types.InlineKeyboardButton("🔙 Главное меню", callback_data="back"),
     )
-    bot.answer_callback_query(c.id)
+    safe_answer(c.id)
     try:
         bot.edit_message_text(text, c.message.chat.id, c.message.message_id,
                               reply_markup=kb, parse_mode="HTML")
@@ -7873,9 +7864,9 @@ def _slots_settings_kb() -> types.InlineKeyboardMarkup:
 def cb_admin_slots_settings(c):
     uid = c.from_user.id
     if not is_admin(uid):
-        bot.answer_callback_query(c.id, "❌ Нет доступа")
+        safe_answer(c.id, "❌ Нет доступа")
         return
-    bot.answer_callback_query(c.id)
+    safe_answer(c.id)
     try:
         bot.edit_message_text(_slots_settings_text(), c.message.chat.id, c.message.message_id,
                               reply_markup=_slots_settings_kb(), parse_mode="HTML")
@@ -7887,9 +7878,9 @@ def cb_admin_slots_settings(c):
 def cb_admin_slots_jackpot(c):
     uid = c.from_user.id
     if not is_admin(uid):
-        bot.answer_callback_query(c.id, "❌ Нет доступа")
+        safe_answer(c.id, "❌ Нет доступа")
         return
-    bot.answer_callback_query(c.id)
+    safe_answer(c.id)
     _slots_luck_flow[uid] = {"step": "jackpot_chance", "action": "jackpot"}
     bot.send_message(
         uid,
@@ -7906,9 +7897,9 @@ def cb_admin_slots_jackpot(c):
 def cb_admin_slots_x10(c):
     uid = c.from_user.id
     if not is_admin(uid):
-        bot.answer_callback_query(c.id, "❌ Нет доступа")
+        safe_answer(c.id, "❌ Нет доступа")
         return
-    bot.answer_callback_query(c.id)
+    safe_answer(c.id)
     _slots_luck_flow[uid] = {"step": "x10_chance", "action": "x10"}
     x10_avg = round(100 / _slots_x10_chance) if _slots_x10_chance > 0 else "∞"
     bot.send_message(
@@ -7926,11 +7917,11 @@ def cb_admin_slots_x10(c):
 def cb_admin_slots_luck_start(c):
     uid = c.from_user.id
     if not is_admin(uid):
-        bot.answer_callback_query(c.id, "❌ Нет доступа")
+        safe_answer(c.id, "❌ Нет доступа")
         return
     action = "set" if c.data == "admin_slots_luck_set" else "remove"
     _slots_luck_flow[uid] = {"step": "target", "action": action}
-    bot.answer_callback_query(c.id)
+    safe_answer(c.id)
     if action == "set":
         bot.send_message(uid, "🍀 <b>Выдать удачу</b>\n\nВведите Telegram ID или никнейм игрока:", parse_mode="HTML")
     else:
@@ -8063,7 +8054,7 @@ def cb_party_menu(c):
     uid = c.from_user.id
     err = check_blocked(uid)
     if err:
-        bot.answer_callback_query(c.id, "⚠️ Доступ ограничен", show_alert=True)
+        safe_answer(c.id, "⚠️ Доступ ограничен", show_alert=True)
         return
     party = get_party_of(uid)
     if party:
@@ -8090,19 +8081,19 @@ def cb_party_menu(c):
             types.InlineKeyboardButton("🔙 Назад", callback_data="back"),
         )
     bot.edit_message_text(text, c.message.chat.id, c.message.message_id, reply_markup=kb)
-    bot.answer_callback_query(c.id)
+    safe_answer(c.id)
 
 
 @bot.callback_query_handler(func=lambda c: c.data == "party_create")
 def cb_party_create(c):
     uid = c.from_user.id
     if uid in user_party:
-        bot.answer_callback_query(c.id, "❌ Вы уже в пати")
+        safe_answer(c.id, "❌ Вы уже в пати")
         return
     party_id = f"party_{uid}_{int(time.time())}"
     parties[party_id] = {"leader": uid, "members": [uid]}
     user_party[uid] = party_id
-    bot.answer_callback_query(c.id, "✅ Пати создана!")
+    safe_answer(c.id, "✅ Пати создана!")
     kb = types.InlineKeyboardMarkup()
     kb.add(types.InlineKeyboardButton("👥 Управление пати", callback_data="party_menu"))
     bot.edit_message_text("✅ <b>Пати создана!</b>", c.message.chat.id, c.message.message_id, reply_markup=kb)
@@ -8113,14 +8104,14 @@ def cb_party_invite(c):
     uid = c.from_user.id
     party = get_party_of(uid)
     if not party or party["leader"] != uid:
-        bot.answer_callback_query(c.id, "❌ Нет доступа")
+        safe_answer(c.id, "❌ Нет доступа")
         return
     max_size = get_party_max_size(party)
     if len(party["members"]) >= max_size:
-        bot.answer_callback_query(c.id, f"❌ Пати полная ({max_size} чел.)", show_alert=True)
+        safe_answer(c.id, f"❌ Пати полная ({max_size} чел.)", show_alert=True)
         return
     awaiting_party_invite[uid] = True
-    bot.answer_callback_query(c.id)
+    safe_answer(c.id)
     bot.send_message(uid, "👤 Введите Telegram ID или никнейм игрока для приглашения:")
 
 
@@ -8177,18 +8168,18 @@ def cb_party_accept(c):
     party_id = "_".join(raw.split("_")[:-1])
     party = parties.get(party_id)
     if not party:
-        bot.answer_callback_query(c.id, "❌ Пати не существует")
+        safe_answer(c.id, "❌ Пати не существует")
         return
     if uid in user_party:
-        bot.answer_callback_query(c.id, "❌ Вы уже в пати")
+        safe_answer(c.id, "❌ Вы уже в пати")
         return
     max_size = get_party_max_size(party)
     if len(party["members"]) >= max_size:
-        bot.answer_callback_query(c.id, "❌ Пати уже полная", show_alert=True)
+        safe_answer(c.id, "❌ Пати уже полная", show_alert=True)
         return
     party["members"].append(uid)
     user_party[uid] = party_id
-    bot.answer_callback_query(c.id, "✅ Вы вступили в пати!")
+    safe_answer(c.id, "✅ Вы вступили в пати!")
     try:
         bot.edit_message_reply_markup(c.message.chat.id, c.message.message_id, reply_markup=None)
     except Exception:
@@ -8205,7 +8196,7 @@ def cb_party_accept(c):
 
 @bot.callback_query_handler(func=lambda c: c.data == "party_decline")
 def cb_party_decline(c):
-    bot.answer_callback_query(c.id, "❌ Приглашение отклонено")
+    safe_answer(c.id, "❌ Приглашение отклонено")
     try:
         bot.edit_message_reply_markup(c.message.chat.id, c.message.message_id, reply_markup=None)
     except Exception:
@@ -8217,7 +8208,7 @@ def cb_party_leave(c):
     uid = c.from_user.id
     party = get_party_of(uid)
     if not party:
-        bot.answer_callback_query(c.id, "❌ Вы не в пати")
+        safe_answer(c.id, "❌ Вы не в пати")
         return
     party_id = user_party.pop(uid)
     party["members"].remove(uid)
@@ -8225,7 +8216,7 @@ def cb_party_leave(c):
         parties.pop(party_id, None)
     elif party["leader"] == uid:
         party["leader"] = party["members"][0]
-    bot.answer_callback_query(c.id, "✅ Вы покинули пати")
+    safe_answer(c.id, "✅ Вы покинули пати")
     bot.edit_message_text(main_menu_text(uid), c.message.chat.id, c.message.message_id, reply_markup=main_menu(uid), parse_mode="HTML")
 
 
@@ -8234,7 +8225,7 @@ def cb_party_disband(c):
     uid = c.from_user.id
     party = get_party_of(uid)
     if not party or party["leader"] != uid:
-        bot.answer_callback_query(c.id, "❌ Нет доступа")
+        safe_answer(c.id, "❌ Нет доступа")
         return
     party_id = user_party.get(uid)
     for m in list(party["members"]):
@@ -8245,7 +8236,7 @@ def cb_party_disband(c):
             except Exception:
                 pass
     parties.pop(party_id, None)
-    bot.answer_callback_query(c.id, "✅ Пати распущена")
+    safe_answer(c.id, "✅ Пати распущена")
     bot.edit_message_text(main_menu_text(uid), c.message.chat.id, c.message.message_id, reply_markup=main_menu(uid), parse_mode="HTML")
 
 
@@ -8255,10 +8246,10 @@ def cb_buy_coins(c):
     uid = c.from_user.id
     err = check_blocked(uid)
     if err:
-        bot.answer_callback_query(c.id, "⚠️ Доступ ограничен", show_alert=True)
+        safe_answer(c.id, "⚠️ Доступ ограничен", show_alert=True)
         return
     if not is_registered(uid):
-        bot.answer_callback_query(c.id, "❌ Сначала зарегистрируйтесь /start")
+        safe_answer(c.id, "❌ Сначала зарегистрируйтесь /start")
         return
     p = get_player(uid)
     coins = p[5] if p else 0
@@ -8270,7 +8261,7 @@ def cb_buy_coins(c):
         f"💳 <b>КУПИТЬ SareCoin</b>\n💰 Баланс: <b>{coins} AC</b>\n\n⭐ Telegram Stars\nВыберите пакет:",
         c.message.chat.id, c.message.message_id, reply_markup=kb,
     )
-    bot.answer_callback_query(c.id)
+    safe_answer(c.id)
 
 
 @bot.callback_query_handler(func=lambda c: c.data.startswith("buy_pkg_"))
@@ -8278,10 +8269,10 @@ def cb_buy_package(c):
     uid = c.from_user.id
     pkg_idx = int(c.data.split("buy_pkg_")[1])
     if pkg_idx < 0 or pkg_idx >= len(COIN_PACKAGES):
-        bot.answer_callback_query(c.id, "❌ Пакет не найден")
+        safe_answer(c.id, "❌ Пакет не найден")
         return
     name, coins_amount, stars, price_label = COIN_PACKAGES[pkg_idx]
-    bot.answer_callback_query(c.id)
+    safe_answer(c.id)
     try:
         bot.send_invoice(
             chat_id=uid,
@@ -8342,16 +8333,16 @@ QUALS_STAT_FIELDS = {
 def cb_editstat_league(c):
     uid = c.from_user.id
     if not is_admin(uid):
-        bot.answer_callback_query(c.id, "❌ Нет доступа")
+        safe_answer(c.id, "❌ Нет доступа")
         return
     parts = c.data.split("_", 3)
     league_type = parts[1]
     target_id   = int(parts[2])
     p = get_player(target_id)
     if not p:
-        bot.answer_callback_query(c.id, "❌ Игрок не найден")
+        safe_answer(c.id, "❌ Игрок не найден")
         return
-    bot.answer_callback_query(c.id)
+    safe_answer(c.id)
     if league_type == "quals":
         fields = QUALS_STAT_FIELDS
     else:
@@ -8370,7 +8361,7 @@ def cb_editstat_league(c):
 def cb_editstat_pick(c):
     uid = c.from_user.id
     if not is_admin(uid):
-        bot.answer_callback_query(c.id, "❌ Нет доступа")
+        safe_answer(c.id, "❌ Нет доступа")
         return
     parts = c.data.split("_")
     if parts[1] == "league":
@@ -8388,10 +8379,10 @@ def cb_editstat_pick(c):
         target_id = int(parts[2])
     p = get_player(target_id)
     if not p:
-        bot.answer_callback_query(c.id, "❌ Игрок не найден")
+        safe_answer(c.id, "❌ Игрок не найден")
         return
     editstat_flow[uid] = {"field": field, "target_id": target_id}
-    bot.answer_callback_query(c.id)
+    safe_answer(c.id)
     all_fields = {**STAT_FIELDS, **QUALS_STAT_FIELDS, **DUO_STAT_FIELDS}
     _, label = all_fields.get(field, (field, field))
     bot.send_message(uid, f"✏️ Введите новое значение для <b>{label}</b> игрока <b>{p[1]}</b>:", parse_mode="HTML")
@@ -8440,7 +8431,7 @@ def cb_admin_panel(c):
     uid = c.from_user.id
     try:
         if not is_admin(uid):
-            bot.answer_callback_query(c.id, "❌ Нет доступа")
+            safe_answer(c.id, "❌ Нет доступа")
             return
         players = get_all_players()
         active_count = sum(1 for l in running_matches.values() if l.get("status") == "active")
@@ -8487,11 +8478,11 @@ def cb_admin_panel(c):
 
         bot.edit_message_text(text, c.message.chat.id, c.message.message_id,
                               reply_markup=kb, parse_mode="HTML")
-        bot.answer_callback_query(c.id)
+        safe_answer(c.id)
     except Exception as e:
         print(f"[cb_admin_panel] Ошибка uid={uid}: {e}")
         try:
-            bot.answer_callback_query(c.id, "⚠️ Ошибка. Попробуй ещё раз.", show_alert=True)
+            safe_answer(c.id, "⚠️ Ошибка. Попробуй ещё раз.", show_alert=True)
         except Exception:
             pass
 
@@ -8547,7 +8538,7 @@ def _send_promo_add_more_kb(uid, data):
 def cb_admin_promos(c):
     uid = c.from_user.id
     if not is_admin(uid):
-        bot.answer_callback_query(c.id, "❌ Нет доступа")
+        safe_answer(c.id, "❌ Нет доступа")
         return
     codes = get_all_promo_codes()
     text = "🎁 <b>ПРОМОКОДЫ</b>\n\n"
@@ -8575,17 +8566,17 @@ def cb_admin_promos(c):
         types.InlineKeyboardButton("🔙 Назад",                   callback_data="admin_panel"),
     )
     bot.edit_message_text(text, c.message.chat.id, c.message.message_id, reply_markup=kb)
-    bot.answer_callback_query(c.id)
+    safe_answer(c.id)
 
 
 @bot.callback_query_handler(func=lambda c: c.data == "admin_promo_create")
 def cb_admin_promo_create(c):
     uid = c.from_user.id
     if not is_admin(uid):
-        bot.answer_callback_query(c.id, "❌ Нет доступа")
+        safe_answer(c.id, "❌ Нет доступа")
         return
     promo_admin_flow[uid] = {"step": "code", "rewards": []}
-    bot.answer_callback_query(c.id)
+    safe_answer(c.id)
     sent = bot.send_message(
         uid,
         "🎁 <b>Создание промокода</b>\n\n"
@@ -8600,10 +8591,10 @@ def cb_admin_promo_create(c):
 def cb_admin_promo_deactivate(c):
     uid = c.from_user.id
     if not is_admin(uid):
-        bot.answer_callback_query(c.id, "❌ Нет доступа")
+        safe_answer(c.id, "❌ Нет доступа")
         return
     promo_admin_flow[uid] = {"step": "deactivate"}
-    bot.answer_callback_query(c.id)
+    safe_answer(c.id)
     bot.send_message(uid, "❌ Введите код промокода для деактивации:")
 
 
@@ -8611,15 +8602,15 @@ def cb_admin_promo_deactivate(c):
 def cb_promo_reward_type(c):
     uid = c.from_user.id
     if not is_admin(uid):
-        bot.answer_callback_query(c.id, "❌ Нет доступа")
+        safe_answer(c.id, "❌ Нет доступа")
         return
     if uid not in promo_admin_flow:
-        bot.answer_callback_query(c.id, "❌ Сессия не найдена")
+        safe_answer(c.id, "❌ Сессия не найдена")
         return
     reward_type = c.data.split("promo_reward_")[1]
     data = promo_admin_flow[uid]
     data["_cur_reward_type"] = reward_type
-    bot.answer_callback_query(c.id)
+    safe_answer(c.id)
     try:
         bot.delete_message(c.message.chat.id, c.message.message_id)
     except Exception:
@@ -8644,12 +8635,12 @@ def cb_promo_reward_type(c):
 def cb_promo_add_more(c):
     uid = c.from_user.id
     if not is_admin(uid):
-        bot.answer_callback_query(c.id, "❌ Нет доступа")
+        safe_answer(c.id, "❌ Нет доступа")
         return
     if uid not in promo_admin_flow:
-        bot.answer_callback_query(c.id, "❌ Сессия не найдена")
+        safe_answer(c.id, "❌ Сессия не найдена")
         return
-    bot.answer_callback_query(c.id)
+    safe_answer(c.id)
     try:
         bot.delete_message(c.message.chat.id, c.message.message_id)
     except Exception:
@@ -8663,12 +8654,12 @@ def cb_promo_add_more(c):
 def cb_promo_finalize(c):
     uid = c.from_user.id
     if not is_admin(uid):
-        bot.answer_callback_query(c.id, "❌ Нет доступа")
+        safe_answer(c.id, "❌ Нет доступа")
         return
     if uid not in promo_admin_flow:
-        bot.answer_callback_query(c.id, "❌ Сессия не найдена")
+        safe_answer(c.id, "❌ Сессия не найдена")
         return
-    bot.answer_callback_query(c.id)
+    safe_answer(c.id)
     try:
         bot.delete_message(c.message.chat.id, c.message.message_id)
     except Exception:
@@ -8791,7 +8782,7 @@ def handle_promo_admin_flow(msg):
 def cb_admin_matches(c):
     uid = c.from_user.id
     if not is_admin(uid):
-        bot.answer_callback_query(c.id, "❌ Нет доступа")
+        safe_answer(c.id, "❌ Нет доступа")
         return
     active = [(mk, l) for mk, l in running_matches.items() if l.get("status") == "active"]
     if not active:
@@ -8799,7 +8790,7 @@ def cb_admin_matches(c):
         kb = types.InlineKeyboardMarkup()
         kb.add(types.InlineKeyboardButton("🔙 Назад", callback_data="admin_panel"))
         bot.edit_message_text(text, c.message.chat.id, c.message.message_id, reply_markup=kb)
-        bot.answer_callback_query(c.id)
+        safe_answer(c.id)
         return
     text = "🎮 <b>Активные матчи</b>\n\n"
     kb = types.InlineKeyboardMarkup(row_width=1)
@@ -8810,19 +8801,19 @@ def cb_admin_matches(c):
         kb.add(types.InlineKeyboardButton(f"⚙️ Match #{mid}", callback_data=f"admin_match_manage_{mk}"))
     kb.add(types.InlineKeyboardButton("🔙 Назад", callback_data="admin_panel"))
     bot.edit_message_text(text, c.message.chat.id, c.message.message_id, reply_markup=kb)
-    bot.answer_callback_query(c.id)
+    safe_answer(c.id)
 
 
 @bot.callback_query_handler(func=lambda c: c.data.startswith("admin_match_manage_"))
 def cb_admin_match_manage(c):
     uid = c.from_user.id
     if not is_admin(uid):
-        bot.answer_callback_query(c.id, "❌ Нет доступа")
+        safe_answer(c.id, "❌ Нет доступа")
         return
     match_key = c.data[len("admin_match_manage_"):]
     lobby = running_matches.get(match_key)
     if not lobby:
-        bot.answer_callback_query(c.id, "❌ Матч не найден")
+        safe_answer(c.id, "❌ Матч не найден")
         return
     match_id   = lobby.get("match_id", "?")
     match_code = lobby.get("match_code", str(match_id))
@@ -8838,14 +8829,14 @@ def cb_admin_match_manage(c):
         types.InlineKeyboardButton("🔙 Назад",       callback_data="admin_matches"),
     )
     bot.edit_message_text(text, c.message.chat.id, c.message.message_id, reply_markup=kb)
-    bot.answer_callback_query(c.id)
+    safe_answer(c.id)
 
 
 @bot.callback_query_handler(func=lambda c: c.data == "admin_players")
 def cb_admin_players(c):
     uid = c.from_user.id
     if not is_admin(uid):
-        bot.answer_callback_query(c.id, "❌ Нет доступа")
+        safe_answer(c.id, "❌ Нет доступа")
         return
     players = get_all_players()
     text = "👥 <b>СПИСОК ИГРОКОВ</b>\n\n"
@@ -8862,14 +8853,14 @@ def cb_admin_players(c):
     kb = types.InlineKeyboardMarkup()
     kb.add(types.InlineKeyboardButton("🔙 Назад", callback_data="admin_panel"))
     bot.edit_message_text(text, c.message.chat.id, c.message.message_id, reply_markup=kb)
-    bot.answer_callback_query(c.id)
+    safe_answer(c.id)
 
 
 @bot.callback_query_handler(func=lambda c: c.data == "admin_match_history")
 def cb_admin_match_history(c):
     uid = c.from_user.id
     if not is_admin(uid):
-        bot.answer_callback_query(c.id, "❌ Нет доступа")
+        safe_answer(c.id, "❌ Нет доступа")
         return
     matches = get_match_history(10)
     text = "📋 <b>ИСТОРИЯ МАТЧЕЙ</b>\n\nМатчей нет." if not matches else "📋 <b>ИСТОРИЯ МАТЧЕЙ</b>\n\n"
@@ -8881,7 +8872,7 @@ def cb_admin_match_history(c):
     kb = types.InlineKeyboardMarkup()
     kb.add(types.InlineKeyboardButton("🔙 Назад", callback_data="admin_panel"))
     bot.edit_message_text(text, c.message.chat.id, c.message.message_id, reply_markup=kb)
-    bot.answer_callback_query(c.id)
+    safe_answer(c.id)
 
 
 _RESTRICT_MAP = {
@@ -8913,12 +8904,12 @@ _RESTRICT_MAP = {
 def cb_admin_action(c):
     uid = c.from_user.id
     if not is_admin(uid):
-        bot.answer_callback_query(c.id, "❌ Нет доступа")
+        safe_answer(c.id, "❌ Нет доступа")
         return
     action = c.data.split("admin_")[1]
     restrict_key = _RESTRICT_MAP.get(action)
     if restrict_key and is_admin_restricted(uid, restrict_key):
-        bot.answer_callback_query(c.id, "❌ Доступ к этой функции ограничен", show_alert=True)
+        safe_answer(c.id, "❌ Доступ к этой функции ограничен", show_alert=True)
         return
     prompts = {
         "search":         "🔍 Введите Telegram ID или никнейм:",
@@ -8946,7 +8937,7 @@ def cb_admin_action(c):
     else:
         prompt = prompts.get(action, "Введите данные:")
     admin_action[uid] = action
-    bot.answer_callback_query(c.id)
+    safe_answer(c.id)
     bot.send_message(uid, prompt, parse_mode="HTML")
 
 
@@ -8955,13 +8946,13 @@ def cb_admin_action(c):
 def cb_admin_ban_start(c):
     uid = c.from_user.id
     if not is_admin(uid):
-        bot.answer_callback_query(c.id, "❌ Нет доступа")
+        safe_answer(c.id, "❌ Нет доступа")
         return
     if is_admin_restricted(uid, "ban"):
-        bot.answer_callback_query(c.id, "❌ Доступ к этой функции ограничен", show_alert=True)
+        safe_answer(c.id, "❌ Доступ к этой функции ограничен", show_alert=True)
         return
     ban_flow[uid] = {"step": "target"}
-    bot.answer_callback_query(c.id)
+    safe_answer(c.id)
     bot.send_message(uid, "🚫 <b>Шаг 1/3</b> — Введите Telegram ID или никнейм игрока:", parse_mode="HTML")
 
 
@@ -9304,7 +9295,7 @@ def handle_admin_action(msg):
 
 @bot.callback_query_handler(func=lambda c: c.data == "admin_noop")
 def cb_admin_noop(c):
-    bot.answer_callback_query(c.id)
+    safe_answer(c.id)
 
 
 def _do_admin_give_item(admin_uid: int, target_id: int, item_id: int):
@@ -9356,7 +9347,7 @@ def _do_admin_give_item(admin_uid: int, target_id: int, item_id: int):
 def cb_admin_give_item_pick(c):
     uid = c.from_user.id
     if not is_admin(uid):
-        bot.answer_callback_query(c.id, "❌ Нет доступа")
+        safe_answer(c.id, "❌ Нет доступа")
         return
     try:
         # Format: adm_gi_{target_id}_{item_id}
@@ -9364,9 +9355,9 @@ def cb_admin_give_item_pick(c):
         target_id = int(parts[2])
         item_id   = int(parts[3])
     except (IndexError, ValueError):
-        bot.answer_callback_query(c.id, "❌ Ошибка")
+        safe_answer(c.id, "❌ Ошибка")
         return
-    bot.answer_callback_query(c.id)
+    safe_answer(c.id)
     _do_admin_give_item(uid, target_id, item_id)
 
 
@@ -9619,14 +9610,14 @@ def handle_mute_flow(msg):
 def cb_admin_do_action(c):
     uid = c.from_user.id
     if not is_admin(uid):
-        bot.answer_callback_query(c.id, "❌ Нет доступа")
+        safe_answer(c.id, "❌ Нет доступа")
         return
     parts = c.data.split("_")
     action = "_".join(parts[2:-1])
     target_id = int(parts[-1])
     p = get_player(target_id)
     if not p:
-        bot.answer_callback_query(c.id, "❌ Игрок не найден")
+        safe_answer(c.id, "❌ Игрок не найден")
         return
     conn = _db()
     cur = conn.cursor()
@@ -9641,7 +9632,7 @@ def cb_admin_do_action(c):
             c2 = _db(); c2cur = c2.cursor()
             c2cur.execute("UPDATE players SET is_banned=0, ban_reason='', ban_until=0 WHERE user_id=%s", (target_id,))
             c2.commit(); c2.close()
-            bot.answer_callback_query(c.id, f"✅ Разблокирован: {p[1]}", show_alert=True)
+            safe_answer(c.id, f"✅ Разблокирован: {p[1]}", show_alert=True)
             try:
                 bot.send_message(target_id, "✅ Вы разблокированы.")
             except Exception:
@@ -9654,7 +9645,7 @@ def cb_admin_do_action(c):
                 f"👤 Разбанен: {tg_link(target_id, p[1])}"
             )
         else:
-            bot.answer_callback_query(c.id, f"🚫 Начат бан {p[1]}", show_alert=True)
+            safe_answer(c.id, f"🚫 Начат бан {p[1]}", show_alert=True)
             bot.send_message(
                 uid,
                 f"🚫 <b>Шаг 2/3</b> — Срок бана для <b>{p[1]}</b>\n\n"
@@ -9665,7 +9656,7 @@ def cb_admin_do_action(c):
     elif action == "warn":
         conn.close()
         warn_flow[uid] = {"step": "reason", "target_id": target_id, "target_name": p[1]}
-        bot.answer_callback_query(c.id, f"⚠️ Введите причину варна для {p[1]}", show_alert=True)
+        safe_answer(c.id, f"⚠️ Введите причину варна для {p[1]}", show_alert=True)
         bot.send_message(uid, f"⚠️ <b>Шаг 2/2</b> — Причина варна для <b>{p[1]}</b>:\n\nВведите причину:", parse_mode="HTML")
         return
     elif action == "unwarn":
@@ -9673,7 +9664,7 @@ def cb_admin_do_action(c):
         new_warns = max(0, cur_warns - 1)
         cur.execute("UPDATE players SET warns=%s WHERE user_id=%s", (new_warns, target_id))
         conn.commit(); conn.close()
-        bot.answer_callback_query(c.id, f"➖ Варн снят: {p[1]} ({new_warns}/3)", show_alert=True)
+        safe_answer(c.id, f"➖ Варн снят: {p[1]} ({new_warns}/3)", show_alert=True)
         try:
             bot.send_message(target_id, f"➖ Один варн снят администратором. Осталось: {new_warns}/3")
         except Exception:
@@ -9690,7 +9681,7 @@ def cb_admin_do_action(c):
     elif action == "mute":
         conn.close()
         mute_flow[uid] = {"step": "duration", "target_id": target_id, "target_name": p[1]}
-        bot.answer_callback_query(c.id, f"🔇 Введите срок мута для {p[1]}", show_alert=True)
+        safe_answer(c.id, f"🔇 Введите срок мута для {p[1]}", show_alert=True)
         bot.send_message(
             uid,
             f"🔇 <b>Шаг 2/3</b> — Срок мута для <b>{p[1]}</b>:\n\n"
@@ -9701,7 +9692,7 @@ def cb_admin_do_action(c):
     elif action == "unmute":
         cur.execute("UPDATE players SET is_muted=0, mute_until=0 WHERE user_id=%s", (target_id,))
         conn.commit(); conn.close()
-        bot.answer_callback_query(c.id, f"🔊 Мут снят: {p[1]}", show_alert=True)
+        safe_answer(c.id, f"🔊 Мут снят: {p[1]}", show_alert=True)
         try:
             bot.send_message(target_id, "🔊 Ваш мут снят администратором.")
         except Exception:
@@ -9717,7 +9708,7 @@ def cb_admin_do_action(c):
     elif action == "check":
         cur.execute("UPDATE players SET is_on_check=1, check_admin_id=%s WHERE user_id=%s", (uid, target_id))
         conn.commit(); conn.close()
-        bot.answer_callback_query(c.id, f"🔎 На проверке: {p[1]}", show_alert=True)
+        safe_answer(c.id, f"🔎 На проверке: {p[1]}", show_alert=True)
         try:
             bot.send_message(target_id, f"⚠️ <b>Вас вызвали на проверку!</b>\n\nОбратитесь к администратору.", parse_mode="HTML")
         except Exception:
@@ -9733,7 +9724,7 @@ def cb_admin_do_action(c):
     elif action == "uncheck":
         cur.execute("UPDATE players SET is_on_check=0, check_admin_id=0 WHERE user_id=%s", (target_id,))
         conn.commit(); conn.close()
-        bot.answer_callback_query(c.id, f"✅ Проверка снята: {p[1]}", show_alert=True)
+        safe_answer(c.id, f"✅ Проверка снята: {p[1]}", show_alert=True)
         try:
             bot.send_message(target_id, "✅ Проверка снята. Доступ восстановлен.")
         except Exception:
@@ -9757,7 +9748,7 @@ def cb_admin_do_action(c):
         msg_text = f"{'⭐ Quals выдан' if new_val else '❌ Quals снят'}: {p[1]}"
     elif action == "give_item":
         conn.close()
-        bot.answer_callback_query(c.id, f"🎁 Выбор предмета для {p[1]}", show_alert=False)
+        safe_answer(c.id, f"🎁 Выбор предмета для {p[1]}", show_alert=False)
         bot.send_message(
             uid,
             f"🎁 <b>Выдача предмета</b> для <b>{p[1]}</b>\n\n"
@@ -9780,11 +9771,11 @@ def cb_admin_do_action(c):
             pass
     else:
         conn.close()
-        bot.answer_callback_query(c.id, "❌ Неизвестное действие")
+        safe_answer(c.id, "❌ Неизвестное действие")
         return
     conn.commit()
     conn.close()
-    bot.answer_callback_query(c.id, msg_text, show_alert=True)
+    safe_answer(c.id, msg_text, show_alert=True)
 
 
 # ==================== ДОБАВЛЕНИЕ БОТОВ (АДМИН) ====================
@@ -9792,7 +9783,7 @@ def cb_admin_do_action(c):
 def cb_add_bots(c):
     uid = c.from_user.id
     if not is_admin(uid):
-        bot.answer_callback_query(c.id, "❌ Нет доступа")
+        safe_answer(c.id, "❌ Нет доступа")
         return
     kb = types.InlineKeyboardMarkup(row_width=1)
     for lobby_id, lobby in active_lobbies.items():
@@ -9804,23 +9795,23 @@ def cb_add_bots(c):
                 callback_data=f"fill_bots_{lobby_id}",
             ))
     if not kb.keyboard:
-        bot.answer_callback_query(c.id, "❌ Нет доступных лобби", show_alert=True)
+        safe_answer(c.id, "❌ Нет доступных лобби", show_alert=True)
         return
     kb.add(types.InlineKeyboardButton("🔙 Назад", callback_data="back"))
     bot.edit_message_text("🤖 Выберите лобби для заполнения ботами:", c.message.chat.id, c.message.message_id, reply_markup=kb)
-    bot.answer_callback_query(c.id)
+    safe_answer(c.id)
 
 
 @bot.callback_query_handler(func=lambda c: c.data.startswith("fill_bots_"))
 def cb_fill_bots(c):
     uid = c.from_user.id
     if not is_admin(uid):
-        bot.answer_callback_query(c.id, "❌ Нет доступа")
+        safe_answer(c.id, "❌ Нет доступа")
         return
     lobby_id = c.data[len("fill_bots_"):]
     lobby = active_lobbies.get(lobby_id)
     if not lobby or lobby["status"] != "waiting":
-        bot.answer_callback_query(c.id, "❌ Лобби недоступно")
+        safe_answer(c.id, "❌ Лобби недоступно")
         return
     bots = get_bots()
     _msz_fill = _lobby_max_size(lobby.get("league", "default"))
@@ -9829,7 +9820,7 @@ def cb_fill_bots(c):
     fill = random.sample(available_bots, min(needed, len(available_bots)))
     for b_id, _ in fill:
         lobby["players"].append(b_id)
-    bot.answer_callback_query(c.id, f"✅ Добавлено {len(fill)} ботов")
+    safe_answer(c.id, f"✅ Добавлено {len(fill)} ботов")
     if len(lobby["players"]) >= _msz_fill:
         start_accept_phase(lobby_id)
     else:
@@ -9841,7 +9832,7 @@ def cb_fill_bots(c):
 def cb_game_reg_panel(c):
     uid = c.from_user.id
     if not is_game_reg_check(uid):
-        bot.answer_callback_query(c.id, "❌ Нет доступа")
+        safe_answer(c.id, "❌ Нет доступа")
         return
     active = [(mk, l) for mk, l in running_matches.items() if l.get("status") == "active"]
     if not active:
@@ -9849,7 +9840,7 @@ def cb_game_reg_panel(c):
         kb = types.InlineKeyboardMarkup()
         kb.add(types.InlineKeyboardButton("🔙 Назад", callback_data="back"))
         bot.edit_message_text(text, c.message.chat.id, c.message.message_id, reply_markup=kb)
-        bot.answer_callback_query(c.id)
+        safe_answer(c.id)
         return
     text = "📋 <b>Активные матчи</b>\n\n"
     kb = types.InlineKeyboardMarkup(row_width=1)
@@ -9862,7 +9853,7 @@ def cb_game_reg_panel(c):
         kb.add(types.InlineKeyboardButton(f"📝 Зарегистрировать Match #{mid}", callback_data=f"reg_match|{mk}"))
     kb.add(types.InlineKeyboardButton("🔙 Назад", callback_data="back"))
     bot.edit_message_text(text, c.message.chat.id, c.message.message_id, reply_markup=kb)
-    bot.answer_callback_query(c.id)
+    safe_answer(c.id)
 
 
 # ==================== АВТО-РАЗБАН / АВТО-РАЗМУТ ====================
@@ -9992,7 +9983,7 @@ def auto_unban_loop():
 def cb_admin_seasons(c):
     uid = c.from_user.id
     if not is_admin(uid):
-        bot.answer_callback_query(c.id, "❌ Нет доступа")
+        safe_answer(c.id, "❌ Нет доступа")
         return
     season = get_current_season()
     all_seasons = get_all_seasons()
@@ -10021,14 +10012,14 @@ def cb_admin_seasons(c):
         kb.add(types.InlineKeyboardButton(f"🏅 Топ сезона #{season[1]}", callback_data=f"admin_season_top|{season[0]}"))
     kb.add(types.InlineKeyboardButton("🔙 Назад", callback_data="admin_panel"))
     bot.edit_message_text(text, c.message.chat.id, c.message.message_id, reply_markup=kb, parse_mode="HTML")
-    bot.answer_callback_query(c.id)
+    safe_answer(c.id)
 
 
 @bot.callback_query_handler(func=lambda c: c.data == "admin_season_reset_confirm")
 def cb_admin_season_reset_confirm(c):
     uid = c.from_user.id
     if not is_admin(uid):
-        bot.answer_callback_query(c.id, "❌ Нет доступа")
+        safe_answer(c.id, "❌ Нет доступа")
         return
     season = get_current_season()
     sname = season[2] if season else "текущий сезон"
@@ -10052,16 +10043,16 @@ def cb_admin_season_reset_confirm(c):
         types.InlineKeyboardButton("❌ Отмена",         callback_data="admin_seasons"),
     )
     bot.edit_message_text(text, c.message.chat.id, c.message.message_id, reply_markup=kb, parse_mode="HTML")
-    bot.answer_callback_query(c.id)
+    safe_answer(c.id)
 
 
 @bot.callback_query_handler(func=lambda c: c.data == "admin_season_reset_execute")
 def cb_admin_season_reset_execute(c):
     uid = c.from_user.id
     if not is_admin(uid):
-        bot.answer_callback_query(c.id, "❌ Нет доступа")
+        safe_answer(c.id, "❌ Нет доступа")
         return
-    bot.answer_callback_query(c.id, "⏳ Выполняется сброс...")
+    safe_answer(c.id, "⏳ Выполняется сброс...")
     try:
         new_season_number, players_count = reset_season(uid)
         admin_p = get_player(uid)
@@ -10106,7 +10097,7 @@ def cb_admin_season_reset_execute(c):
 def cb_admin_season_history(c):
     uid = c.from_user.id
     if not is_admin(uid):
-        bot.answer_callback_query(c.id, "❌ Нет доступа")
+        safe_answer(c.id, "❌ Нет доступа")
         return
     seasons = get_all_seasons()
     text = "📜 <b>ИСТОРИЯ СЕЗОНОВ</b>\n\n"
@@ -10129,14 +10120,14 @@ def cb_admin_season_history(c):
             kb.add(types.InlineKeyboardButton(f"🏅 Топ: {sname}", callback_data=f"admin_season_top|{sid}"))
     kb.add(types.InlineKeyboardButton("🔙 Назад", callback_data="admin_seasons"))
     bot.edit_message_text(text, c.message.chat.id, c.message.message_id, reply_markup=kb, parse_mode="HTML")
-    bot.answer_callback_query(c.id)
+    safe_answer(c.id)
 
 
 @bot.callback_query_handler(func=lambda c: c.data.startswith("admin_season_top|"))
 def cb_admin_season_top(c):
     uid = c.from_user.id
     if not is_admin(uid):
-        bot.answer_callback_query(c.id, "❌ Нет доступа")
+        safe_answer(c.id, "❌ Нет доступа")
         return
     season_id = int(c.data.split("|", 1)[1])
     top = get_season_top(season_id)
@@ -10166,7 +10157,7 @@ def cb_admin_season_top(c):
     kb = types.InlineKeyboardMarkup()
     kb.add(types.InlineKeyboardButton("🔙 Назад", callback_data="admin_season_history"))
     bot.edit_message_text(text, c.message.chat.id, c.message.message_id, reply_markup=kb, parse_mode="HTML")
-    bot.answer_callback_query(c.id)
+    safe_answer(c.id)
 
 
 # ==================== ТИКЕТЫ — АДМИН ПАНЕЛЬ ====================
@@ -10175,7 +10166,7 @@ def cb_admin_season_top(c):
 def cb_admin_tickets(c):
     uid = c.from_user.id
     if not is_admin(uid):
-        bot.answer_callback_query(c.id, "❌ Нет доступа")
+        safe_answer(c.id, "❌ Нет доступа")
         return
     tickets = get_open_tickets()
     if not tickets:
@@ -10183,7 +10174,7 @@ def cb_admin_tickets(c):
         kb = types.InlineKeyboardMarkup()
         kb.add(types.InlineKeyboardButton("🔙 Назад", callback_data="admin_panel"))
         bot.edit_message_text(text, c.message.chat.id, c.message.message_id, reply_markup=kb, parse_mode="HTML")
-        bot.answer_callback_query(c.id)
+        safe_answer(c.id)
         return
 
     text = f"🎟 <b>ОТКРЫТЫЕ ТИКЕТЫ</b> ({len(tickets)})\n\n"
@@ -10204,14 +10195,14 @@ def cb_admin_tickets(c):
         text += f"<i>...и ещё {len(tickets)-15}</i>\n"
     kb.add(types.InlineKeyboardButton("🔙 Назад", callback_data="admin_panel"))
     bot.edit_message_text(text, c.message.chat.id, c.message.message_id, reply_markup=kb, parse_mode="HTML")
-    bot.answer_callback_query(c.id)
+    safe_answer(c.id)
 
 
 @bot.callback_query_handler(func=lambda c: c.data.startswith("admin_ticket_view|"))
 def cb_admin_ticket_view(c):
     uid = c.from_user.id
     if not is_admin(uid):
-        bot.answer_callback_query(c.id, "❌ Нет доступа")
+        safe_answer(c.id, "❌ Нет доступа")
         return
     ticket_code = c.data.split("|", 1)[1]
     conn = _db()
@@ -10223,7 +10214,7 @@ def cb_admin_ticket_view(c):
     row = cur.fetchone()
     conn.close()
     if not row:
-        bot.answer_callback_query(c.id, "❌ Тикет не найден", show_alert=True)
+        safe_answer(c.id, "❌ Тикет не найден", show_alert=True)
         return
     tcode, user_id, match_code, reason, evidence_file_id, accused_id, accused_name, status, created_at = row
     p = get_player(user_id)
@@ -10247,7 +10238,7 @@ def cb_admin_ticket_view(c):
             types.InlineKeyboardButton("❌ Отклонить",        callback_data=f"ticket_reject|{tcode}"),
         )
     kb.add(types.InlineKeyboardButton("🔙 К тикетам", callback_data="admin_tickets"))
-    bot.answer_callback_query(c.id)
+    safe_answer(c.id)
     if evidence_file_id:
         try:
             bot.send_photo(c.message.chat.id, evidence_file_id, caption=text, reply_markup=kb, parse_mode="HTML")
@@ -10282,7 +10273,7 @@ def _ticket_back_kb():
 def cb_ticket_cancel(c):
     uid = c.from_user.id
     ticket_flow.pop(uid, None)
-    bot.answer_callback_query(c.id, "❌ Тикет отменён")
+    safe_answer(c.id, "❌ Тикет отменён")
     try:
         bot.edit_message_text("❌ Создание тикета отменено.", c.message.chat.id, c.message.message_id)
     except Exception:
@@ -10295,10 +10286,10 @@ def cb_ticket_back(c):
     uid = c.from_user.id
     data = ticket_flow.get(uid)
     if not data:
-        bot.answer_callback_query(c.id, "❌ Нет активного тикета", show_alert=True)
+        safe_answer(c.id, "❌ Нет активного тикета", show_alert=True)
         return
     step = data.get("step", "match_code")
-    bot.answer_callback_query(c.id)
+    safe_answer(c.id)
     if step == "reason":
         # Вернуться к шагу match_code
         ticket_flow[uid]["step"] = "match_code"
@@ -10362,13 +10353,13 @@ def cb_ticket_start(c):
     uid = c.from_user.id
     err = check_blocked(uid)
     if err:
-        bot.answer_callback_query(c.id, "⚠️ Доступ ограничен", show_alert=True)
+        safe_answer(c.id, "⚠️ Доступ ограничен", show_alert=True)
         return
     if not is_registered(uid):
-        bot.answer_callback_query(c.id, "❌ Сначала зарегистрируйтесь", show_alert=True)
+        safe_answer(c.id, "❌ Сначала зарегистрируйтесь", show_alert=True)
         return
     ticket_flow[uid] = {"step": "match_code"}
-    bot.answer_callback_query(c.id)
+    safe_answer(c.id)
     try:
         bot.edit_message_text(
             "🎟 <b>СОЗДАНИЕ ТИКЕТА</b>\n\n"
@@ -10531,7 +10522,7 @@ def ticket_step_accused(msg):
 def cb_ticket_action(c):
     uid = c.from_user.id
     if not is_admin(uid):
-        bot.answer_callback_query(c.id, "❌ Нет доступа", show_alert=True)
+        safe_answer(c.id, "❌ Нет доступа", show_alert=True)
         return
     parts = c.data.split("|", 1)
     action      = parts[0]    # "ticket_close" or "ticket_reject"
@@ -10542,7 +10533,7 @@ def cb_ticket_action(c):
 
     row = close_ticket(ticket_code, uid, close_reason, new_status)
 
-    bot.answer_callback_query(c.id, "✅ Тикет обновлён")
+    safe_answer(c.id, "✅ Тикет обновлён")
     admin_p = get_player(uid)
     admin_name = admin_p[1] if admin_p else str(uid)
 
@@ -10740,7 +10731,7 @@ def _creator_panel_kb():
 def cb_creator_panel(c):
     uid = c.from_user.id
     if not is_creator(uid):
-        bot.answer_callback_query(c.id, "❌ Нет доступа")
+        safe_answer(c.id, "❌ Нет доступа")
         return
     text = (
         "🔴 <b>КРЕАТОРСКАЯ ПАНЕЛЬ</b>\n\n"
@@ -10757,14 +10748,14 @@ def cb_creator_panel(c):
     except Exception:
         bot.send_message(c.message.chat.id, text,
                          reply_markup=_creator_panel_kb(), parse_mode="HTML")
-    bot.answer_callback_query(c.id)
+    safe_answer(c.id)
 
 
 @bot.callback_query_handler(func=lambda c: c.data == "creator_logs")
 def cb_creator_logs(c):
     uid = c.from_user.id
     if not is_creator(uid):
-        bot.answer_callback_query(c.id, "❌ Нет доступа")
+        safe_answer(c.id, "❌ Нет доступа")
         return
     rows = _get_admin_logs(limit=25)
     if not rows:
@@ -10785,14 +10776,14 @@ def cb_creator_logs(c):
                               reply_markup=kb, parse_mode="HTML")
     except Exception:
         bot.send_message(c.message.chat.id, text, reply_markup=kb, parse_mode="HTML")
-    bot.answer_callback_query(c.id)
+    safe_answer(c.id)
 
 
 @bot.callback_query_handler(func=lambda c: c.data == "creator_reset_all")
 def cb_creator_reset_all(c):
     uid = c.from_user.id
     if not is_creator(uid):
-        bot.answer_callback_query(c.id, "❌ Нет доступа")
+        safe_answer(c.id, "❌ Нет доступа")
         return
     kb = types.InlineKeyboardMarkup(row_width=2)
     kb.add(
@@ -10807,33 +10798,33 @@ def cb_creator_reset_all(c):
         c.message.chat.id, c.message.message_id,
         reply_markup=kb, parse_mode="HTML",
     )
-    bot.answer_callback_query(c.id)
+    safe_answer(c.id)
 
 
 @bot.callback_query_handler(func=lambda c: c.data == "creator_reset_all_exec")
 def cb_creator_reset_all_exec(c):
     uid = c.from_user.id
     if not is_creator(uid):
-        bot.answer_callback_query(c.id, "❌ Нет доступа")
+        safe_answer(c.id, "❌ Нет доступа")
         return
     try:
         _reset_all_stats("players")
         log_admin_action(uid, "reset_all_stats", details="Обнуление статы всех игроков")
-        bot.answer_callback_query(c.id, "✅ Статистика всех игроков обнулена!", show_alert=True)
+        safe_answer(c.id, "✅ Статистика всех игроков обнулена!", show_alert=True)
         bot.edit_message_text(
             "✅ <b>Статистика всех игроков успешно обнулена.</b>",
             c.message.chat.id, c.message.message_id,
             reply_markup=_creator_panel_kb(), parse_mode="HTML",
         )
     except Exception as e:
-        bot.answer_callback_query(c.id, f"❌ Ошибка: {e}", show_alert=True)
+        safe_answer(c.id, f"❌ Ошибка: {e}", show_alert=True)
 
 
 @bot.callback_query_handler(func=lambda c: c.data == "creator_reset_everything")
 def cb_creator_reset_everything(c):
     uid = c.from_user.id
     if not is_creator(uid):
-        bot.answer_callback_query(c.id, "❌ Нет доступа")
+        safe_answer(c.id, "❌ Нет доступа")
         return
     kb = types.InlineKeyboardMarkup(row_width=2)
     kb.add(
@@ -10855,19 +10846,19 @@ def cb_creator_reset_everything(c):
         c.message.chat.id, c.message.message_id,
         reply_markup=kb, parse_mode="HTML",
     )
-    bot.answer_callback_query(c.id)
+    safe_answer(c.id)
 
 
 @bot.callback_query_handler(func=lambda c: c.data == "creator_reset_everything_exec")
 def cb_creator_reset_everything_exec(c):
     uid = c.from_user.id
     if not is_creator(uid):
-        bot.answer_callback_query(c.id, "❌ Нет доступа")
+        safe_answer(c.id, "❌ Нет доступа")
         return
     try:
         _reset_everything("players")
         log_admin_action(uid, "reset_everything", details="Полное обнуление всех игроков (ELO, монеты, премка, варны, баны, мут)")
-        bot.answer_callback_query(c.id, "💣 Всё обнулено!", show_alert=True)
+        safe_answer(c.id, "💣 Всё обнулено!", show_alert=True)
         bot.edit_message_text(
             "💣 <b>Полное обнуление выполнено.</b>\n\n"
             "У всех игроков сброшены: ELO, статы, монеты, варны, баны, мут, премиум.",
@@ -10875,17 +10866,17 @@ def cb_creator_reset_everything_exec(c):
             reply_markup=_creator_panel_kb(), parse_mode="HTML",
         )
     except Exception as e:
-        bot.answer_callback_query(c.id, f"❌ Ошибка: {e}", show_alert=True)
+        safe_answer(c.id, f"❌ Ошибка: {e}", show_alert=True)
 
 
 @bot.callback_query_handler(func=lambda c: c.data == "creator_reset_player")
 def cb_creator_reset_player(c):
     uid = c.from_user.id
     if not is_creator(uid):
-        bot.answer_callback_query(c.id, "❌ Нет доступа")
+        safe_answer(c.id, "❌ Нет доступа")
         return
     creator_flow[uid] = {"step": "reset_player"}
-    bot.answer_callback_query(c.id)
+    safe_answer(c.id)
     bot.send_message(uid, "👤 Введите Telegram ID или никнейм игрока для обнуления статы:")
 
 
@@ -10893,7 +10884,7 @@ def cb_creator_reset_player(c):
 def cb_creator_restrict_menu(c):
     uid = c.from_user.id
     if not is_creator(uid):
-        bot.answer_callback_query(c.id, "❌ Нет доступа")
+        safe_answer(c.id, "❌ Нет доступа")
         return
     admins = _get_admin_list()
     non_creator = [(a_uid, a_name) for a_uid, a_name in admins if a_uid != CREATOR_ID]
@@ -10904,7 +10895,7 @@ def cb_creator_restrict_menu(c):
             "🔒 <b>Ограничения для админов</b>\n\nАдминов нет.",
             c.message.chat.id, c.message.message_id, reply_markup=kb, parse_mode="HTML",
         )
-        bot.answer_callback_query(c.id)
+        safe_answer(c.id)
         return
     kb = types.InlineKeyboardMarkup(row_width=1)
     for a_uid, a_name in non_creator:
@@ -10917,19 +10908,19 @@ def cb_creator_restrict_menu(c):
         "🔒 <b>Ограничения для администраторов</b>\n\nВыберите админа для настройки:",
         c.message.chat.id, c.message.message_id, reply_markup=kb, parse_mode="HTML",
     )
-    bot.answer_callback_query(c.id)
+    safe_answer(c.id)
 
 
 @bot.callback_query_handler(func=lambda c: c.data.startswith("creator_restrict_admin_"))
 def cb_creator_restrict_admin(c):
     uid = c.from_user.id
     if not is_creator(uid):
-        bot.answer_callback_query(c.id, "❌ Нет доступа")
+        safe_answer(c.id, "❌ Нет доступа")
         return
     try:
         target_admin = int(c.data.replace("creator_restrict_admin_", ""))
     except ValueError:
-        bot.answer_callback_query(c.id, "❌ Ошибка")
+        safe_answer(c.id, "❌ Ошибка")
         return
     target_p    = get_player(target_admin)
     target_name = target_p[1] if target_p else str(target_admin)
@@ -10952,27 +10943,27 @@ def cb_creator_restrict_admin(c):
     )
     bot.edit_message_text(text, c.message.chat.id, c.message.message_id,
                           reply_markup=kb, parse_mode="HTML")
-    bot.answer_callback_query(c.id)
+    safe_answer(c.id)
 
 
 @bot.callback_query_handler(func=lambda c: c.data.startswith("creator_toggle_"))
 def cb_creator_toggle_restriction(c):
     uid = c.from_user.id
     if not is_creator(uid):
-        bot.answer_callback_query(c.id, "❌ Нет доступа")
+        safe_answer(c.id, "❌ Нет доступа")
         return
     # Format: creator_toggle_{admin_id}_{action_key}
     # action_key may contain underACores, so split from left only twice after prefix
     suffix = c.data[len("creator_toggle_"):]
     parts  = suffix.split("_", 1)
     if len(parts) < 2:
-        bot.answer_callback_query(c.id, "❌ Ошибка")
+        safe_answer(c.id, "❌ Ошибка")
         return
     try:
         target_admin = int(parts[0])
         action_key   = parts[1]
     except ValueError:
-        bot.answer_callback_query(c.id, "❌ Ошибка")
+        safe_answer(c.id, "❌ Ошибка")
         return
     restrictions = _get_admin_restrictions_set(target_admin)
     try:
@@ -10994,9 +10985,9 @@ def cb_creator_toggle_restriction(c):
         conn.close()
         log_admin_action(uid, "toggle_restriction", target_id=target_admin,
                          details=f"{action_key} -> {new_state}")
-        bot.answer_callback_query(c.id, f"{action_key}: {new_state}", show_alert=False)
+        safe_answer(c.id, f"{action_key}: {new_state}", show_alert=False)
     except Exception as e:
-        bot.answer_callback_query(c.id, f"❌ Ошибка: {e}", show_alert=True)
+        safe_answer(c.id, f"❌ Ошибка: {e}", show_alert=True)
         return
     # Refresh the page
     target_p    = get_player(target_admin)
@@ -11026,26 +11017,26 @@ def cb_creator_toggle_restriction(c):
 def cb_creator_reset_exec(c):
     uid = c.from_user.id
     if not is_creator(uid):
-        bot.answer_callback_query(c.id, "❌ Нет доступа")
+        safe_answer(c.id, "❌ Нет доступа")
         return
     try:
         t_uid = int(c.data.replace("creator_reset_exec_", ""))
     except ValueError:
-        bot.answer_callback_query(c.id, "❌ Ошибка")
+        safe_answer(c.id, "❌ Ошибка")
         return
     target_p = get_player(t_uid)
     t_name   = target_p[1] if target_p else str(t_uid)
     try:
         _reset_player_stats(t_uid, "players")
         log_admin_action(uid, "reset_player_stats", target_id=t_uid, details=t_name)
-        bot.answer_callback_query(c.id, f"✅ Стата {t_name} обнулена!", show_alert=True)
+        safe_answer(c.id, f"✅ Стата {t_name} обнулена!", show_alert=True)
         bot.edit_message_text(
             f"✅ <b>Статистика игрока {t_name} успешно обнулена.</b>",
             c.message.chat.id, c.message.message_id,
             reply_markup=_creator_panel_kb(), parse_mode="HTML",
         )
     except Exception as e:
-        bot.answer_callback_query(c.id, f"❌ Ошибка: {e}", show_alert=True)
+        safe_answer(c.id, f"❌ Ошибка: {e}", show_alert=True)
 
 
 @bot.message_handler(func=lambda m: m.from_user.id in creator_flow and m.text is not None)
@@ -11109,7 +11100,7 @@ def handle_creator_flow(msg):
 def cb_creator_botstats(c):
     uid = c.from_user.id
     if not is_creator(uid):
-        bot.answer_callback_query(c.id, "❌ Нет доступа")
+        safe_answer(c.id, "❌ Нет доступа")
         return
     try:
         conn = _db()
@@ -11160,7 +11151,7 @@ def cb_creator_botstats(c):
                               reply_markup=kb, parse_mode="HTML")
     except Exception:
         bot.send_message(c.message.chat.id, text, reply_markup=kb, parse_mode="HTML")
-    bot.answer_callback_query(c.id)
+    safe_answer(c.id)
 
 
 # ==================== CREATOR: РАССЫЛКА ====================
@@ -11168,10 +11159,10 @@ def cb_creator_botstats(c):
 def cb_creator_broadcast(c):
     uid = c.from_user.id
     if not is_creator(uid):
-        bot.answer_callback_query(c.id, "❌ Нет доступа")
+        safe_answer(c.id, "❌ Нет доступа")
         return
     creator_flow[uid] = {"step": "broadcast"}
-    bot.answer_callback_query(c.id)
+    safe_answer(c.id)
     kb = types.InlineKeyboardMarkup()
     kb.add(types.InlineKeyboardButton("❌ Отмена", callback_data="creator_panel"))
     bot.send_message(
@@ -11187,16 +11178,16 @@ def cb_creator_broadcast(c):
 def cb_creator_broadcast_confirm(c):
     uid = c.from_user.id
     if not is_creator(uid):
-        bot.answer_callback_query(c.id, "❌ Нет доступа")
+        safe_answer(c.id, "❌ Нет доступа")
         return
     text_key = c.data.replace("creator_broadcast_confirm_", "")
     flow = creator_flow.get(uid, {})
     broadcast_text = flow.get("broadcast_text", "")
     if not broadcast_text:
-        bot.answer_callback_query(c.id, "❌ Текст не найден")
+        safe_answer(c.id, "❌ Текст не найден")
         return
     creator_flow.pop(uid, None)
-    bot.answer_callback_query(c.id)
+    safe_answer(c.id)
     try:
         conn = _db()
         cur  = conn.cursor()
@@ -11229,10 +11220,10 @@ def cb_creator_broadcast_confirm(c):
 def cb_creator_give_premium(c):
     uid = c.from_user.id
     if not is_creator(uid):
-        bot.answer_callback_query(c.id, "❌ Нет доступа")
+        safe_answer(c.id, "❌ Нет доступа")
         return
     creator_flow[uid] = {"step": "give_premium_id"}
-    bot.answer_callback_query(c.id)
+    safe_answer(c.id)
     kb = types.InlineKeyboardMarkup()
     kb.add(types.InlineKeyboardButton("❌ Отмена", callback_data="creator_panel"))
     bot.send_message(uid, "🎁 Введите Telegram ID или ник игрока для выдачи Premium:",
@@ -11243,17 +11234,17 @@ def cb_creator_give_premium(c):
 def cb_creator_premium_exec(c):
     uid = c.from_user.id
     if not is_creator(uid):
-        bot.answer_callback_query(c.id, "❌ Нет доступа")
+        safe_answer(c.id, "❌ Нет доступа")
         return
     parts = c.data.replace("creator_premium_exec_", "").split("_")
     if len(parts) < 2:
-        bot.answer_callback_query(c.id, "❌ Ошибка")
+        safe_answer(c.id, "❌ Ошибка")
         return
     try:
         t_uid = int(parts[0])
         days  = int(parts[1])
     except ValueError:
-        bot.answer_callback_query(c.id, "❌ Ошибка")
+        safe_answer(c.id, "❌ Ошибка")
         return
     target_p = get_player(t_uid)
     t_name = target_p[1] if target_p else str(t_uid)
@@ -11270,7 +11261,7 @@ def cb_creator_premium_exec(c):
         conn.close()
         log_admin_action(uid, "give_premium", target_id=t_uid,
                          details=f"{t_name} +{days}д")
-        bot.answer_callback_query(c.id, f"✅ Premium выдан {t_name} на {days} дней!", show_alert=True)
+        safe_answer(c.id, f"✅ Premium выдан {t_name} на {days} дней!", show_alert=True)
         kb = types.InlineKeyboardMarkup()
         kb.add(types.InlineKeyboardButton("🔙 В панель", callback_data="creator_panel"))
         bot.edit_message_text(
@@ -11283,7 +11274,7 @@ def cb_creator_premium_exec(c):
         except Exception:
             pass
     except Exception as e:
-        bot.answer_callback_query(c.id, f"❌ Ошибка: {e}", show_alert=True)
+        safe_answer(c.id, f"❌ Ошибка: {e}", show_alert=True)
 
 
 # ==================== CREATOR: ВЕРИФИКАЦИЯ ====================
@@ -11291,10 +11282,10 @@ def cb_creator_premium_exec(c):
 def cb_creator_verify_player(c):
     uid = c.from_user.id
     if not is_creator(uid):
-        bot.answer_callback_query(c.id, "❌ Нет доступа")
+        safe_answer(c.id, "❌ Нет доступа")
         return
     creator_flow[uid] = {"step": "verify_player"}
-    bot.answer_callback_query(c.id)
+    safe_answer(c.id)
     kb = types.InlineKeyboardMarkup()
     kb.add(types.InlineKeyboardButton("❌ Отмена", callback_data="creator_panel"))
     bot.send_message(uid,
@@ -11306,17 +11297,17 @@ def cb_creator_verify_player(c):
 def cb_creator_verify_exec(c):
     uid = c.from_user.id
     if not is_creator(uid):
-        bot.answer_callback_query(c.id, "❌ Нет доступа")
+        safe_answer(c.id, "❌ Нет доступа")
         return
     parts = c.data.replace("creator_verify_exec_", "").split("_")
     if len(parts) < 2:
-        bot.answer_callback_query(c.id, "❌ Ошибка")
+        safe_answer(c.id, "❌ Ошибка")
         return
     try:
         t_uid  = int(parts[0])
         action = parts[1]
     except ValueError:
-        bot.answer_callback_query(c.id, "❌ Ошибка")
+        safe_answer(c.id, "❌ Ошибка")
         return
     target_p = get_player(t_uid)
     t_name = target_p[1] if target_p else str(t_uid)
@@ -11329,7 +11320,7 @@ def cb_creator_verify_exec(c):
         conn.close()
         label = "выдана ✅" if new_val else "снята ❌"
         log_admin_action(uid, "toggle_verify", target_id=t_uid, details=f"{t_name} -> {label}")
-        bot.answer_callback_query(c.id, f"Верификация {label} для {t_name}", show_alert=True)
+        safe_answer(c.id, f"Верификация {label} для {t_name}", show_alert=True)
         kb = types.InlineKeyboardMarkup()
         kb.add(types.InlineKeyboardButton("🔙 В панель", callback_data="creator_panel"))
         bot.edit_message_text(
@@ -11343,7 +11334,7 @@ def cb_creator_verify_exec(c):
             except Exception:
                 pass
     except Exception as e:
-        bot.answer_callback_query(c.id, f"❌ Ошибка: {e}", show_alert=True)
+        safe_answer(c.id, f"❌ Ошибка: {e}", show_alert=True)
 
 
 # ==================== CREATOR: УПРАВЛЕНИЕ АДМИНАМИ ====================
@@ -11351,7 +11342,7 @@ def cb_creator_verify_exec(c):
 def cb_creator_manage_admins(c):
     uid = c.from_user.id
     if not is_creator(uid):
-        bot.answer_callback_query(c.id, "❌ Нет доступа")
+        safe_answer(c.id, "❌ Нет доступа")
         return
     admins = _get_admin_list()
     non_creator_admins = [(a_uid, a_name) for a_uid, a_name in admins if a_uid != CREATOR_ID]
@@ -11376,17 +11367,17 @@ def cb_creator_manage_admins(c):
                               reply_markup=kb, parse_mode="HTML")
     except Exception:
         bot.send_message(c.message.chat.id, text, reply_markup=kb, parse_mode="HTML")
-    bot.answer_callback_query(c.id)
+    safe_answer(c.id)
 
 
 @bot.callback_query_handler(func=lambda c: c.data == "creator_promote")
 def cb_creator_promote(c):
     uid = c.from_user.id
     if not is_creator(uid):
-        bot.answer_callback_query(c.id, "❌ Нет доступа")
+        safe_answer(c.id, "❌ Нет доступа")
         return
     creator_flow[uid] = {"step": "promote_admin"}
-    bot.answer_callback_query(c.id)
+    safe_answer(c.id)
     kb = types.InlineKeyboardMarkup()
     kb.add(types.InlineKeyboardButton("❌ Отмена", callback_data="creator_manage_admins"))
     bot.send_message(uid, "🛡️ Введите Telegram ID игрока для назначения администратором:",
@@ -11397,12 +11388,12 @@ def cb_creator_promote(c):
 def cb_creator_demote(c):
     uid = c.from_user.id
     if not is_creator(uid):
-        bot.answer_callback_query(c.id, "❌ Нет доступа")
+        safe_answer(c.id, "❌ Нет доступа")
         return
     try:
         t_uid = int(c.data.replace("creator_demote_", ""))
     except ValueError:
-        bot.answer_callback_query(c.id, "❌ Ошибка")
+        safe_answer(c.id, "❌ Ошибка")
         return
     target_p = get_player(t_uid)
     t_name = target_p[1] if target_p else str(t_uid)
@@ -11415,9 +11406,9 @@ def cb_creator_demote(c):
         if t_uid in ADMIN_IDS_LIST:
             ADMIN_IDS_LIST.remove(t_uid)
         log_admin_action(uid, "demote_admin", target_id=t_uid, details=t_name)
-        bot.answer_callback_query(c.id, f"✅ {t_name} снят с должности администратора", show_alert=True)
+        safe_answer(c.id, f"✅ {t_name} снят с должности администратора", show_alert=True)
     except Exception as e:
-        bot.answer_callback_query(c.id, f"❌ Ошибка: {e}", show_alert=True)
+        safe_answer(c.id, f"❌ Ошибка: {e}", show_alert=True)
         return
     cb_creator_manage_admins(c)
 
@@ -11427,10 +11418,10 @@ def cb_creator_demote(c):
 def cb_creator_give_coins(c):
     uid = c.from_user.id
     if not is_creator(uid):
-        bot.answer_callback_query(c.id, "❌ Нет доступа")
+        safe_answer(c.id, "❌ Нет доступа")
         return
     creator_flow[uid] = {"step": "give_coins_id"}
-    bot.answer_callback_query(c.id)
+    safe_answer(c.id)
     kb = types.InlineKeyboardMarkup()
     kb.add(types.InlineKeyboardButton("❌ Отмена", callback_data="creator_panel"))
     bot.send_message(uid,
@@ -11442,17 +11433,17 @@ def cb_creator_give_coins(c):
 def cb_creator_coins_exec(c):
     uid = c.from_user.id
     if not is_creator(uid):
-        bot.answer_callback_query(c.id, "❌ Нет доступа")
+        safe_answer(c.id, "❌ Нет доступа")
         return
     parts = c.data.replace("creator_coins_exec_", "").split("_")
     if len(parts) < 2:
-        bot.answer_callback_query(c.id, "❌ Ошибка")
+        safe_answer(c.id, "❌ Ошибка")
         return
     try:
         t_uid  = int(parts[0])
         amount = int(parts[1])
     except ValueError:
-        bot.answer_callback_query(c.id, "❌ Ошибка")
+        safe_answer(c.id, "❌ Ошибка")
         return
     target_p = get_player(t_uid)
     t_name = target_p[1] if target_p else str(t_uid)
@@ -11467,7 +11458,7 @@ def cb_creator_coins_exec(c):
         sign = "+" if amount >= 0 else ""
         log_admin_action(uid, "give_coins", target_id=t_uid,
                          details=f"{t_name} {sign}{amount} AC")
-        bot.answer_callback_query(c.id,
+        safe_answer(c.id,
             f"✅ {t_name}: {sign}{amount} AC. Баланс: {new_bal} AC", show_alert=True)
         kb = types.InlineKeyboardMarkup()
         kb.add(types.InlineKeyboardButton("🔙 В панель", callback_data="creator_panel"))
@@ -11482,7 +11473,7 @@ def cb_creator_coins_exec(c):
         except Exception:
             pass
     except Exception as e:
-        bot.answer_callback_query(c.id, f"❌ Ошибка: {e}", show_alert=True)
+        safe_answer(c.id, f"❌ Ошибка: {e}", show_alert=True)
 
 
 # ==================== CREATOR: НОВЫЙ СЕЗОН ====================
@@ -11490,7 +11481,7 @@ def cb_creator_coins_exec(c):
 def cb_creator_new_season(c):
     uid = c.from_user.id
     if not is_creator(uid):
-        bot.answer_callback_query(c.id, "❌ Нет доступа")
+        safe_answer(c.id, "❌ Нет доступа")
         return
     try:
         conn = _db()
@@ -11520,19 +11511,19 @@ def cb_creator_new_season(c):
         c.message.chat.id, c.message.message_id,
         reply_markup=kb, parse_mode="HTML",
     )
-    bot.answer_callback_query(c.id)
+    safe_answer(c.id)
 
 
 @bot.callback_query_handler(func=lambda c: c.data.startswith("creator_new_season_exec_"))
 def cb_creator_new_season_exec(c):
     uid = c.from_user.id
     if not is_creator(uid):
-        bot.answer_callback_query(c.id, "❌ Нет доступа")
+        safe_answer(c.id, "❌ Нет доступа")
         return
     try:
         new_season_num = int(c.data.replace("creator_new_season_exec_", ""))
     except ValueError:
-        bot.answer_callback_query(c.id, "❌ Ошибка")
+        safe_answer(c.id, "❌ Ошибка")
         return
     try:
         conn = _db()
@@ -11563,7 +11554,7 @@ def cb_creator_new_season_exec(c):
         conn.commit()
         conn.close()
         log_admin_action(uid, "new_season", details=f"Сезон #{new_season_num} начат")
-        bot.answer_callback_query(c.id,
+        safe_answer(c.id,
             f"✅ Сезон #{new_season_num} начат! Статистика сохранена.", show_alert=True)
         kb = types.InlineKeyboardMarkup()
         kb.add(types.InlineKeyboardButton("🔙 В панель", callback_data="creator_panel"))
@@ -11573,7 +11564,7 @@ def cb_creator_new_season_exec(c):
             "Все игроки начинают с ELO 1000.",
             c.message.chat.id, c.message.message_id, reply_markup=kb, parse_mode="HTML")
     except Exception as e:
-        bot.answer_callback_query(c.id, f"❌ Ошибка: {e}", show_alert=True)
+        safe_answer(c.id, f"❌ Ошибка: {e}", show_alert=True)
 
 
 # ==================== CREATOR FLOW: расширенный обработчик текста ====================
