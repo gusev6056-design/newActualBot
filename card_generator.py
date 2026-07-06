@@ -187,71 +187,256 @@ def _apply_glow(img: Image.Image, xy, r: int, color, strength: int = 18, layers:
     return base.convert("RGB")
 
 
-# ==================== LEVEL FRAME PNG OVERLAY ====================
+# ==================== LEVEL FRAME DRAWING ====================
 
-def _apply_level_frame_png(img: Image.Image, ax: int, ay: int, asize: int, level: int) -> Image.Image:
-    """Overlay the level frame PNG image over the avatar.
-    The frame image is scaled to cover avatar + padding.
-    Black/near-black pixels are made transparent so only the metallic frame ring shows.
+def _draw_level_frame(img: Image.Image, ax: int, ay: int, asize: int, level: int):
+    """Draw a decorative level frame border programmatically around the avatar.
+    Each level has distinct colours and corner decorations matching the preview designs.
+    Returns (img, draw).
     """
-    fname = LEVEL_FRAME_FILES.get(level)
-    if not fname:
-        return img
-    fpath = os.path.join(_ASSETS_DIR, fname)
-    if not os.path.exists(fpath):
-        print(f"[level_frame] File not found: {fpath}")
-        return img
-    try:
-        frame = Image.open(fpath).convert("RGBA")
+    import random as _rnd
 
-        # Scale to cover avatar + equal padding on all sides.
-        # Padding must not exceed the avatar's top/left margin so the frame
-        # never gets pasted at a negative coordinate and gets clipped.
-        padding = min(ax, ay, int(asize * 0.14))   # ≤ 14 px for 118-px avatar
-        target  = asize + padding * 2
-        frame   = frame.resize((target, target), Image.LANCZOS)
+    cfg = LEVEL_BANNER_CFG.get(level, LEVEL_BANNER_CFG[1])
+    mc  = cfg["main"]    # primary colour
+    ac  = cfg["accent"]  # highlight colour
 
-        # If the frame PNG already has a proper alpha channel (i.e. at least one
-        # pixel is not fully opaque), use it directly without remasking.
-        # getextrema() returns (min, max); if min < 255 some pixels are transparent.
-        has_alpha = (frame.mode == "RGBA" and frame.split()[3].getextrema()[0] < 255)
-        if not has_alpha:
-            if _NUMPY:
-                arr = np.array(frame, dtype=np.uint8)
-                brightness = arr[:, :, :3].max(axis=2).astype(np.int16)
-                alpha = np.zeros(brightness.shape, dtype=np.uint8)
-                # fully opaque above threshold
-                alpha[brightness >= 40] = 255
-                # soft edge in transition zone
-                mask_soft = (brightness >= 12) & (brightness < 40)
-                alpha[mask_soft] = ((brightness[mask_soft] - 12) * 255 // 28).astype(np.uint8)
-                arr[:, :, 3] = alpha
-                frame = Image.fromarray(arr, "RGBA")
-            else:
-                # Fallback without numpy (slower)
-                px = frame.load()
-                W2, H2 = frame.size
-                for y in range(H2):
-                    for x in range(W2):
-                        r2, g2, b2, a2 = px[x, y]
-                        br = max(r2, g2, b2)
-                        if br < 12:
-                            px[x, y] = (r2, g2, b2, 0)
-                        elif br < 40:
-                            new_a = int((br - 12) * 255 / 28)
-                            px[x, y] = (r2, g2, b2, new_a)
-                        else:
-                            px[x, y] = (r2, g2, b2, 255)
+    RAINBOW = [
+        (255, 50, 110), (255, 130, 20), (210, 195, 0),
+        (30, 215, 55),  (0,  205, 235), (70, 70, 255), (195, 0, 255),
+    ]
 
-        # Composite frame over image
-        fx = ax - padding
-        fy = ay - padding
-        base = img.convert("RGBA")
-        base.paste(frame, (fx, fy), frame)
-        return base.convert("RGB")
-    except Exception as e:
-        print(f"[_apply_level_frame_png] {e}")
-        return img
+    # Frame geometry — 9 px outside the avatar on all sides
+    PAD  = 9
+    fx   = ax - PAD
+    fy   = ay - PAD
+    fx2  = ax + asize + PAD
+    fy2  = ay + asize + PAD
+
+    # --- Glow behind the frame ---
+    glow_col = RAINBOW[0] if level == 10 else (mc or (130, 130, 130))
+    img = _apply_glow(img, (fx, fy, fx2, fy2), r=4,
+                      color=glow_col, strength=20, layers=10)
+    draw = ImageDraw.Draw(img)
+
+    # ── shared small helpers ──────────────────────────────────────────────────
+    def _dot(cx, cy, r, col):
+        draw.ellipse([(cx - r, cy - r), (cx + r, cy + r)], fill=col)
+
+    def _diamond(cx, cy, r, col, outline=None):
+        pts = [(cx, cy - r), (cx + r, cy), (cx, cy + r), (cx - r, cy)]
+        draw.polygon(pts, fill=col, outline=outline)
+
+    def _bracket(cx, cy, sz, thick, col, mx, my):
+        """L-shaped corner bracket. mx/my flip direction when True."""
+        sx, sy = (-1 if mx else 1), (-1 if my else 1)
+        draw.rectangle([(cx, cy), (cx + sx * sz,    cy + sy * thick)], fill=col)
+        draw.rectangle([(cx, cy), (cx + sx * thick, cy + sy * sz)],    fill=col)
+
+    def _corners(fn, *a, **kw):
+        """Call fn for all four corners with mirror flags."""
+        for mx, my in [(False, False), (True, False), (False, True), (True, True)]:
+            fn(mx, my, *a, **kw)
+
+    # ── dark background fill in the frame zone ────────────────────────────────
+    bg_col = cfg["bg"]
+    draw.rectangle([(fx,     fy),     (fx2,     fy2)],     fill=bg_col)
+    draw.rectangle([(ax - 2, ay - 2), (ax + asize + 2, ay + asize + 2)], fill=bg_col)
+
+    # ── Level 1 — IRON : silver slab + rivet dots ────────────────────────────
+    if level == 1:
+        draw.rectangle([(fx,     fy),     (fx2,     fy2)],     outline=(50, 50, 50),   width=2)
+        draw.rectangle([(fx + 2, fy + 2), (fx2 - 2, fy2 - 2)], outline=(165, 165, 165), width=5)
+        draw.rectangle([(fx + 7, fy + 7), (fx2 - 7, fy2 - 7)], outline=(90, 90, 90),   width=1)
+        for mx, my in [(False, False), (True, False), (False, True), (True, True)]:
+            cx2 = fx + 5 if not mx else fx2 - 5
+            cy2 = fy + 5 if not my else fy2 - 5
+            _dot(cx2, cy2, 4, (200, 200, 200))
+            _dot(cx2, cy2, 1, (70, 70, 70))
+        draw.text((fx + 3, fy + 1), "IRON", font=_font(8), fill=(190, 190, 190))
+
+    # ── Level 2 — BRONZE : copper border + circuit traces ────────────────────
+    elif level == 2:
+        draw.rectangle([(fx,     fy),     (fx2,     fy2)],     outline=(70, 35, 5),    width=2)
+        draw.rectangle([(fx + 2, fy + 2), (fx2 - 2, fy2 - 2)], outline=(200, 120, 38), width=5)
+        draw.rectangle([(fx + 7, fy + 7), (fx2 - 7, fy2 - 7)], outline=(130, 70, 15),  width=1)
+        # Horizontal + vertical circuit traces near corners
+        tr, tl = (ac[0], ac[1], ac[2]), (235, 160, 60)
+        for bx2, bx2e in [(fx + 9, fx + 22), (fx2 - 22, fx2 - 9)]:
+            draw.line([(bx2, fy + 3), (bx2e, fy + 3)],   fill=tl, width=1)
+            draw.line([(bx2, fy2 - 3), (bx2e, fy2 - 3)], fill=tl, width=1)
+        for by2, by2e in [(fy + 9, fy + 22), (fy2 - 22, fy2 - 9)]:
+            draw.line([(fx + 3, by2), (fx + 3, by2e)],   fill=tl, width=1)
+            draw.line([(fx2 - 3, by2), (fx2 - 3, by2e)], fill=tl, width=1)
+        # Corner squares
+        for mx, my in [(False, False), (True, False), (False, True), (True, True)]:
+            cx2 = fx + 2 if not mx else fx2 - 7
+            cy2 = fy + 2 if not my else fy2 - 7
+            draw.rectangle([(cx2, cy2), (cx2 + 5, cy2 + 5)], fill=tl)
+        draw.text((fx + 3, fy + 1), "BRONZE", font=_font(8), fill=(235, 160, 60))
+
+    # ── Level 3 — SILVER (Cyan) : teal border + diamond gems ─────────────────
+    elif level == 3:
+        draw.rectangle([(fx,     fy),     (fx2,     fy2)],     outline=(0, 70, 70),    width=2)
+        draw.rectangle([(fx + 2, fy + 2), (fx2 - 2, fy2 - 2)], outline=(0, 175, 175),  width=5)
+        draw.rectangle([(fx + 7, fy + 7), (fx2 - 7, fy2 - 7)], outline=(80, 235, 235), width=1)
+        for mx, my in [(False, False), (True, False), (False, True), (True, True)]:
+            cx2 = fx + 5 if not mx else fx2 - 5
+            cy2 = fy + 5 if not my else fy2 - 5
+            _diamond(cx2, cy2, 5, (80, 235, 235), outline=(0, 100, 100))
+        # Mid-edge dots
+        mid_x2 = (fx + fx2) // 2
+        mid_y2 = (fy + fy2) // 2
+        for px2, py2 in [(mid_x2, fy + 3), (mid_x2, fy2 - 3),
+                          (fx + 3, mid_y2),  (fx2 - 3, mid_y2)]:
+            _dot(px2, py2, 2, (80, 235, 235))
+        draw.text((fx + 3, fy + 1), "SILVER", font=_font(8), fill=(80, 235, 235))
+
+    # ── Level 4 — STEEL (Blue) : steel blue + L-bracket corners ─────────────
+    elif level == 4:
+        draw.rectangle([(fx,     fy),     (fx2,     fy2)],     outline=(0, 55, 95),     width=2)
+        draw.rectangle([(fx + 2, fy + 2), (fx2 - 2, fy2 - 2)], outline=(0, 185, 215),   width=5)
+        draw.rectangle([(fx + 7, fy + 7), (fx2 - 7, fy2 - 7)], outline=(70, 240, 255),  width=1)
+        bsz = 14
+        for mx, my in [(False, False), (True, False), (False, True), (True, True)]:
+            bx2 = fx if not mx else fx2
+            by2 = fy if not my else fy2
+            _bracket(bx2, by2, bsz, 3, (70, 240, 255), mx, my)
+        draw.text((fx + 3, fy + 1), "STEEL", font=_font(8), fill=(70, 240, 255))
+
+    # ── Level 5 — FOREST (Green) : neon green + circuit corner nodes ─────────
+    elif level == 5:
+        draw.rectangle([(fx,     fy),     (fx2,     fy2)],     outline=(8, 75, 16),     width=2)
+        draw.rectangle([(fx + 2, fy + 2), (fx2 - 2, fy2 - 2)], outline=(35, 195, 60),   width=5)
+        draw.rectangle([(fx + 7, fy + 7), (fx2 - 7, fy2 - 7)], outline=(100, 255, 120), width=1)
+        csz = 14
+        for mx, my in [(False, False), (True, False), (False, True), (True, True)]:
+            bx2 = fx if not mx else fx2
+            by2 = fy if not my else fy2
+            _bracket(bx2, by2, csz, 3, (100, 255, 120), mx, my)
+            # Inner node dot
+            nx2 = bx2 + (7 if not mx else -7)
+            ny2 = by2 + (7 if not my else -7)
+            _dot(nx2, ny2, 2, (35, 195, 60))
+            # T-junction lines
+            tx2 = bx2 + (csz if not mx else -csz)
+            ty2 = by2 + (csz if not my else -csz)
+            draw.line([(tx2, by2 + (3 if not my else -3)),
+                        (tx2, by2 + (9 if not my else -9))], fill=(35, 195, 60), width=1)
+            draw.line([(bx2 + (3 if not mx else -3), ty2),
+                        (bx2 + (9 if not mx else -9), ty2)], fill=(35, 195, 60), width=1)
+        draw.text((fx + 3, fy + 1), "FOREST", font=_font(8), fill=(100, 255, 120))
+
+    # ── Level 6 — VOID (Purple) : deep violet + energy-flare corners ─────────
+    elif level == 6:
+        draw.rectangle([(fx,     fy),     (fx2,     fy2)],     outline=(75, 0, 95),     width=2)
+        draw.rectangle([(fx + 2, fy + 2), (fx2 - 2, fy2 - 2)], outline=(190, 0, 225),   width=5)
+        draw.rectangle([(fx + 7, fy + 7), (fx2 - 7, fy2 - 7)], outline=(230, 80, 255),  width=1)
+        for mx, my in [(False, False), (True, False), (False, True), (True, True)]:
+            cx2 = fx + 5 if not mx else fx2 - 5
+            cy2 = fy + 5 if not my else fy2 - 5
+            _diamond(cx2, cy2, 5, (230, 80, 255), outline=(80, 0, 110))
+            dx2 = 1 if not mx else -1
+            dy2 = 1 if not my else -1
+            draw.line([(cx2, cy2), (cx2 + dx2 * 10, cy2)],         fill=(190, 0, 225), width=1)
+            draw.line([(cx2, cy2), (cx2,             cy2 + dy2*10)], fill=(190, 0, 225), width=1)
+        draw.text((fx + 3, fy + 1), "VOID", font=_font(8), fill=(230, 80, 255))
+
+    # ── Level 7 — GOLD : ornate multi-layer + gem corners + mid diamonds ──────
+    elif level == 7:
+        draw.rectangle([(fx,     fy),     (fx2,     fy2)],     outline=(85, 60, 0),     width=2)
+        draw.rectangle([(fx + 2, fy + 2), (fx2 - 2, fy2 - 2)], outline=(210, 165, 0),   width=5)
+        draw.rectangle([(fx + 7, fy + 7), (fx2 - 7, fy2 - 7)], outline=(255, 220, 50),  width=2)
+        # Mid-edge accent diamonds
+        mid_x2 = (fx + fx2) // 2
+        mid_y2 = (fy + fy2) // 2
+        for px2, py2 in [(mid_x2, fy + 4), (mid_x2, fy2 - 4),
+                          (fx + 4, mid_y2),  (fx2 - 4, mid_y2)]:
+            _diamond(px2, py2, 3, (255, 220, 50))
+        # Ornate double-gem corners
+        for mx, my in [(False, False), (True, False), (False, True), (True, True)]:
+            cx2 = fx + 5 if not mx else fx2 - 5
+            cy2 = fy + 5 if not my else fy2 - 5
+            _diamond(cx2, cy2, 6, (255, 220, 50), outline=(140, 95, 0))
+            _diamond(cx2, cy2, 3, (255, 255, 180))
+        draw.text((fx + 3, fy + 1), "GOLD", font=_font(8), fill=(255, 220, 50))
+
+    # ── Level 8 — FIRE : red-orange + flame-spike corners ────────────────────
+    elif level == 8:
+        draw.rectangle([(fx,     fy),     (fx2,     fy2)],     outline=(95, 12, 4),     width=2)
+        draw.rectangle([(fx + 2, fy + 2), (fx2 - 2, fy2 - 2)], outline=(210, 28, 12),   width=5)
+        draw.rectangle([(fx + 7, fy + 7), (fx2 - 7, fy2 - 7)], outline=(255, 110, 30),  width=1)
+        # Flame spikes from each corner
+        spk = 9
+        for mx, my in [(False, False), (True, False), (False, True), (True, True)]:
+            bx2 = fx + 3 if not mx else fx2 - 3
+            by2 = fy + 3 if not my else fy2 - 3
+            dx2 = 1 if not mx else -1
+            dy2 = 1 if not my else -1
+            pts = [
+                (bx2,              by2),
+                (bx2 + dx2 * spk,  by2 + dy2 * 2),
+                (bx2 + dx2 * 5,    by2 + dy2 * 5),
+                (bx2 + dx2 * 2,    by2 + dy2 * spk),
+            ]
+            draw.polygon(pts, fill=(255, 110, 30), outline=(210, 28, 12))
+        draw.text((fx + 3, fy + 1), "FIRE", font=_font(8), fill=(255, 110, 30))
+
+    # ── Level 9 — ICE : pale-blue crystalline + shard corners + sparkles ──────
+    elif level == 9:
+        draw.rectangle([(fx,     fy),     (fx2,     fy2)],     outline=(28, 75, 115),   width=2)
+        draw.rectangle([(fx + 2, fy + 2), (fx2 - 2, fy2 - 2)], outline=(150, 225, 255), width=5)
+        draw.rectangle([(fx + 7, fy + 7), (fx2 - 7, fy2 - 7)], outline=(220, 248, 255), width=1)
+        # Ice-shard corners
+        for mx, my in [(False, False), (True, False), (False, True), (True, True)]:
+            gx2 = fx + 5 if not mx else fx2 - 5
+            gy2 = fy + 5 if not my else fy2 - 5
+            dx2 = 1 if not mx else -1
+            dy2 = 1 if not my else -1
+            pts = [
+                (gx2, gy2),
+                (gx2 + dx2 * 9,  gy2 + dy2 * 2),
+                (gx2 + dx2 * 5,  gy2 + dy2 * 5),
+                (gx2 + dx2 * 2,  gy2 + dy2 * 9),
+            ]
+            draw.polygon(pts, fill=(220, 248, 255), outline=(80, 160, 220))
+        # Edge sparkle dots
+        fw2 = fx2 - fx
+        fh2 = fy2 - fy
+        for t in range(1, 4):
+            _dot(fx + int(fw2 * t / 4), fy + 3,   1, (220, 248, 255))
+            _dot(fx + int(fw2 * t / 4), fy2 - 3,  1, (220, 248, 255))
+            _dot(fx + 3,  fy + int(fh2 * t / 4),  1, (220, 248, 255))
+            _dot(fx2 - 3, fy + int(fh2 * t / 4),  1, (220, 248, 255))
+        draw.text((fx + 3, fy + 1), "ICE", font=_font(8), fill=(220, 248, 255))
+
+    # ── Level 10 — PRISM (Rainbow) : rotating rainbow border + prism corners ──
+    else:
+        fw2 = fx2 - fx
+        fh2 = fy2 - fy
+        seg = 20   # segments per side
+        # Build perimeter point list
+        pts_top    = [(fx + int(i * fw2 / seg), fy)   for i in range(seg)]
+        pts_right  = [(fx2,  fy + int(i * fh2 / seg)) for i in range(seg)]
+        pts_bottom = [(fx2 - int(i * fw2 / seg), fy2) for i in range(seg)]
+        pts_left   = [(fx,  fy2 - int(i * fh2 / seg)) for i in range(seg)]
+        perim = pts_top + pts_right + pts_bottom + pts_left
+        n = len(perim)
+        for i in range(n):
+            p1 = perim[i]
+            p2 = perim[(i + 1) % n]
+            col = RAINBOW[i % len(RAINBOW)]
+            draw.line([p1, p2], fill=col, width=6)
+        # Thin inner ring with offset colours
+        draw.rectangle([(fx + 6, fy + 6), (fx2 - 6, fy2 - 6)], outline=(255, 255, 255), width=1)
+        # Multi-colour corner gems
+        for mx, my in [(False, False), (True, False), (False, True), (True, True)]:
+            cx2 = fx + 5 if not mx else fx2 - 5
+            cy2 = fy + 5 if not my else fy2 - 5
+            for ri, rc in enumerate(RAINBOW[:4]):
+                _diamond(cx2, cy2, 5 - ri, rc)
+        draw.text((fx + 3, fy + 1), "PRISM", font=_font(8), fill=(255, 255, 255))
+
+    return img, draw
 
 
 # ==================== BLUE LOCK DECORATIONS ====================
@@ -438,9 +623,7 @@ def _draw_frame_border(img: Image.Image, draw: ImageDraw.ImageDraw,
         import re as _re
         _m = _re.search(r"(\d+)", fn)
         _lvl_override = max(1, min(10, int(_m.group(1)))) if _m else 1
-        img = _apply_level_frame_png(img, ax, ay, size, _lvl_override)
-        draw = ImageDraw.Draw(img)
-        return img, draw
+        return _draw_level_frame(img, ax, ay, size, _lvl_override)
 
     elif "premium" in fn:
         PUR_MID   = (148,  20, 220)
@@ -531,7 +714,11 @@ def _paste_avatar(img: Image.Image, avatar_bytes: bytes, x: int, y: int, size: i
 
 # ==================== LEVEL HELPER ====================
 def get_level(elo: int) -> int:
-    thresholds = [0, 801, 951, 1101, 1251, 1401, 1551, 1701, 1851, 2001]
+    # Пороги совпадают с ELO_THRESHOLDS в боте:
+    # Lvl1=0-199, Lvl2=200-399, Lvl3=400-599, Lvl4=600-899,
+    # Lvl5=900-1099, Lvl6=1100-1399, Lvl7=1400-1599,
+    # Lvl8=1600-1799, Lvl9=1800-1999, Lvl10=2000+
+    thresholds = [0, 200, 400, 600, 900, 1100, 1400, 1600, 1800, 2000]
     for i in range(len(thresholds) - 1, -1, -1):
         if elo >= thresholds[i]:
             return i + 1
@@ -946,9 +1133,8 @@ def generate_profile_card(
         # Named cosmetic frame (shop items)
         img, draw = _draw_frame_border(img, draw, AX, AY, AS, active_frame)
     else:
-        # Auto-apply level frame PNG
-        img = _apply_level_frame_png(img, AX, AY, AS, lvl)
-        draw = ImageDraw.Draw(img)
+        # Auto-draw level frame programmatically
+        img, draw = _draw_level_frame(img, AX, AY, AS, lvl)
 
     draw.text((152, 20), f"#{user_id}", font=_font(13), fill=_HDR_TEXT_GRAY)
     fname2 = _font(30, bold=True)
