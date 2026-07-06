@@ -353,6 +353,8 @@ CATEGORY_NAMES = {"decor": "🖼 Декор", "goods": "📦 Товары"}
 CATEGORY_ICONS = {"decor": "🖼", "goods": "📦"}
 
 STARS_TO_USD = 0.015  # ориентировочный курс Telegram Stars -> USD для крипто-оплаты
+STARS_EMOJI_ID = "5064709487953183440"
+CRYPTO_EMOJI_ID = "5382164415019768638"
 
 COIN_PACKAGES = [
     ("Стартовый",   200,   15,  "15 ⭐"),
@@ -8348,14 +8350,40 @@ def cb_buy_coins(c):
     coins = p[5] if p else 0
     kb = types.InlineKeyboardMarkup(row_width=1)
     for i, (name, coins_amount, stars, price_label) in enumerate(COIN_PACKAGES):
-        kb.add(types.InlineKeyboardButton(f"⭐ {name}: {coins_amount} AC - {stars} Stars ({price_label})", callback_data=f"buy_pkg_{i}"))
-    if CRYPTO_PAY_API_TOKEN:
-        for i, (name, coins_amount, stars, price_label) in enumerate(COIN_PACKAGES):
-            usd = max(0.10, round(stars * STARS_TO_USD, 2))
-            kb.add(types.InlineKeyboardButton(f"💎 {name}: {coins_amount} AC - крипта (${usd})", callback_data=f"buy_crypto_{i}"))
+        kb.add(types.InlineKeyboardButton(f"📦 {name}: {coins_amount} AC", callback_data=f"buy_pack_{i}"))
     kb.add(types.InlineKeyboardButton("🔙 Назад", callback_data="back"))
     bot.edit_message_text(
-        f"💳 <b>КУПИТЬ SareCoin</b>\n💰 Баланс: <b>{coins} AC</b>\n\n⭐ Telegram Stars или 💎 криптой\nВыберите пакет:",
+        f"💳 <b>КУПИТЬ SareCoin</b>\n💰 Баланс: <b>{coins} AC</b>\n\nВыберите пакет, затем способ оплаты:",
+        c.message.chat.id, c.message.message_id, reply_markup=kb,
+    )
+    safe_answer(c.id)
+
+
+@bot.callback_query_handler(func=lambda c: c.data.startswith("buy_pack_"))
+def cb_buy_pack(c):
+    uid = c.from_user.id
+    pkg_idx = int(c.data.split("buy_pack_")[1])
+    if pkg_idx < 0 or pkg_idx >= len(COIN_PACKAGES):
+        safe_answer(c.id, "❌ Пакет не найден")
+        return
+    name, coins_amount, stars, price_label = COIN_PACKAGES[pkg_idx]
+    kb = types.InlineKeyboardMarkup(row_width=1)
+    kb.add(types.InlineKeyboardButton(f"⭐ Telegram Stars - {stars} ({price_label})", callback_data=f"buy_pkg_{pkg_idx}"))
+    text_lines = [
+        f"📦 <b>{name}</b>",
+        f"💰 {coins_amount} AC",
+        "",
+        f"<tg-emoji emoji-id=\"{STARS_EMOJI_ID}\">⭐</tg-emoji> Telegram Stars - {stars} ({price_label})",
+    ]
+    if CRYPTO_PAY_API_TOKEN:
+        usd = max(0.10, round(stars * STARS_TO_USD, 2))
+        kb.add(types.InlineKeyboardButton(f"💎 Крипта - ${usd}", callback_data=f"buy_crypto_{pkg_idx}"))
+        text_lines.append(f"<tg-emoji emoji-id=\"{CRYPTO_EMOJI_ID}\">💎</tg-emoji> Крипта - ${usd}")
+    text_lines.append("")
+    text_lines.append("Выберите способ оплаты:")
+    kb.add(types.InlineKeyboardButton("🔙 Назад", callback_data="buy_coins"))
+    bot.edit_message_text(
+        "\n".join(text_lines),
         c.message.chat.id, c.message.message_id, reply_markup=kb,
     )
     safe_answer(c.id)
