@@ -3787,7 +3787,12 @@ def cb_profile(c):
     extra_btns = []
     if has_quals_access(uid):
         extra_btns.append(types.InlineKeyboardButton("⭐ Quals профиль", callback_data="profile_quals"))
-    kb.add(*extra_btns)
+    _priv_table_check = get_user_table(uid)
+    _duo_check = get_player_duo_stats(uid, _priv_table_check)
+    if _duo_check:
+        extra_btns.append(types.InlineKeyboardButton("🤝 2vs2 профиль", callback_data="profile_duo"))
+    if extra_btns:
+        kb.add(*extra_btns)
     kb.add(types.InlineKeyboardButton("🔙 Назад", callback_data="back"))
 
     if CARDS_ENABLED:
@@ -4139,6 +4144,108 @@ def cb_profile_quals(c):
         f"📊 Quals ELO: <b>{q_elo}</b>  |  Lvl <b>{lvl}</b>\n"
         f"🏆 {q_wins}W · ❌ {q_losses}L · 📈 {q_wr}%\n"
         f"🔫 K: {q_kills} · 💀 D: {q_deaths} · 🤝 A: {q_assists} · K/D: {q_kd}"
+    )
+    bot.edit_message_text(text, c.message.chat.id, c.message.message_id,
+                          reply_markup=kb, parse_mode="HTML")
+    safe_answer(c.id)
+
+
+@bot.callback_query_handler(func=lambda c: c.data == "profile_duo")
+def cb_profile_duo(c):
+    uid = c.from_user.id
+    _priv_table_d = get_user_table(uid)
+    p = get_player_from_table(uid, _priv_table_d) or get_player(uid)
+    if not p:
+        safe_answer(c.id)
+        return
+
+    ds = get_player_duo_stats(uid, _priv_table_d)
+    if not ds:
+        safe_answer(c.id, "❌ Нет 2vs2 статистики", show_alert=True)
+        return
+
+    d_elo     = ds.get("elo",     1000)
+    d_wins    = ds.get("wins",    0)
+    d_losses  = ds.get("losses",  0)
+    d_kills   = ds.get("kills",   0)
+    d_deaths  = ds.get("deaths",  0)
+    d_assists = ds.get("assists", 0)
+
+    premium = has_active_premium(uid)
+    crown   = " 👑 Premium" if premium else ""
+    lvl     = get_faceit_level(d_elo)
+
+    kb = types.InlineKeyboardMarkup(row_width=1)
+    kb.add(
+        types.InlineKeyboardButton("📊 Default профиль", callback_data="profile"),
+        types.InlineKeyboardButton("🔙 Назад",           callback_data="back"),
+    )
+
+    if CARDS_ENABLED:
+        try:
+            all_duo = get_all_players(_priv_table_d)
+            all_duo_sorted = sorted(all_duo, key=lambda r: (r[22] if len(r) > 22 and r[22] else 0), reverse=True)
+            d_rank = next((i+1 for i, row in enumerate(all_duo_sorted) if row[0] == uid), len(all_duo_sorted))
+            lb_data = [
+                (i+1, row[1], row[2], has_active_premium(row[0]), is_admin(row[0]), is_verified_check(row[0]))
+                for i, row in enumerate(all_duo_sorted[:3])
+            ]
+            d_mvp_count  = p[31] if len(p) > 31 else 0
+            avatar_bytes = get_user_avatar(uid)
+            active_frame, active_banner, active_background = get_active_cosmetics(uid)
+            img_buf = generate_profile_card(
+                username          = p[1] or "Unknown",
+                game_id           = p[2] or "",
+                user_id           = p[0],
+                elo               = d_elo,
+                wins              = d_wins,
+                losses            = d_losses,
+                kills             = d_kills,
+                deaths            = d_deaths,
+                assists           = d_assists,
+                is_premium        = premium,
+                is_admin          = is_admin(uid),
+                global_rank       = d_rank,
+                league            = "DUO",
+                map_stats         = [],
+                recent            = [],
+                leaderboard       = lb_data,
+                quals_stats       = None,
+                mvp_count         = d_mvp_count,
+                is_verified       = is_verified_check(uid),
+                duo_stats         = None,
+                avatar_bytes      = avatar_bytes,
+                active_frame      = active_frame,
+                active_banner     = active_banner,
+                active_background = active_background,
+            )
+            try:
+                bot.delete_message(c.message.chat.id, c.message.message_id)
+            except Exception:
+                pass
+            d_games = d_wins + d_losses
+            d_wr    = round(d_wins / d_games * 100, 1) if d_games > 0 else 0.0
+            d_kd    = round(d_kills / d_deaths, 2) if d_deaths > 0 else float(d_kills)
+            caption = (
+                f"🤝 <b>{p[1]}</b>{crown}  |  2vs2 ELO: <b>{d_elo}</b>  |  Lvl <b>{lvl}</b>\n"
+                f"🏆 {d_wins}W · ❌ {d_losses}L · 📈 {d_wr}%  |  K/D: {d_kd}  |  Rank #{d_rank}"
+            )
+            bot.send_photo(c.message.chat.id, img_buf,
+                           caption=caption, reply_markup=kb, parse_mode="HTML")
+            safe_answer(c.id)
+            return
+        except Exception as e:
+            send_error_log("card_profile (Duo)", e)
+
+    # fallback text
+    d_games = d_wins + d_losses
+    d_wr    = round(d_wins / d_games * 100, 1) if d_games > 0 else 0.0
+    d_kd    = round(d_kills / d_deaths, 2) if d_deaths > 0 else float(d_kills)
+    text = (
+        f"🤝 <b>{p[1]}</b> - 2vs2 профиль\n\n"
+        f"📊 2vs2 ELO: <b>{d_elo}</b>  |  Lvl <b>{lvl}</b>\n"
+        f"🏆 {d_wins}W · ❌ {d_losses}L · 📈 {d_wr}%\n"
+        f"🔫 K: {d_kills} · 💀 D: {d_deaths} · 🤝 A: {d_assists} · K/D: {d_kd}"
     )
     bot.edit_message_text(text, c.message.chat.id, c.message.message_id,
                           reply_markup=kb, parse_mode="HTML")

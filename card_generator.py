@@ -212,10 +212,9 @@ def _draw_level_frame(img: Image.Image, ax: int, ay: int, asize: int, level: int
     fx2  = ax + asize + PAD
     fy2  = ay + asize + PAD
 
-    # --- Glow behind the frame ---
-    glow_col = RAINBOW[0] if level == 10 else (mc or (130, 130, 130))
-    img = _apply_glow(img, (fx, fy, fx2, fy2), r=4,
-                      color=glow_col, strength=20, layers=10)
+    # Glow is already applied before the avatar is drawn (line ~935).
+    # Do NOT call _apply_glow here — it runs after the avatar is pasted
+    # and would tint/darken it with semi-transparent colour.
     draw = ImageDraw.Draw(img)
 
     # ── shared small helpers ──────────────────────────────────────────────────
@@ -229,18 +228,27 @@ def _draw_level_frame(img: Image.Image, ax: int, ay: int, asize: int, level: int
     def _bracket(cx, cy, sz, thick, col, mx, my):
         """L-shaped corner bracket. mx/my flip direction when True."""
         sx, sy = (-1 if mx else 1), (-1 if my else 1)
-        draw.rectangle([(cx, cy), (cx + sx * sz,    cy + sy * thick)], fill=col)
-        draw.rectangle([(cx, cy), (cx + sx * thick, cy + sy * sz)],    fill=col)
+        x1a, y1a = cx, cy
+        x1b, y1b = cx + sx * sz, cy + sy * thick
+        draw.rectangle([(min(x1a, x1b), min(y1a, y1b)), (max(x1a, x1b), max(y1a, y1b))], fill=col)
+        x2a, y2a = cx, cy
+        x2b, y2b = cx + sx * thick, cy + sy * sz
+        draw.rectangle([(min(x2a, x2b), min(y2a, y2b)), (max(x2a, x2b), max(y2a, y2b))], fill=col)
 
     def _corners(fn, *a, **kw):
         """Call fn for all four corners with mirror flags."""
         for mx, my in [(False, False), (True, False), (False, True), (True, True)]:
             fn(mx, my, *a, **kw)
 
-    # ── dark background fill in the frame zone ────────────────────────────────
+    # ── dark background fill only in the PAD strips around the avatar ────────
+    # IMPORTANT: never fill the avatar area itself (ax..ax+asize, ay..ay+asize)
     bg_col = cfg["bg"]
-    draw.rectangle([(fx,     fy),     (fx2,     fy2)],     fill=bg_col)
-    draw.rectangle([(ax - 2, ay - 2), (ax + asize + 2, ay + asize + 2)], fill=bg_col)
+    ax2 = ax + asize
+    ay2 = ay + asize
+    draw.rectangle([(fx,  fy),  (fx2, ay)],  fill=bg_col)   # top strip
+    draw.rectangle([(fx,  ay2), (fx2, fy2)], fill=bg_col)   # bottom strip
+    draw.rectangle([(fx,  ay),  (ax,  ay2)], fill=bg_col)   # left strip
+    draw.rectangle([(ax2, ay),  (fx2, ay2)], fill=bg_col)   # right strip
 
     # ── Level 1 — IRON : silver slab + rivet dots ────────────────────────────
     if level == 1:
