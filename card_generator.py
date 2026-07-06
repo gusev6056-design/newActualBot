@@ -11,7 +11,7 @@ except ImportError:
 
 # ==================== PATHS ====================
 _THIS_DIR   = os.path.dirname(os.path.abspath(__file__))
-_ASSETS_DIR = os.path.join(_THIS_DIR, "attached_assets")
+_ASSETS_DIR = _THIS_DIR
 
 # Level frame PNG filenames
 LEVEL_FRAME_FILES = {
