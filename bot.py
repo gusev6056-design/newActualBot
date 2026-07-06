@@ -753,11 +753,36 @@ def init_db():
             id SERIAL PRIMARY KEY,
             invoice_id BIGINT UNIQUE NOT NULL,
             user_id BIGINT NOT NULL,
-            pkg_idx INTEGER NOT NULL,
+            pkg_idx INTEGER,
+            pkg_key TEXT,
             coins_amount INTEGER NOT NULL,
             status TEXT DEFAULT 'active',
             created_at BIGINT DEFAULT EXTRACT(EPOCH FROM NOW())::BIGINT,
             paid_at BIGINT DEFAULT NULL
+        )
+    """)
+    conn.commit()
+    try:
+        cur.execute("ALTER TABLE crypto_invoices ALTER COLUMN pkg_idx DROP NOT NULL")
+        conn.commit()
+    except Exception:
+        conn.rollback()
+    try:
+        cur.execute("ALTER TABLE crypto_invoices ADD COLUMN IF NOT EXISTS pkg_key TEXT")
+        conn.commit()
+    except Exception:
+        conn.rollback()
+
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS custom_coin_packages (
+            id SERIAL PRIMARY KEY,
+            name TEXT NOT NULL,
+            coins_amount INTEGER NOT NULL,
+            stars_price INTEGER NOT NULL,
+            crypto_usd NUMERIC NOT NULL,
+            target_user_id BIGINT DEFAULT NULL,
+            created_by BIGINT NOT NULL,
+            created_at BIGINT DEFAULT EXTRACT(EPOCH FROM NOW())::BIGINT
         )
     """)
     conn.commit()
@@ -1459,6 +1484,53 @@ def add_coins_to_player(uid, amount, table=None):
     conn.close()
 
 
+# ==================== ПОЛЬЗОВАТЕЛЬСКИЕ ПАКЕТЫ МОНЕТ (креаторская панель) ====================
+def get_visible_coin_packages(uid):
+    """Возвращает список пакетов (статичные + кастомные, видимые этому uid) в едином формате:
+    {"key": str, "name": str, "coins": int, "stars": int, "usd": float, "price_label": str}."""
+    packages = []
+    for i, (name, coins_amount, stars, price_label) in enumerate(COIN_PACKAGES):
+        packages.append({
+            "key": f"s{i}",
+            "name": name,
+            "coins": coins_amount,
+            "stars": stars,
+            "usd": max(0.10, round(stars * STARS_TO_USD, 2)),
+            "price_label": price_label,
+        })
+    try:
+        conn = _db()
+        cur = conn.cursor()
+        cur.execute(
+            "SELECT id, name, coins_amount, stars_price, crypto_usd FROM custom_coin_packages "
+            "WHERE target_user_id IS NULL OR target_user_id=%s ORDER BY id",
+            (uid,),
+        )
+        rows = cur.fetchall()
+        conn.close()
+        for row in rows:
+            pkg_id, name, coins_amount, stars_price, crypto_usd = row
+            packages.append({
+                "key": f"c{pkg_id}",
+                "name": name,
+                "coins": coins_amount,
+                "stars": stars_price,
+                "usd": float(crypto_usd),
+                "price_label": f"{stars_price} ⭐",
+            })
+    except Exception as e:
+        print(f"[get_visible_coin_packages] db error: {e}")
+    return packages
+
+
+def get_coin_package_by_key(key, uid):
+    """Находит пакет по его ключу (s{idx} или c{id}), проверяя видимость для uid."""
+    for pkg in get_visible_coin_packages(uid):
+        if pkg["key"] == key:
+            return pkg
+    return None
+
+
 # ==================== CRYPTO PAY (@CryptoBot) ====================
 def _crypto_pay_call(method, params=None):
     """Вызывает метод Crypto Pay API (@CryptoBot). Возвращает (ok, result_or_error)."""
@@ -1472,6 +1544,8 @@ def _crypto_pay_call(method, params=None):
         headers={
             "Crypto-Pay-API-Token": CRYPTO_PAY_API_TOKEN,
             "Content-Type": "application/json",
+            "Accept": "application/json",
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
         },
         method="POST",
     )
@@ -1499,20 +1573,19 @@ def _crypto_pay_call(method, params=None):
     return True, body.get("result")
 
 
-def create_crypto_invoice(uid, pkg_idx):
-    """Создаёт инвойс в @CryptoBot на покупку монет. Возвращает (ok, pay_url_or_error, invoice_id)."""
-    if pkg_idx < 0 or pkg_idx >= len(COIN_PACKAGES):
+def create_crypto_invoice(uid, pkg_key):
+    """Создаёт инвойс в @CryptoBot на покупку монет по ключу пакета (s{idx} или c{id}).
+    Возвращает (ok, pay_url_or_error, invoice_id)."""
+    pkg = get_coin_package_by_key(pkg_key, uid)
+    if not pkg:
         return False, "❌ Пакет не найден", None
-    name, coins_amount, stars, price_label = COIN_PACKAGES[pkg_idx]
-    # Цена в USD выводится из цены в Stars, чтобы совпадать с оплатой через Telegram Stars.
-    # Курс Stars->USD ориентировочный (~$0.015 за звезду) - подправьте STARS_TO_USD при необходимости.
-    usd_amount = max(0.10, round(stars * STARS_TO_USD, 2))
+    name, coins_amount, usd_amount = pkg["name"], pkg["coins"], pkg["usd"]
     ok, result = _crypto_pay_call("createInvoice", {
         "currency_type": "crypto",
         "asset": CRYPTO_PAY_ASSET,
         "amount": str(usd_amount),
         "description": f"{coins_amount} AC - пакет ({name})",
-        "payload": f"coins_{pkg_idx}_{uid}",
+        "payload": f"coins_{pkg_key}_{uid}",
         "expires_in": 1800,
     })
     if not ok:
@@ -1521,8 +1594,8 @@ def create_crypto_invoice(uid, pkg_idx):
         conn = _db()
         cur = conn.cursor()
         cur.execute(
-            "INSERT INTO crypto_invoices (invoice_id, user_id, pkg_idx, coins_amount) VALUES (%s,%s,%s,%s)",
-            (result["invoice_id"], uid, pkg_idx, coins_amount),
+            "INSERT INTO crypto_invoices (invoice_id, user_id, pkg_key, coins_amount) VALUES (%s,%s,%s,%s)",
+            (result["invoice_id"], uid, pkg_key, coins_amount),
         )
         conn.commit()
         conn.close()
@@ -2538,7 +2611,7 @@ def buy_item(uid, item_id):
     if not p:
         return False, "❌ Игрок не найден"
     if p[5] < price:
-        return False, f"❌ Недостаточно SareCoin!\nНужно: {price} AC\nУ вас: {p[5]} AC"
+        return False, f"❌ Недостаточно Actual Coin!\nНужно: {price} AC\nУ вас: {p[5]} AC"
     stackable = {"sticker", "unwarn", "x2coins", "rename"}
     if item_type not in stackable and item_type not in ("premium", "quals") and has_item_in_inventory(uid, item_id):
         return False, "❌ Этот предмет уже есть в вашем инвентаре!"
@@ -2555,7 +2628,7 @@ def buy_item(uid, item_id):
             conn.rollback(); conn.close()
             fresh = get_player(uid)
             bal = fresh[5] if fresh else 0
-            return False, f"❌ Недостаточно SareCoin!\nНужно: {price} AC\nУ вас: {bal} AC"
+            return False, f"❌ Недостаточно Actual Coin!\nНужно: {price} AC\nУ вас: {bal} AC"
 
         # premium и quals обрабатываются напрямую (без инвентаря)
         # Монеты всегда списываются из players_fade (глобальные), premium/quals тоже глобальные
@@ -8364,12 +8437,13 @@ def cb_buy_coins(c):
         return
     p = get_player(uid)
     coins = p[5] if p else 0
+    packages = get_visible_coin_packages(uid)
     kb = types.InlineKeyboardMarkup(row_width=1)
-    for i, (name, coins_amount, stars, price_label) in enumerate(COIN_PACKAGES):
-        kb.add(types.InlineKeyboardButton(f"📦 {name}: {coins_amount} AC", callback_data=f"buy_pack_{i}"))
+    for pkg in packages:
+        kb.add(types.InlineKeyboardButton(f"📦 {pkg['name']}: {pkg['coins']} AC", callback_data=f"buy_pack_{pkg['key']}"))
     kb.add(types.InlineKeyboardButton("🔙 Назад", callback_data="back"))
     bot.edit_message_text(
-        f"💳 <b>КУПИТЬ SareCoin</b>\n💰 Баланс: <b>{coins} AC</b>\n\nВыберите пакет, затем способ оплаты:",
+        f"💳 <b>КУПИТЬ Actual Coin</b>\n💰 Баланс: <b>{coins} AC</b>\n\nВыберите пакет, затем способ оплаты:",
         c.message.chat.id, c.message.message_id, reply_markup=kb,
     )
     safe_answer(c.id)
@@ -8378,13 +8452,14 @@ def cb_buy_coins(c):
 @bot.callback_query_handler(func=lambda c: c.data.startswith("buy_pack_"))
 def cb_buy_pack(c):
     uid = c.from_user.id
-    pkg_idx = int(c.data.split("buy_pack_")[1])
-    if pkg_idx < 0 or pkg_idx >= len(COIN_PACKAGES):
+    pkg_key = c.data.split("buy_pack_")[1]
+    pkg = get_coin_package_by_key(pkg_key, uid)
+    if not pkg:
         safe_answer(c.id, "❌ Пакет не найден")
         return
-    name, coins_amount, stars, price_label = COIN_PACKAGES[pkg_idx]
+    name, coins_amount, stars, price_label = pkg["name"], pkg["coins"], pkg["stars"], pkg["price_label"]
     kb = types.InlineKeyboardMarkup(row_width=1)
-    kb.add(types.InlineKeyboardButton(f"⭐ Telegram Stars - {stars} ({price_label})", callback_data=f"buy_pkg_{pkg_idx}"))
+    kb.add(types.InlineKeyboardButton(f"⭐ Telegram Stars - {stars} ({price_label})", callback_data=f"buy_pkg_{pkg_key}"))
     text_lines = [
         f"📦 <b>{name}</b>",
         f"💰 {coins_amount} AC",
@@ -8392,8 +8467,8 @@ def cb_buy_pack(c):
         f"<tg-emoji emoji-id=\"{STARS_EMOJI_ID}\">⭐</tg-emoji> Telegram Stars - {stars} ({price_label})",
     ]
     if CRYPTO_PAY_API_TOKEN:
-        usd = max(0.10, round(stars * STARS_TO_USD, 2))
-        kb.add(types.InlineKeyboardButton(f"💎 Крипта - ${usd}", callback_data=f"buy_crypto_{pkg_idx}"))
+        usd = pkg["usd"]
+        kb.add(types.InlineKeyboardButton(f"💎 Крипта - ${usd}", callback_data=f"buy_crypto_{pkg_key}"))
         text_lines.append(f"<tg-emoji emoji-id=\"{CRYPTO_EMOJI_ID}\">💎</tg-emoji> Крипта - ${usd}")
     text_lines.append("")
     text_lines.append("Выберите способ оплаты:")
@@ -8408,22 +8483,23 @@ def cb_buy_pack(c):
 @bot.callback_query_handler(func=lambda c: c.data.startswith("buy_pkg_"))
 def cb_buy_package(c):
     uid = c.from_user.id
-    pkg_idx = int(c.data.split("buy_pkg_")[1])
-    if pkg_idx < 0 or pkg_idx >= len(COIN_PACKAGES):
+    pkg_key = c.data.split("buy_pkg_")[1]
+    pkg = get_coin_package_by_key(pkg_key, uid)
+    if not pkg:
         safe_answer(c.id, "❌ Пакет не найден")
         return
-    name, coins_amount, stars, price_label = COIN_PACKAGES[pkg_idx]
+    name, coins_amount, stars = pkg["name"], pkg["coins"], pkg["stars"]
     safe_answer(c.id)
     try:
         bot.send_invoice(
             chat_id=uid,
-            title=f"💰 {coins_amount} SareCoin",
+            title=f"💰 {coins_amount} Actual Coin",
             description=f"Пакет ({name}): {coins_amount} AC для Actual FACEIT",
-            invoice_payload=f"coins_{pkg_idx}_{uid}",
+            invoice_payload=f"coins_{pkg_key}_{uid}",
             provider_token="",
             currency="XTR",
             prices=[types.LabeledPrice(label=f"{coins_amount} AC", amount=stars)],
-            start_parameter=f"buy_coins_{pkg_idx}",
+            start_parameter=f"buy_coins_{pkg_key}",
         )
     except Exception as e:
         bot.send_message(uid, f"❌ Ошибка создания счёта: {e}")
@@ -8435,13 +8511,14 @@ def cb_buy_crypto(c):
     if not CRYPTO_PAY_API_TOKEN:
         safe_answer(c.id, "❌ Оплата криптой временно недоступна", show_alert=True)
         return
-    pkg_idx = int(c.data.split("buy_crypto_")[1])
-    if pkg_idx < 0 or pkg_idx >= len(COIN_PACKAGES):
+    pkg_key = c.data.split("buy_crypto_")[1]
+    pkg = get_coin_package_by_key(pkg_key, uid)
+    if not pkg:
         safe_answer(c.id, "❌ Пакет не найден")
         return
     safe_answer(c.id, "⏳ Создаём счёт...")
-    ok, pay_url_or_err, invoice_id = create_crypto_invoice(uid, pkg_idx)
-    name, coins_amount, stars, price_label = COIN_PACKAGES[pkg_idx]
+    ok, pay_url_or_err, invoice_id = create_crypto_invoice(uid, pkg_key)
+    name, coins_amount = pkg["name"], pkg["coins"]
     if not ok:
         bot.send_message(uid, pay_url_or_err)
         return
@@ -8467,8 +8544,9 @@ def successful_payment(msg):
     uid = msg.from_user.id
     payload = msg.successful_payment.invoice_payload
     try:
-        _, pkg_idx_str, _ = payload.split("_", 2)
-        name, coins_amount, stars, _ = COIN_PACKAGES[int(pkg_idx_str)]
+        _, pkg_key, _ = payload.split("_", 2)
+        pkg = get_coin_package_by_key(pkg_key, uid)
+        name, coins_amount, stars = pkg["name"], pkg["coins"], pkg["stars"]
         add_coins_to_player(uid, coins_amount)
         p = get_player(uid)
         bot.send_message(uid, f"✅ <b>Оплата прошла!</b>\n💰 Начислено: <b>{coins_amount} AC</b>\n💳 Баланс: <b>{p[5] if p else '?'} AC</b>")
@@ -10881,6 +10959,9 @@ def _creator_panel_kb():
         types.InlineKeyboardButton("💰 Монеты игроку",            callback_data="creator_give_coins"),
     )
     kb.add(
+        types.InlineKeyboardButton("📦 Добавить пакет монет",     callback_data="creator_add_coinpack"),
+    )
+    kb.add(
         types.InlineKeyboardButton("🧹 Обнулить стату всех",      callback_data="creator_reset_all"),
         types.InlineKeyboardButton("👤 Обнулить стату игрока",    callback_data="creator_reset_player"),
     )
@@ -11224,6 +11305,8 @@ def handle_creator_flow(msg):
         "verify_player",
         "promote_admin",
         "give_coins_id", "give_coins_amount",
+        "add_coinpack_name", "add_coinpack_coins", "add_coinpack_stars",
+        "add_coinpack_crypto", "add_coinpack_target",
     }
     if step in _extended_steps:
         _handle_creator_flow_extended(msg, uid, flow, step)
@@ -11598,6 +11681,21 @@ def cb_creator_give_coins(c):
         reply_markup=kb, parse_mode="HTML")
 
 
+@bot.callback_query_handler(func=lambda c: c.data == "creator_add_coinpack")
+def cb_creator_add_coinpack(c):
+    uid = c.from_user.id
+    if not is_creator(uid):
+        safe_answer(c.id, "❌ Нет доступа")
+        return
+    creator_flow[uid] = {"step": "add_coinpack_name"}
+    safe_answer(c.id)
+    kb = types.InlineKeyboardMarkup()
+    kb.add(types.InlineKeyboardButton("❌ Отмена", callback_data="creator_panel"))
+    bot.send_message(uid,
+        "📦 <b>Новый пакет монет</b>\n\nВведите название пакета:",
+        reply_markup=kb, parse_mode="HTML")
+
+
 @bot.callback_query_handler(func=lambda c: c.data.startswith("creator_coins_exec_"))
 def cb_creator_coins_exec(c):
     uid = c.from_user.id
@@ -11894,7 +11992,112 @@ def _handle_creator_flow_extended(msg, uid, flow, step):
             reply_markup=kb, parse_mode="HTML")
         return True
 
+    if step == "add_coinpack_name":
+        if not inp:
+            bot.send_message(uid, "❌ Название не может быть пустым. Введите ещё раз:")
+            return True
+        creator_flow[uid] = {"step": "add_coinpack_coins", "name": inp}
+        bot.send_message(uid, f"📦 Название: <b>{inp}</b>\n\nВведите количество Actual Coin в пакете (число):", parse_mode="HTML")
+        return True
+
+    if step == "add_coinpack_coins":
+        if not inp.isdigit() or int(inp) <= 0:
+            bot.send_message(uid, "❌ Введите положительное целое число.")
+            return True
+        flow["coins"] = int(inp)
+        flow["step"] = "add_coinpack_stars"
+        creator_flow[uid] = flow
+        bot.send_message(uid, f"⭐ Введите цену пакета в Telegram Stars (целое число):")
+        return True
+
+    if step == "add_coinpack_stars":
+        if not inp.isdigit() or int(inp) <= 0:
+            bot.send_message(uid, "❌ Введите положительное целое число.")
+            return True
+        flow["stars"] = int(inp)
+        flow["step"] = "add_coinpack_crypto"
+        creator_flow[uid] = flow
+        bot.send_message(uid, f"💎 Введите цену пакета в USD для оплаты криптой (например 1.5):")
+        return True
+
+    if step == "add_coinpack_crypto":
+        try:
+            usd = round(float(inp.replace(",", ".")), 2)
+            if usd <= 0:
+                raise ValueError
+        except ValueError:
+            bot.send_message(uid, "❌ Введите корректную цену, например 1.5.")
+            return True
+        flow["crypto_usd"] = usd
+        flow["step"] = "add_coinpack_target"
+        creator_flow[uid] = flow
+        kb = types.InlineKeyboardMarkup(row_width=1)
+        kb.add(types.InlineKeyboardButton("🌍 Всем игрокам", callback_data="creator_coinpack_target_all"))
+        bot.send_message(uid,
+            "🎯 Кому показывать пакет?\n\nНажмите кнопку ниже для показа всем, "
+            "или введите Telegram ID/ник конкретного игрока:",
+            reply_markup=kb)
+        return True
+
+    if step == "add_coinpack_target":
+        target_p = _find_player_by_inp(inp)
+        if not target_p:
+            bot.send_message(uid, "❌ Игрок не найден. Введите ID/ник ещё раз, либо нажмите \"Всем игрокам\" выше.")
+            return True
+        _finalize_coinpack(uid, flow, target_uid=target_p[0], target_name=target_p[1] or str(target_p[0]))
+        return True
+
     return False
+
+
+def _finalize_coinpack(uid, flow, target_uid=None, target_name=None):
+    name = flow.get("name")
+    coins = flow.get("coins")
+    stars = flow.get("stars")
+    crypto_usd = flow.get("crypto_usd")
+    creator_flow.pop(uid, None)
+    try:
+        conn = _db()
+        cur = conn.cursor()
+        cur.execute(
+            "INSERT INTO custom_coin_packages (name, coins_amount, stars_price, crypto_usd, target_user_id, created_by, created_at) "
+            "VALUES (%s,%s,%s,%s,%s,%s,%s)",
+            (name, coins, stars, crypto_usd, target_uid, uid, int(time.time())),
+        )
+        conn.commit()
+        conn.close()
+    except Exception as e:
+        bot.send_message(uid, f"❌ Ошибка сохранения пакета: {e}")
+        return
+    target_desc = f"игроку <b>{target_name}</b>" if target_uid else "<b>всем игрокам</b>"
+    bot.send_message(uid,
+        f"✅ <b>Пакет создан!</b>\n\n"
+        f"📦 {name}: {coins} AC\n"
+        f"⭐ {stars} Stars / 💎 ${crypto_usd}\n"
+        f"🎯 Виден: {target_desc}",
+        parse_mode="HTML")
+    if target_uid:
+        try:
+            bot.send_message(target_uid,
+                f"🎁 <b>Для вас доступен специальный пакет монет!</b>\n\n"
+                f"📦 {name}: {coins} AC\nОткройте магазин, чтобы купить.",
+                parse_mode="HTML")
+        except Exception:
+            pass
+
+
+@bot.callback_query_handler(func=lambda c: c.data == "creator_coinpack_target_all")
+def cb_creator_coinpack_target_all(c):
+    uid = c.from_user.id
+    if not is_creator(uid):
+        safe_answer(c.id, "❌ Нет доступа")
+        return
+    flow = creator_flow.get(uid, {})
+    if flow.get("step") != "add_coinpack_target":
+        safe_answer(c.id, "❌ Сессия истекла, начните заново")
+        return
+    safe_answer(c.id)
+    _finalize_coinpack(uid, flow, target_uid=None, target_name=None)
 
 
 # ==================== ЗАПУСК ====================
