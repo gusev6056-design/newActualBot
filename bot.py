@@ -1500,10 +1500,9 @@ def create_crypto_invoice(uid, pkg_idx):
     # Курс Stars->USD ориентировочный (~$0.015 за звезду) - подправьте STARS_TO_USD при необходимости.
     usd_amount = max(0.10, round(stars * STARS_TO_USD, 2))
     ok, result = _crypto_pay_call("createInvoice", {
-        "currency_type": "fiat",
-        "fiat": "USD",
+        "currency_type": "crypto",
+        "asset": CRYPTO_PAY_ASSET,
         "amount": str(usd_amount),
-        "accepted_assets": "USDT,TON,BTC",
         "description": f"{coins_amount} AC - пакет ({name})",
         "payload": f"coins_{pkg_idx}_{uid}",
         "expires_in": 1800,
