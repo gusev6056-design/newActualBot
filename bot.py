@@ -15,7 +15,7 @@ import base64
 import urllib.request
 import urllib.error
 
-CRYPTO_PAY_API_TOKEN = os.environ.get("CRYPTO_PAY_API_TOKEN", "")
+CRYPTO_PAY_API_TOKEN = os.environ.get("CRYPTO_PAY_API_TOKEN", "").strip().strip('"').strip("'")
 CRYPTO_PAY_API_URL = "https://pay.crypt.bot/api/"
 CRYPTO_PAY_ASSET = "USDT"
 
@@ -1471,11 +1471,20 @@ def _crypto_pay_call(method, params=None):
         with urllib.request.urlopen(req, timeout=15) as resp:
             body = json.loads(resp.read().decode("utf-8"))
     except urllib.error.HTTPError as e:
+        raw = ""
         try:
-            body = json.loads(e.read().decode("utf-8"))
+            raw = e.read().decode("utf-8")
         except Exception:
-            return False, str(e)
+            pass
+        print(f"[_crypto_pay_call] HTTP {e.code} {method}: {raw or e}")
+        try:
+            body = json.loads(raw)
+        except Exception:
+            if e.code == 403:
+                return False, "HTTP 403: неверный или неактивный CRYPTO_PAY_API_TOKEN (проверьте токен и статус приложения в @CryptoBot)"
+            return False, f"HTTP {e.code}: {raw or e}"
     except Exception as e:
+        print(f"[_crypto_pay_call] error {method}: {e}")
         return False, str(e)
     if not body.get("ok"):
         return False, body.get("error", body)
