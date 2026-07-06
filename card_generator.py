@@ -190,10 +190,37 @@ def _apply_glow(img: Image.Image, xy, r: int, color, strength: int = 18, layers:
 # ==================== LEVEL FRAME DRAWING ====================
 
 def _draw_level_frame(img: Image.Image, ax: int, ay: int, asize: int, level: int):
-    """Draw a decorative level frame border programmatically around the avatar.
-    Each level has distinct colours and corner decorations matching the preview designs.
+    """Draw a decorative level frame around the avatar.
+    First tries to load the PNG frame from attached_assets; falls back to
+    programmatic drawing if the file is not found.
     Returns (img, draw).
     """
+    # ── Try PNG frame first ────────────────────────────────────────────────────
+    PAD = 20
+    frame_file = LEVEL_FRAME_FILES.get(level)
+    if frame_file:
+        frame_path = os.path.join(_ASSETS_DIR, frame_file)
+        if os.path.exists(frame_path):
+            try:
+                frame_png = Image.open(frame_path).convert("RGBA")
+                frame_size = asize + PAD * 2          # e.g. 118+40 = 158
+                frame_png  = frame_png.resize((frame_size, frame_size), Image.LANCZOS)
+                fx = ax - PAD
+                fy = ay - PAD
+                # Clip to image canvas if frame extends outside (e.g. fy<0)
+                src_x = max(0, -fx)
+                src_y = max(0, -fy)
+                dst_x = max(0,  fx)
+                dst_y = max(0,  fy)
+                crop  = frame_png.crop((src_x, src_y, frame_png.width, frame_png.height))
+                base  = img.convert("RGBA")
+                base.paste(crop, (dst_x, dst_y), crop)
+                result = base.convert("RGB")
+                return result, ImageDraw.Draw(result)
+            except Exception as e:
+                print(f"[_draw_level_frame] PNG load failed (level {level}): {e}")
+
+    # ── Programmatic fallback ──────────────────────────────────────────────────
     cfg = LEVEL_BANNER_CFG.get(level, LEVEL_BANNER_CFG[1])
 
     RAINBOW = [
@@ -201,8 +228,6 @@ def _draw_level_frame(img: Image.Image, ax: int, ay: int, asize: int, level: int
         (30, 215, 55),  (0,  205, 235), (70, 70, 255), (195, 0, 255),
     ]
 
-    # Frame geometry — 14 px outside the avatar on all sides
-    PAD  = 14
     fx   = ax - PAD
     fy   = ay - PAD
     fx2  = ax + asize + PAD
@@ -1125,7 +1150,7 @@ def generate_profile_card(
         _HDR_GOLD      = _GOLD
 
     # ===== AVATAR (SQUARE) =====
-    AX, AY, AS = 20, 18, 118
+    AX, AY, AS = 20, 20, 118
 
     fn_frame = (active_frame or "").lower()
     if "premium" in fn_frame:
@@ -1163,10 +1188,10 @@ def generate_profile_card(
         # Auto-draw level frame programmatically
         img, draw = _draw_level_frame(img, AX, AY, AS, lvl)
 
-    draw.text((152, 20), f"#{user_id}", font=_font(13), fill=_HDR_TEXT_GRAY)
+    draw.text((165, 20), f"#{user_id}", font=_font(13), fill=_HDR_TEXT_GRAY)
     fname2 = _font(30, bold=True)
-    draw.text((152, 36), username, font=fname2, fill=_HDR_TEXT)
-    badge_x = 152 + _tw(draw, username, fname2) + 10
+    draw.text((165, 36), username, font=fname2, fill=_HDR_TEXT)
+    badge_x = 165 + _tw(draw, username, fname2) + 10
     if is_premium:
         draw.text((badge_x, 40), "★", font=_font(26, bold=True), fill=_HDR_GOLD)
         badge_x += _tw(draw, "★", _font(26, bold=True)) + 8
@@ -1177,7 +1202,7 @@ def generate_profile_card(
     if is_verified:
         _draw_scalloped_badge(draw, badge_x + 11, 51, 22)
 
-    draw.text((152, 78), f"ID: {game_id}", font=_font(14), fill=_HDR_TEXT_GRAY)
+    draw.text((165, 78), f"ID: {game_id}", font=_font(14), fill=_HDR_TEXT_GRAY)
     draw.text((W - 200, 16), "ELO RATING", font=_font(11), fill=_HDR_TEXT_GRAY)
     _text_r(draw, W - 36, 28, str(elo), _font(46, bold=True), _HDR_GOLD)
     BX, BY, BS = W - 80, 88, 40

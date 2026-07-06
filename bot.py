@@ -3788,9 +3788,7 @@ def cb_profile(c):
     if has_quals_access(uid):
         extra_btns.append(types.InlineKeyboardButton("⭐ Quals профиль", callback_data="profile_quals"))
     _priv_table_check = get_user_table(uid)
-    _duo_check = get_player_duo_stats(uid, _priv_table_check)
-    if _duo_check:
-        extra_btns.append(types.InlineKeyboardButton("🤝 2vs2 профиль", callback_data="profile_duo"))
+    extra_btns.append(types.InlineKeyboardButton("🤝 2vs2 профиль", callback_data="profile_duo"))
     if extra_btns:
         kb.add(*extra_btns)
     kb.add(types.InlineKeyboardButton("🔙 Назад", callback_data="back"))
