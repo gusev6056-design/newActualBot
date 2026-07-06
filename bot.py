@@ -15,6 +15,10 @@ import base64
 import urllib.request
 import urllib.error
 
+CRYPTO_PAY_API_TOKEN = os.environ.get("CRYPTO_PAY_API_TOKEN", "")
+CRYPTO_PAY_API_URL = "https://pay.crypt.bot/api/"
+CRYPTO_PAY_ASSET = "USDT"
+
 # Московское время UTC+3
 MSK = datetime.timezone(datetime.timedelta(hours=3))
 
@@ -347,6 +351,8 @@ SHOP_ITEMS_DEFAULT = [
 
 CATEGORY_NAMES = {"decor": "🖼 Декор", "goods": "📦 Товары"}
 CATEGORY_ICONS = {"decor": "🖼", "goods": "📦"}
+
+STARS_TO_USD = 0.015  # ориентировочный курс Telegram Stars -> USD для крипто-оплаты
 
 COIN_PACKAGES = [
     ("Стартовый",   200,   15,  "15 ⭐"),
@@ -728,6 +734,20 @@ def init_db():
             admin_id BIGINT NOT NULL,
             action TEXT NOT NULL,
             UNIQUE(admin_id, action)
+        )
+    """)
+    conn.commit()
+
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS crypto_invoices (
+            id SERIAL PRIMARY KEY,
+            invoice_id BIGINT UNIQUE NOT NULL,
+            user_id BIGINT NOT NULL,
+            pkg_idx INTEGER NOT NULL,
+            coins_amount INTEGER NOT NULL,
+            status TEXT DEFAULT 'active',
+            created_at BIGINT DEFAULT EXTRACT(EPOCH FROM NOW())::BIGINT,
+            paid_at BIGINT DEFAULT NULL
         )
     """)
     conn.commit()
@@ -1427,6 +1447,125 @@ def add_coins_to_player(uid, amount, table=None):
     cur.execute(f"UPDATE {target} SET coins=coins+%s WHERE user_id=%s", (amount, uid))
     conn.commit()
     conn.close()
+
+
+# ==================== CRYPTO PAY (@CryptoBot) ====================
+def _crypto_pay_call(method, params=None):
+    """Вызывает метод Crypto Pay API (@CryptoBot). Возвращает (ok, result_or_error)."""
+    if not CRYPTO_PAY_API_TOKEN:
+        return False, "CRYPTO_PAY_API_TOKEN не настроен"
+    url = CRYPTO_PAY_API_URL + method
+    data = json.dumps(params or {}).encode("utf-8")
+    req = urllib.request.Request(
+        url,
+        data=data,
+        headers={
+            "Crypto-Pay-API-Token": CRYPTO_PAY_API_TOKEN,
+            "Content-Type": "application/json",
+        },
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            body = json.loads(resp.read().decode("utf-8"))
+    except urllib.error.HTTPError as e:
+        try:
+            body = json.loads(e.read().decode("utf-8"))
+        except Exception:
+            return False, str(e)
+    except Exception as e:
+        return False, str(e)
+    if not body.get("ok"):
+        return False, body.get("error", body)
+    return True, body.get("result")
+
+
+def create_crypto_invoice(uid, pkg_idx):
+    """Создаёт инвойс в @CryptoBot на покупку монет. Возвращает (ok, pay_url_or_error, invoice_id)."""
+    if pkg_idx < 0 or pkg_idx >= len(COIN_PACKAGES):
+        return False, "❌ Пакет не найден", None
+    name, coins_amount, stars, price_label = COIN_PACKAGES[pkg_idx]
+    # Цена в USD выводится из цены в Stars, чтобы совпадать с оплатой через Telegram Stars.
+    # Курс Stars->USD ориентировочный (~$0.015 за звезду) — подправьте STARS_TO_USD при необходимости.
+    usd_amount = max(0.10, round(stars * STARS_TO_USD, 2))
+    ok, result = _crypto_pay_call("createInvoice", {
+        "currency_type": "fiat",
+        "fiat": "USD",
+        "amount": str(usd_amount),
+        "accepted_assets": "USDT,TON,BTC",
+        "description": f"{coins_amount} AC — пакет «{name}»",
+        "payload": f"coins_{pkg_idx}_{uid}",
+        "expires_in": 1800,
+    })
+    if not ok:
+        return False, f"❌ Ошибка создания счёта: {result}", None
+    try:
+        conn = _db()
+        cur = conn.cursor()
+        cur.execute(
+            "INSERT INTO crypto_invoices (invoice_id, user_id, pkg_idx, coins_amount) VALUES (%s,%s,%s,%s)",
+            (result["invoice_id"], uid, pkg_idx, coins_amount),
+        )
+        conn.commit()
+        conn.close()
+    except Exception as e:
+        print(f"[create_crypto_invoice] db error: {e}")
+    return True, result.get("bot_invoice_url") or result.get("pay_url"), result["invoice_id"]
+
+
+def _crypto_pay_poll_loop():
+    """Фоновый поллинг: проверяет активные крипто-инвойсы и начисляет монеты после оплаты."""
+    if not CRYPTO_PAY_API_TOKEN:
+        return
+    while True:
+        try:
+            conn = _db()
+            cur = conn.cursor()
+            cur.execute("SELECT invoice_id, user_id, coins_amount FROM crypto_invoices WHERE status='active'")
+            pending = cur.fetchall()
+            conn.close()
+            for invoice_id, uid, coins_amount in pending:
+                ok, result = _crypto_pay_call("getInvoices", {"invoice_ids": str(invoice_id)})
+                if not ok:
+                    continue
+                items = result.get("items", []) if isinstance(result, dict) else []
+                if not items:
+                    continue
+                inv = items[0]
+                if inv.get("status") == "paid":
+                    add_coins_to_player(uid, coins_amount, table="players_fade")
+                    conn2 = _db()
+                    cur2 = conn2.cursor()
+                    cur2.execute(
+                        "UPDATE crypto_invoices SET status='paid', paid_at=%s WHERE invoice_id=%s",
+                        (int(time.time()), invoice_id),
+                    )
+                    conn2.commit()
+                    conn2.close()
+                    try:
+                        p = get_player(uid)
+                        bot.send_message(
+                            uid,
+                            f"✅ <b>Оплата криптой прошла!</b>\n💰 Начислено: <b>{coins_amount} AC</b>\n"
+                            f"💳 Баланс: <b>{p[5] if p else '?'} AC</b>",
+                            parse_mode="HTML",
+                        )
+                    except Exception:
+                        pass
+                    if ADMIN_ID:
+                        try:
+                            bot.send_message(ADMIN_ID, f"💎 Оплата криптой!\nПользователь: {uid}\nНачислено: {coins_amount} AC")
+                        except Exception:
+                            pass
+                elif inv.get("status") == "expired":
+                    conn2 = _db()
+                    cur2 = conn2.cursor()
+                    cur2.execute("UPDATE crypto_invoices SET status='expired' WHERE invoice_id=%s", (invoice_id,))
+                    conn2.commit()
+                    conn2.close()
+        except Exception as e:
+            print(f"[_crypto_pay_poll_loop] {e}")
+        time.sleep(15)
 
 def apply_mute(uid, hours=2):
     until = int(time.time()) + hours * 3600
@@ -3330,7 +3469,7 @@ def cb_change_own(c):
 
 @bot.message_handler(func=lambda m: m.from_user.id in change_flow and "field" in change_flow.get(m.from_user.id, {}) and m.text is not None)
 def handle_change_flow(msg):
-    uid = msg.from_user.id
+    uid = msg.from_�user.id
     if uid not in change_flow:
         return
     data = change_flow.pop(uid)
@@ -3528,7 +3667,7 @@ def cb_profile(c):
         f"⭐ Quals: {quals}\n"
         f"⚠️ Варны: {warns}/3{mute_text}\n\n"
         f"🏆 {p[6]}W · ❌ {p[7]}L · 📈 {winrate}%\n"
-        f"🔫 K: {p[8]} · 💀 D: {p[9]} · 🤝 A: {p[10]} · K/D: {kd}"
+        f"🔫 K: {p[8]} · 💀 D: �{p[9]} · 🤝 A: {p[10]} · K/D: {kd}"
     )
     bot.edit_message_text(text, c.message.chat.id, c.message.message_id, reply_markup=kb)
     safe_answer(c.id)
@@ -3755,7 +3894,7 @@ def cb_profile_quals(c):
                 deaths            = q_deaths,
                 assists           = q_assists,
                 is_premium        = premium,
-                is_admin          = is_admin(uid),
+                is_admin      �    = is_admin(uid),
                 global_rank       = q_rank,
                 league            = "QUALS",
                 map_stats         = [],
@@ -3938,7 +4077,7 @@ def cb_top_quals(c):
             try:
                 bot.delete_message(c.message.chat.id, c.message.message_id)
             except Exception:
-                pass
+             �   pass
             bot.send_photo(c.message.chat.id, img_buf,
                            caption="⭐ <b>QUALS ТОП ИГРОКОВ</b>",
                            reply_markup=kb, parse_mode="HTML")
@@ -4141,7 +4280,7 @@ def cb_lobby(c):
     private_key  = get_user_private(uid)
     priv_display = get_user_private_display(uid)
     if league == "quals" and not has_quals_access(uid):
-        safe_answer(c.id, "⭐ Доступ к QUALS закрыт!", show_alert=True)
+        safe_answer(c.id, "⭐ Доступ к QUALS закрыт!", sh�ow_alert=True)
         return
     max_size = _lobby_max_size(league)
     text = f"🎮 <b>ЛОББИ {priv_display} — {league.upper()}</b>\n\nPC и Mobile могут играть вместе\n\n"
@@ -4323,7 +4462,7 @@ def delete_match_found(lobby_id):
     for uid, (cid, mid) in msgs.items():
         try:
             bot.delete_message(cid, mid)
-        except Exception:
+        except Except�ion:
             pass
 
 def delete_ban_status(lobby_id):
@@ -4513,7 +4652,7 @@ def build_ban_status_text(lobby_id):
         turn_name = ct_name if turn == "ct" else t_name
         lines.append(f"⏳ Ход: {'💙' if turn=='ct' else '🧡'} <b>{turn_name}</b>")
     else:
-        lines.append(f"🗺 <b>Карта выбрана: {lobby.get('map_name', '?')}</b>")
+       � lines.append(f"🗺 <b>Карта выбрана: {lobby.get('map_name', '?')}</b>")
     return "\n".join(lines)
 
 def send_ban_status_to_all(lobby_id):
@@ -4736,7 +4875,7 @@ def _do_ban_turn(lobby_id):
                 )
             except Exception:
                 pass
-            _apply_ban(lobby_id, captain_uid, chosen)
+          �  _apply_ban(lobby_id, captain_uid, chosen)
         threading.Thread(target=captain_afk_timeout, daemon=True).start()
 
 def _send_ban_keyboard(lobby_id, captain_uid):
@@ -4965,7 +5104,7 @@ def _start_draft_phase_inner(lobby_id):
     # Статус-сообщения бана (у всех игроков)
     delete_ban_status(lobby_id)
     # Клавиатура бана (у текущего капитана)
-    _ban_kb = ban_turn_messages.pop(lobby_id, None)
+    _ban_kb = ban_turn_messages.pop(lobby�_id, None)
     if _ban_kb:
         try:
             bot.delete_message(_ban_kb[0], _ban_kb[1])
@@ -5197,7 +5336,7 @@ def _apply_draft_pick(lobby_id, team, unit):
             return  # already picked by another thread
 
         # Remove chosen unit
-        draft["units"] = [u for u in current_units if set(u) != unit_set]
+        draft["units"] = �[u for u in current_units if set(u) != unit_set]
 
         # Add to team
         if team == "ct":
@@ -5427,7 +5566,7 @@ def launch_match(lobby_id):
 
 def _launch_match_inner(lobby_id):
     lobby = active_lobbies.get(lobby_id)
-    if not lobby or lobby["status"] not in (
+�    if not lobby or lobby["status"] not in (
         "accepting", "waiting", "mapban", "pre_mapban", "draft", "pre_launch"
     ):
         return
@@ -5626,7 +5765,7 @@ def _launch_match_inner(lobby_id):
             sent = bot.send_message(ADMIN_CHAT_ID, match_text, **send_kw)
             lobby["admin_msg_id"] = sent.message_id
             try:
-                bot.pin_chat_message(ADMIN_CHAT_ID, sent.message_id, disable_notification=True)
+                bot.pin�_chat_message(ADMIN_CHAT_ID, sent.message_id, disable_notification=True)
             except Exception:
                 pass
         except Exception as e:
@@ -5816,7 +5955,7 @@ def handle_player_ACreenshot(msg):
     try:
         _um_conn = _db()
         _um_cur  = _um_conn.cursor()
-        _um_cur.execute(
+        _um_cur.execute�(
             "UPDATE unregistered_matches SET ACreenshots_count=%s WHERE match_id=%s",
             (AC, match_id),
         )
@@ -6015,7 +6154,7 @@ def cb_reg_match(c):
     match_code = lobby.get("match_code", str(match_id))
     AC = lobby.get("ACreenshots_count", 0)
     try:
-        new_kb = _build_admin_match_kb(match_key, match_code, AC, taken_by=uid)
+        new_kb = _build_admin_match_kb(match�_key, match_code, AC, taken_by=uid)
         # Не передаём message_thread_id в edit_message_reply_markup — он там не нужен
         bot.edit_message_reply_markup(c.message.chat.id, c.message.message_id, reply_markup=new_kb)
     except Exception:
@@ -6227,7 +6366,7 @@ def handle_ai_reg_photo(msg):
             send_kw = {"parse_mode": "HTML"}
             if reply_thread_id:
                 send_kw["message_thread_id"] = reply_thread_id
-            match_code = lobby.get("match_code", match_key)
+            match_code = lobby.get("match_code", match_key)�
             bot.send_message(
                 reply_chat_id,
                 f"⚠️ <b>AI не смог определить ники игроков</b> для матча #{match_code}.\n"
@@ -6415,7 +6554,7 @@ def cb_ai_reg_manual(c):
     if pending.get("match_key") != match_key:
         safe_answer(c.id, "❌ Данные не найдены")
         return
-    reply_chat_id   = pending.get("reply_chat_id", uid)
+    reply_chat_id   =� pending.get("reply_chat_id", uid)
     reply_thread_id = pending.get("reply_thread_id")
     match_registration[uid] = {
         "match_key":      match_key,
@@ -6615,7 +6754,7 @@ def reg_step_ACore(msg):
     _rs_priv_table  = PRIVATE_CONFIG.get(lobby.get("private", "fade") if lobby else "fade", PRIVATE_CONFIG["fade"])["table"] if lobby else None
     _rs_league      = lobby.get("league", "default") if lobby else "default"
     ct_list = "\n".join([f"  {i+1}. {pline(u, _rs_priv_table, _rs_league)}" for i, u in enumerate((lobby.get("team_ct", []) if lobby else []))])
-    t_list  = "\n".join([f"  {i+1}. {pline(u, _rs_priv_table, _rs_league)}" for i, u in enumerate((lobby.get("team_t",  []) if lobby else []))])
+    t_list  = "\n".join([�f"  {i+1}. {pline(u, _rs_priv_table, _rs_league)}" for i, u in enumerate((lobby.get("team_t",  []) if lobby else []))])
     kb = types.InlineKeyboardMarkup()
     kb.add(
         types.InlineKeyboardButton("💙 CT победила", callback_data=f"reg_winner_ct|{match_key}"),
@@ -6811,7 +6950,7 @@ def _finalize_match(reg_uid, match_key):
                 coins_reward = 15
             else:
                 elo_change = -15 if kills >= 12 else -23
-                coins_reward = 4
+            �    coins_reward = 4
             # Ensure player row exists in priv_table (defensive upsert for cross-private users)
             if priv_table != "players_fade":
                 _src = get_player(_uid)
@@ -6989,7 +7128,7 @@ def _finalize_match(reg_uid, match_key):
         try:
             kb_review = types.InlineKeyboardMarkup(row_width=1)
             kb_review.add(
-                types.InlineKeyboardButton("🔄 На перерегистрацию", callback_data=f"reregister_match|{match_key}"),
+        �        types.InlineKeyboardButton("🔄 На перерегистрацию", callback_data=f"reregister_match|{match_key}"),
             )
             priv_cfg2 = PRIVATE_CONFIG.get(lobby.get("private", "fade"), PRIVATE_CONFIG["fade"])
             priv_label2 = f"{priv_cfg2['emoji']} {priv_cfg2['display']}"
@@ -7192,7 +7331,7 @@ def cb_activate_match(c):
         return
     match_key = c.data.split("|", 1)[1]
     lobby = running_matches.get(match_key)
-    match_code = lobby.get("match_code", "?") if lobby else "?"
+  �  match_code = lobby.get("match_code", "?") if lobby else "?"
     admin_p = get_player(uid)
     admin_name = admin_p[1] if admin_p else str(uid)
     try:
@@ -7394,7 +7533,7 @@ def cb_inv_activate(c):
         return
     safe_answer(c.id, msg[:200], show_alert=not result)
     if result:
-        try:
+        try�:
             bot.edit_message_text(msg, c.message.chat.id, c.message.message_id)
         except Exception:
             pass
@@ -7622,7 +7761,7 @@ def cb_slots_odds(c):
     total = n ** 3           # 343
     triples = n              # 7
     pairs   = n * 3 * (n-1) # 126
-    misses  = total - triples - pairs  # 210
+ �   misses  = total - triples - pairs  # 210
     # средний множитель за трипл
     avg_mult = sum(SLOTS_PAYOUTS.values()) / n
     rtp = round(avg_mult * triples / total * 100, 1)
@@ -7821,7 +7960,7 @@ def cb_admin_slots_settings(c):
         safe_answer(c.id, "❌ Нет доступа")
         return
     safe_answer(c.id)
-    try:
+    try:�
         bot.edit_message_text(_slots_settings_text(), c.message.chat.id, c.message.message_id,
                               reply_markup=_slots_settings_kb(), parse_mode="HTML")
     except Exception:
@@ -8031,7 +8170,7 @@ def cb_party_menu(c):
         text = "👥 У вас нет пати.\nСоздайте пати или примите приглашение."
         kb = types.InlineKeyboardMarkup(row_width=1)
         kb.add(
-            types.InlineKeyboardButton("➕ Создать пати", callback_data="party_create"),
+            types.InlineKeyboardButton("➕ Создать пати", cal�lback_data="party_create"),
             types.InlineKeyboardButton("🔙 Назад", callback_data="back"),
         )
     bot.edit_message_text(text, c.message.chat.id, c.message.message_id, reply_markup=kb)
@@ -8210,9 +8349,13 @@ def cb_buy_coins(c):
     kb = types.InlineKeyboardMarkup(row_width=1)
     for i, (name, coins_amount, stars, price_label) in enumerate(COIN_PACKAGES):
         kb.add(types.InlineKeyboardButton(f"⭐ {name}: {coins_amount} AC — {stars} Stars ({price_label})", callback_data=f"buy_pkg_{i}"))
+    if CRYPTO_PAY_API_TOKEN:
+        for i, (name, coins_amount, stars, price_label) in enumerate(COIN_PACKAGES):
+            usd = max(0.10, round(stars * STARS_TO_USD, 2))
+            kb.add(types.InlineKeyboardButton(f"💎 {name}: {coins_amount} AC — крипта (${usd})", callback_data=f"buy_crypto_{i}"))
     kb.add(types.InlineKeyboardButton("🔙 Назад", callback_data="back"))
     bot.edit_message_text(
-        f"💳 <b>КУПИТЬ SareCoin</b>\n💰 Баланс: <b>{coins} AC</b>\n\n⭐ Telegram Stars\nВыберите пакет:",
+        f"💳 <b>КУПИТЬ SareCoin</b>\n💰 Баланс: <b>{coins} AC</b>\n\n⭐ Telegram Stars или 💎 криптой\nВыберите пакет:",
         c.message.chat.id, c.message.message_id, reply_markup=kb,
     )
     safe_answer(c.id)
@@ -8240,6 +8383,34 @@ def cb_buy_package(c):
         )
     except Exception as e:
         bot.send_message(uid, f"❌ Ошибка создания счёта: {e}")
+
+
+@bot.callback_query_handler(func=lambda c: c.data.startswith("buy_crypto_"))
+def cb_buy_crypto(c):
+    uid = c.from_user.id
+    if not CRYPTO_PAY_API_TOKEN:
+        safe_answer(c.id,� "❌ Оплата криптой временно недоступна", show_alert=True)
+        return
+    pkg_idx = int(c.data.split("buy_crypto_")[1])
+    if pkg_idx < 0 or pkg_idx >= len(COIN_PACKAGES):
+        safe_answer(c.id, "❌ Пакет не найден")
+        return
+    safe_answer(c.id, "⏳ Создаём счёт...")
+    ok, pay_url_or_err, invoice_id = create_crypto_invoice(uid, pkg_idx)
+    name, coins_amount, stars, price_label = COIN_PACKAGES[pkg_idx]
+    if not ok:
+        bot.send_message(uid, pay_url_or_err)
+        return
+    kb = types.InlineKeyboardMarkup()
+    kb.add(types.InlineKeyboardButton("💎 Оплатить в @CryptoBot", url=pay_url_or_err))
+    bot.send_message(
+        uid,
+        f"💎 <b>Счёт создан</b>\n\n"
+        f"Пакет: «{name}» — {coins_amount} AC\n"
+        f"Оплатите по кнопке ниже (USDT / TON / BTC). "
+        f"Монеты начислятся автоматически в течение минуты после оплаты.",
+        reply_markup=kb, parse_mode="HTML",
+    )
 
 
 @bot.pre_checkout_query_handler(func=lambda q: True)
@@ -8413,7 +8584,7 @@ def cb_admin_panel(c):
         _btn("➖ Снять варн",           "admin_unwarn",         "warn")
         _btn("🔇 Мут",                  "admin_mute",           "mute")
         _btn("🔊 Размутить",            "admin_unmute",         "mute")
-        _btn("🔎 Вызвать на проверку",  "admin_check",          "check")
+        _btn("🔎 Вызвать на проверку",  "admin_check",       �   "check")
         _btn("✅ Снять проверку",       "admin_uncheck",        "check")
         _btn("🚫 Бан / Разбан",         "admin_ban",            "ban")
         _btn("👑 Выдать/Снять админку", "admin_give_admin",     "give_admin")
@@ -8615,7 +8786,7 @@ def cb_promo_finalize(c):
         return
     safe_answer(c.id)
     try:
-        bot.delete_message(c.message.chat.id, c.message.message_id)
+        bot.delete_message(c.message.chat.id, c.messag�e.message_id)
     except Exception:
         pass
     data = promo_admin_flow[uid]
@@ -8824,7 +8995,7 @@ def cb_admin_match_history(c):
         winner_str = "💙 CT" if winner == "ct" else "🧡 T"
         text += f"🔢 <b>Match ID {match_id}</b> | {dt}\n   {league.upper()}/{device.upper()} | {map_name}\n   {winner_str} | {ACore_w}:{ACore_l}\n\n"
     kb = types.InlineKeyboardMarkup()
-    kb.add(types.InlineKeyboardButton("🔙 Назад", callback_data="admin_panel"))
+    kb.add(types.Inli�neKeyboardButton("🔙 Назад", callback_data="admin_panel"))
     bot.edit_message_text(text, c.message.chat.id, c.message.message_id, reply_markup=kb)
     safe_answer(c.id)
 
@@ -8995,7 +9166,7 @@ def handle_admin_action(msg):
             bot.send_message(uid, "❌ Формат: USER_ID НОВОЕ_ELO")
             return
         target_id, new_elo = int(parts[0]), int(parts[1])
-        conn = _db(); cur = conn.cursor()
+        conn = _db�(); cur = conn.cursor()
         cur.execute("UPDATE players_fade SET elo=%s WHERE user_id=%s AND registered=1", (new_elo, target_id))
         affected = cur.rowcount
         conn.commit(); conn.close()
@@ -9191,7 +9362,7 @@ def handle_admin_action(msg):
 
     elif action == "edit_stats":
         p = find_player_by_input(text)
-        if not p:
+  �      if not p:
             bot.send_message(uid, "❌ Игрок не найден")
             return
         has_q = has_quals_access(p[0])
@@ -9409,7 +9580,7 @@ def handle_ban_flow(msg):
             f"✅ Игрок <b>{target_name}</b> заблокирован.\n"
             f"⏰ Срок: {duration_str}\n"
             f"📝 Причина: {reason}",
-            parse_mode="HTML",
+          �  parse_mode="HTML",
         )
         try:
             bot.send_message(
@@ -9627,7 +9798,7 @@ def cb_admin_do_action(c):
         admin_name = admin_p[1] if admin_p else str(uid)
         send_punishment_log_priv(uid,
             f"➖ <b>Снятие варна</b>\n"
-            f"👮 Снял: {tg_link(uid, admin_name)}\n"
+            f"👮 Снял: {tg_link(uid, �admin_name)}\n"
             f"👤 Игрок: {tg_link(target_id, p[1])}\n"
             f"📊 Осталось: {new_warns}/3"
         )
@@ -9816,7 +9987,7 @@ def auto_unban_loop():
     while True:
         try:
             now = int(time.time())
-            conn = _db()
+            conn =� _db()
             cur = conn.cursor()
 
             # --- Авто-разбан (временный бан) ---
@@ -10013,7 +10184,7 @@ def cb_admin_season_reset_execute(c):
         admin_name = admin_p[1] if admin_p else str(uid)
         text = (
             f"✅ <b>СЕЗОН СБРОШЕН!</b>\n\n"
-            f"🏆 Начат <b>Сезон {new_season_number}</b>\n"
+            f"🏆 Начат <b>Сезон {new_season_number}</b�>\n"
             f"👥 Архивировано игроков: <b>{players_count}</b>\n"
             f"👮 Администратор: <b>{admin_name}</b>\n\n"
             f"Все игроки начинают с ELO 1000."
@@ -10210,7 +10381,7 @@ def cb_admin_ticket_view(c):
 def _ticket_cancel_kb():
     """Клавиатура для отмены тикета (используется на каждом шаге)."""
     kb = types.InlineKeyboardMarkup(row_width=1)
-    kb.add(types.InlineKeyboardButton("❌ Отменить тикет", callback_data="ticket_cancel"))
+    kb.add(types.InlineKeyboardButton("❌ Отменить тикет", callback_data="ticket_canc�el"))
     return kb
 
 def _ticket_back_kb():
@@ -10421,7 +10592,7 @@ def ticket_step_accused(msg):
     p = get_player(uid)
     reporter_name = p[1] if p else str(uid)
     mc_text = f"<code>#{match_code}</code>" if match_code else "не указан"
-    accused_text_display = accused_name if accused_name else "не указан"
+    accused_text_display = accu�sed_name if accused_name else "не указан"
 
     # Уведомить пользователя
     bot.send_message(
@@ -10650,7 +10821,7 @@ def _reset_everything(table="players_fade"):
 def _creator_panel_kb():
     kb = types.InlineKeyboardMarkup(row_width=2)
     kb.add(
-        types.InlineKeyboardButton("📊 Статистика бота",          callback_data="creator_botstats"),
+        types.InlineKeyboardButton("📊 Статистика бота",          callback_data="creator_b�otstats"),
         types.InlineKeyboardButton("📋 Логи админов",             callback_data="creator_logs"),
     )
     kb.add(
@@ -10851,7 +11022,7 @@ def cb_creator_restrict_menu(c):
         )
         safe_answer(c.id)
         return
-    kb = types.InlineKeyboardMarkup(row_width=1)
+ �   kb = types.InlineKeyboardMarkup(row_width=1)
     for a_uid, a_name in non_creator:
         kb.add(types.InlineKeyboardButton(
             f"👤 {a_name or a_uid}",
@@ -11061,7 +11232,7 @@ def cb_creator_botstats(c):
         cur  = conn.cursor()
         cur.execute("SELECT COUNT(*) FROM players_fade WHERE is_bot=0")
         total_players = cur.fetchone()[0]
-        cur.execute("SELECT COUNT(*) FROM players_fade WHERE is_bot=0 AND registered=1")
+        cur.execute("SE�LECT COUNT(*) FROM players_fade WHERE is_bot=0 AND registered=1")
         reg_players = cur.fetchone()[0]
         cur.execute("SELECT COUNT(*) FROM players_fade WHERE premium_until > %s AND is_bot=0", (int(time.time()),))
         premium_count = cur.fetchone()[0]
@@ -11253,7 +11424,7 @@ def cb_creator_verify_exec(c):
     if not is_creator(uid):
         safe_answer(c.id, "❌ Нет доступа")
         return
-    parts = c.data.replace("creator_verify_exec_", "").split("_")
+    parts = c.data.replace("creator_verify_exec_"�, "").split("_")
     if len(parts) < 2:
         safe_answer(c.id, "❌ Ошибка")
         return
@@ -11458,7 +11629,7 @@ def cb_creator_new_season(c):
         f"🏆 <b>Новый сезон</b>\n\n"
         f"Текущий сезон: <b>#{current_season}</b>\n\n"
         "⚠️ При запуске нового сезона:\n"
-        "• Текущая статистика всех игроков будет сохранена в архив\n"
+        "• Текущая стати�стика всех игроков будет сохранена в архив\n"
         "• ELO сброситься к 1000, вся матч-стата обнулится\n"
         "• Это действие необратимо!\n\n"
         f"Запустить сезон <b>#{current_season + 1}</b>?",
@@ -11649,7 +11820,7 @@ def _handle_creator_flow_extended(msg, uid, flow, step):
     if step == "give_coins_id":
         target_p = _find_player_by_inp(inp)
         if not target_p:
-            bot.send_message(uid, "❌ Игрок не найден.")
+        �    bot.send_message(uid, "❌ Игрок не найден.")
             return True
         t_uid  = target_p[0]
         t_name = target_p[1] or str(t_uid)
@@ -11696,5 +11867,10 @@ if __name__ == "__main__":
     threading.Thread(target=auto_unban_loop, daemon=True).start()
     print("🗑️ Запуск авто-удаления сообщений...")
     threading.Thread(target=_auto_delete_loop, daemon=True).start()
+    if CRYPTO_PAY_API_TOKEN:
+        print("💎 Запуск проверки крипто-платежей (@CryptoBot)...")
+        threading.Thread(target=_crypto_pay_poll_loop, daemon=True).start()
+    else:
+        print("💎 CRYPTO_PAY_API_TOKEN не задан — оплата криптой отключена")
     print(f"✅ Бот запущен! ADMIN_CHAT_ID={ADMIN_CHAT_ID} | ADMIN_IDS={ADMIN_IDS_LIST}")
     bot.infinity_polling(timeout=60, long_polling_timeout=30)
