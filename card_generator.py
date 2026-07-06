@@ -204,39 +204,44 @@ def _apply_level_frame_png(img: Image.Image, ax: int, ay: int, asize: int, level
     try:
         frame = Image.open(fpath).convert("RGBA")
 
-        # Scale to cover avatar + equal padding on all sides
-        padding = int(asize * 0.34)   # ~40 px for 118-px avatar
+        # Scale to cover avatar + equal padding on all sides.
+        # Padding must not exceed the avatar's top/left margin so the frame
+        # never gets pasted at a negative coordinate and gets clipped.
+        padding = min(ax, ay, int(asize * 0.14))   # ≤ 14 px for 118-px avatar
         target  = asize + padding * 2
         frame   = frame.resize((target, target), Image.LANCZOS)
 
-        # Make black/near-black transparent so the outer background and inner
-        # hole disappear and only the coloured metallic border remains.
-        if _NUMPY:
-            arr = np.array(frame, dtype=np.uint8)
-            brightness = arr[:, :, :3].max(axis=2).astype(np.int16)
-            alpha = np.zeros(brightness.shape, dtype=np.uint8)
-            # fully opaque above threshold
-            alpha[brightness >= 55] = 255
-            # soft edge in transition zone
-            mask_soft = (brightness >= 20) & (brightness < 55)
-            alpha[mask_soft] = ((brightness[mask_soft] - 20) * 255 // 35).astype(np.uint8)
-            arr[:, :, 3] = alpha
-            frame = Image.fromarray(arr, "RGBA")
-        else:
-            # Fallback without numpy (slower)
-            px = frame.load()
-            W2, H2 = frame.size
-            for y in range(H2):
-                for x in range(W2):
-                    r2, g2, b2, a2 = px[x, y]
-                    br = max(r2, g2, b2)
-                    if br < 20:
-                        px[x, y] = (r2, g2, b2, 0)
-                    elif br < 55:
-                        new_a = int((br - 20) * 255 / 35)
-                        px[x, y] = (r2, g2, b2, new_a)
-                    else:
-                        px[x, y] = (r2, g2, b2, 255)
+        # If the frame PNG already has a proper alpha channel (i.e. at least one
+        # pixel is not fully opaque), use it directly without remasking.
+        # getextrema() returns (min, max); if min < 255 some pixels are transparent.
+        has_alpha = (frame.mode == "RGBA" and frame.split()[3].getextrema()[0] < 255)
+        if not has_alpha:
+            if _NUMPY:
+                arr = np.array(frame, dtype=np.uint8)
+                brightness = arr[:, :, :3].max(axis=2).astype(np.int16)
+                alpha = np.zeros(brightness.shape, dtype=np.uint8)
+                # fully opaque above threshold
+                alpha[brightness >= 40] = 255
+                # soft edge in transition zone
+                mask_soft = (brightness >= 12) & (brightness < 40)
+                alpha[mask_soft] = ((brightness[mask_soft] - 12) * 255 // 28).astype(np.uint8)
+                arr[:, :, 3] = alpha
+                frame = Image.fromarray(arr, "RGBA")
+            else:
+                # Fallback without numpy (slower)
+                px = frame.load()
+                W2, H2 = frame.size
+                for y in range(H2):
+                    for x in range(W2):
+                        r2, g2, b2, a2 = px[x, y]
+                        br = max(r2, g2, b2)
+                        if br < 12:
+                            px[x, y] = (r2, g2, b2, 0)
+                        elif br < 40:
+                            new_a = int((br - 12) * 255 / 28)
+                            px[x, y] = (r2, g2, b2, new_a)
+                        else:
+                            px[x, y] = (r2, g2, b2, 255)
 
         # Composite frame over image
         fx = ax - padding
@@ -426,6 +431,16 @@ def _draw_frame_border(img: Image.Image, draw: ImageDraw.ImageDraw,
                             color=BL_BLUE, highlight=BL_WHITE)
         _draw_bl_anime_eye(draw, ax + size - 12, ay - 14, w=10, h=5,
                             color=BL_BLUE, highlight=BL_WHITE)
+
+    elif "уровень" in fn or "level_" in fn:
+        # Named level-frame item (e.g. "Рамка Уровень 5" or "level_5").
+        # Fall back to level 1 frame if no digit found in the name.
+        import re as _re
+        _m = _re.search(r"(\d+)", fn)
+        _lvl_override = max(1, min(10, int(_m.group(1)))) if _m else 1
+        img = _apply_level_frame_png(img, ax, ay, size, _lvl_override)
+        draw = ImageDraw.Draw(img)
+        return img, draw
 
     elif "premium" in fn:
         PUR_MID   = (148,  20, 220)
