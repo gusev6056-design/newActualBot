@@ -344,6 +344,17 @@ SHOP_ITEMS_DEFAULT = [
     ("Рамка Diamond",          "Алмазная рамка профиля",     "decor", 600,  "frame"),
     ("Рамка Elite",            "Элитная рамка профиля",      "decor", 150,  "frame"),
     ("Рамка Blue Lock",        "Квадратная рамка в стиле Blue Lock с аниме-глазами", "decor", 800, "frame"),
+    # Рамки по уровням (1–10) — выдаются только через админ-панель
+    ("Рамка Уровень 1",  "Рамка уровня 1 (Iron)",   "decor", 0, "frame"),
+    ("Рамка Уровень 2",  "Рамка уровня 2 (Bronze)",  "decor", 0, "frame"),
+    ("Рамка Уровень 3",  "Рамка уровня 3 (Silver)",  "decor", 0, "frame"),
+    ("Рамка Уровень 4",  "Рамка уровня 4 (Steel)",   "decor", 0, "frame"),
+    ("Рамка Уровень 5",  "Рамка уровня 5 (Forest)",  "decor", 0, "frame"),
+    ("Рамка Уровень 6",  "Рамка уровня 6 (Void)",    "decor", 0, "frame"),
+    ("Рамка Уровень 7",  "Рамка уровня 7 (Gold)",    "decor", 0, "frame"),
+    ("Рамка Уровень 8",  "Рамка уровня 8 (Fire)",    "decor", 0, "frame"),
+    ("Рамка Уровень 9",  "Рамка уровня 9 (Ice)",     "decor", 0, "frame"),
+    ("Рамка Уровень 10", "Рамка уровня 10 (Prism)",  "decor", 0, "frame"),
     ("Стикер 🔥",              "Огненный стикер",            "decor", 50,   "sticker"),
     ("Стикер 💀",              "Стикер черепа",              "decor", 50,   "sticker"),
     ("Стикер ⚡",              "Стикер молнии",              "decor", 50,   "sticker"),
@@ -378,20 +389,28 @@ COIN_PACKAGES = [
 
 NUMBER_EMOJI = ["①","②","③","④","⑤","⑥","⑦","⑧","⑨","⑩"]
 
+ELO_THRESHOLDS = [0, 200, 400, 600, 900, 1100, 1400, 1600, 1800, 2000]
+ELO_RANGES_TEXT = [
+    "[0 - 199]",
+    "[200 - 399]",
+    "[400 - 599]",
+    "[600 - 899]",
+    "[900 - 1099]",
+    "[1100 - 1399]",
+    "[1400 - 1599]",
+    "[1600 - 1799]",
+    "[1800 - 1999]",
+    "[2000+]",
+]
+
 def get_faceit_level(elo: int) -> int:
-    if   elo < 801:  return 1
-    elif elo < 951:  return 2
-    elif elo < 1101: return 3
-    elif elo < 1251: return 4
-    elif elo < 1401: return 5
-    elif elo < 1551: return 6
-    elif elo < 1701: return 7
-    elif elo < 1851: return 8
-    elif elo < 2001: return 9
-    else:            return 10
+    for lvl, threshold in enumerate(ELO_THRESHOLDS[1:], start=1):
+        if elo < threshold:
+            return lvl
+    return 10
 
 def elo_bar(elo: int, lvl: int) -> str:
-    thresholds = [0, 801, 951, 1101, 1251, 1401, 1551, 1701, 1851, 2001, 3000]
+    thresholds = ELO_THRESHOLDS + [3000]
     lo = thresholds[max(0, lvl - 1)]
     hi = thresholds[min(lvl, len(thresholds) - 1)]
     pct = (elo - lo) / (hi - lo) if hi > lo else 1.0
@@ -494,6 +513,7 @@ def init_db():
         ("duo_kills",      "INTEGER DEFAULT 0"),
         ("duo_deaths",     "INTEGER DEFAULT 0"),
         ("duo_assists",    "INTEGER DEFAULT 0"),
+        ("fpl_access",     "INTEGER DEFAULT 0"),
     ]:
         _add_column_if_missing("players", col, definition)
 
@@ -549,6 +569,7 @@ def init_db():
         ("active_frame",      "TEXT DEFAULT NULL"),
         ("active_banner",     "TEXT DEFAULT NULL"),
         ("active_background", "TEXT DEFAULT NULL"),
+        ("fpl_access",        "INTEGER DEFAULT 0"),
     ]:
         _add_column_if_missing("players_fade", col, definition)
 
@@ -646,6 +667,17 @@ def init_db():
         ]
         for price, item_type in price_updates:
             cur.execute("UPDATE shop_items SET price=%s WHERE item_type=%s", (price, item_type))
+    conn.commit()
+
+    # Миграция: добавить рамки уровней если их ещё нет в БД
+    _level_frame_items = [row for row in SHOP_ITEMS_DEFAULT if row[0].startswith("Рамка Уровень")]
+    for row in _level_frame_items:
+        cur.execute("SELECT COUNT(*) FROM shop_items WHERE name=%s", (row[0],))
+        if cur.fetchone()[0] == 0:
+            cur.execute(
+                "INSERT INTO shop_items (name, deACription, category, price, item_type) VALUES (%s, %s, %s, %s, %s)",
+                row,
+            )
     conn.commit()
 
     cur.execute("""
@@ -2774,6 +2806,27 @@ def activate_inventory_item(inv_id, uid, item_type, item_name):
     return True, f"✅ Предмет <b>{item_name}</b> активирован!"
 
 
+def deactivate_inventory_item(inv_id, uid, item_type):
+    """Снять (деактивировать) рамку или баннер — вернуть к авто-режиму."""
+    if item_type not in ("frame", "banner", "background"):
+        return False, "❌ Этот тип предмета нельзя снять"
+    conn = _db()
+    cur = conn.cursor()
+    cur.execute(
+        "UPDATE inventory SET is_activated=0, activated_at=NULL WHERE id=%s AND user_id=%s",
+        (inv_id, uid),
+    )
+    if item_type == "frame":
+        cur.execute("UPDATE players_fade SET active_frame=NULL WHERE user_id=%s", (uid,))
+    elif item_type == "banner":
+        cur.execute("UPDATE players_fade SET active_banner=NULL WHERE user_id=%s", (uid,))
+    elif item_type == "background":
+        cur.execute("UPDATE players_fade SET active_background=NULL WHERE user_id=%s", (uid,))
+    conn.commit()
+    conn.close()
+    return True, "✅ Предмет снят. Теперь используется авто-оформление по уровню."
+
+
 # ==================== ПАТИ ====================
 def get_party_of(uid):
     pid = user_party.get(uid)
@@ -3396,6 +3449,45 @@ def cmd_start(msg):
             bot.send_message(uid, "⚠️ Произошла ошибка. Попробуй ещё раз через несколько секунд.")
         except Exception:
             pass
+
+
+@bot.message_handler(commands=["ranks"])
+def cmd_ranks(msg):
+    """Показывает список рангов по ELO для Default, Qualification и FPL лиг."""
+    sep   = "┄" * 18
+    icons = NUMBER_EMOJI  # ①②③…⑩
+
+    def _league_block(title: str, subtitle: str, promo_text: str) -> str:
+        lines = [f"<b>{title}</b>\n<i>{subtitle}</i>\n{sep}"]
+        for i, rng in enumerate(ELO_RANGES_TEXT):
+            icon = icons[i] if i < len(icons) else f"{i+1}."
+            if i == 9:  # Уровень 10
+                lines.append(f"{icon} - {rng} → {promo_text}")
+            else:
+                lines.append(f"{icon} - {rng}")
+        return "\n".join(lines)
+
+    text = (
+        "🏆 <b>СПИСОК РАНГОВ</b>\n\n"
+        + _league_block(
+            "🔵 Default League",
+            "Доступна всем игрокам",
+            "переход в <b>Qualification</b> 🟡",
+        )
+        + "\n\n"
+        + _league_block(
+            "🟡 Qualification League",
+            "Для продвинутых игроков",
+            "переход в <b>FPL</b> 🔴",
+        )
+        + "\n\n"
+        + _league_block(
+            "🔴 FPL (Pro League)",
+            "Высший уровень — только лучшие",
+            "🏅 Топ игроков",
+        )
+    )
+    bot.send_message(msg.chat.id, text, parse_mode="HTML")
 
 
 @bot.callback_query_handler(func=lambda c: c.data == "check_sub")
@@ -7087,6 +7179,67 @@ def reg_step_all_kills(msg):
             match_registration[uid]["step"] = "all_kills"
 
 
+def _check_elo_promotions(all_stats: dict, is_quals_match: bool, priv_table: str):
+    """После матча проверяет и выдаёт автоматическое повышение лиги:
+    - Default: elo >= 2000 и нет quals_access → выдаём quals_access, уведомляем
+    - Quals:   quals_elo >= 2000 и нет fpl_access → выдаём fpl_access, уведомляем
+    """
+    try:
+        conn = _db()
+        cur  = conn.cursor()
+        for uid in all_stats:
+            try:
+                if is_quals_match:
+                    cur.execute(
+                        f"SELECT quals_elo, fpl_access FROM {priv_table} WHERE user_id=%s",
+                        (uid,),
+                    )
+                    row = cur.fetchone()
+                    if row and row[0] >= 2000 and not row[1]:
+                        cur.execute(
+                            f"UPDATE {priv_table} SET fpl_access=1 WHERE user_id=%s",
+                            (uid,),
+                        )
+                        conn.commit()
+                        try:
+                            bot.send_message(
+                                uid,
+                                "🏆 <b>Поздравляем! Вы достигли 2000 ELO в Qualification!</b>\n\n"
+                                "🔓 Вам открыт доступ в <b>FPL</b> — высший уровень игры.",
+                                parse_mode="HTML",
+                            )
+                        except Exception:
+                            pass
+                else:
+                    cur.execute(
+                        f"SELECT elo, quals_access FROM {priv_table} WHERE user_id=%s",
+                        (uid,),
+                    )
+                    row = cur.fetchone()
+                    if row and row[0] >= 2000 and not row[1]:
+                        now = int(time.time())
+                        cur.execute(
+                            f"UPDATE {priv_table} SET quals_access=1, quals_until=%s WHERE user_id=%s",
+                            (now + 30 * 24 * 3600, uid),
+                        )
+                        conn.commit()
+                        try:
+                            bot.send_message(
+                                uid,
+                                "🎉 <b>Поздравляем! Вы достигли 2000 ELO в Default League!</b>\n\n"
+                                "🔓 Вам открыт доступ в <b>Qualification League</b>.\n"
+                                "Продолжайте расти — следующая цель: 2000 ELO в Quals → FPL!",
+                                parse_mode="HTML",
+                            )
+                        except Exception:
+                            pass
+            except Exception as _pe:
+                print(f"[_check_elo_promotions] uid={uid}: {_pe}")
+        conn.close()
+    except Exception as e:
+        print(f"[_check_elo_promotions] {e}")
+
+
 def _cleanup_match_messages(lobby):
     """Удаляет мусорные сообщения после завершения/отмены матча."""
     # 1. Удаляем "МАТЧ НАЧАЛСЯ!" у каждого игрока в личке
@@ -7269,6 +7422,9 @@ def _finalize_match(reg_uid, match_key):
             _mc.close()
         except Exception as _me:
             print(f"[mvp_count update] {_me}")
+
+    # Авто-повышение лиги если достигнут порог 2000 ELO
+    _check_elo_promotions(all_stats, is_quals_match, priv_table)
 
     _cleanup_match_messages(lobby)
     save_match_to_history(lobby, {"winner": winner, "ACore_w": ACore_w, "ACore_l": ACore_l}, all_stats)
@@ -7735,8 +7891,11 @@ def cb_inv_item(c):
         f"Статус: {'✅ Активировано' if is_activated else '⏳ Не активировано'}"
     )
     kb = types.InlineKeyboardMarkup()
+    _deactivatable = ("frame", "banner", "background")
     if not is_activated:
         kb.add(types.InlineKeyboardButton("⚡ Активировать", callback_data=f"inv_activate_{inv_id}"))
+    elif item_type in _deactivatable:
+        kb.add(types.InlineKeyboardButton("❌ Снять", callback_data=f"inv_deactivate_{inv_id}"))
     kb.add(types.InlineKeyboardButton("🔙 Назад", callback_data="inv"))
     bot.edit_message_text(text, c.message.chat.id, c.message.message_id, reply_markup=kb)
     safe_answer(c.id)
@@ -7758,6 +7917,25 @@ def cb_inv_activate(c):
         safe_answer(c.id)
         bot.send_message(uid, msg)
         return
+    safe_answer(c.id, msg[:200], show_alert=not result)
+    if result:
+        try:
+            bot.edit_message_text(msg, c.message.chat.id, c.message.message_id)
+        except Exception:
+            pass
+
+
+@bot.callback_query_handler(func=lambda c: c.data.startswith("inv_deactivate_"))
+def cb_inv_deactivate(c):
+    uid = c.from_user.id
+    inv_id = int(c.data.split("inv_deactivate_")[1])
+    items = get_inventory(uid)
+    item = next((i for i in items if i[0] == inv_id), None)
+    if not item:
+        safe_answer(c.id, "❌ Предмет не найден")
+        return
+    inv_id2, name, category, item_type, purchased_at, is_activated, shop_id = item
+    result, msg = deactivate_inventory_item(inv_id, uid, item_type)
     safe_answer(c.id, msg[:200], show_alert=not result)
     if result:
         try:
@@ -9733,12 +9911,7 @@ def _do_admin_give_item(admin_uid: int, target_id: int, item_id: int):
             f"💡 Активируйте его в 🎒 Инвентаре", parse_mode="HTML")
     except Exception:
         pass
-    send_punishment_log_priv(admin_uid,
-        f"🎁 <b>Выдача предмета</b>\n"
-        f"👮 Выдал: {tg_link(admin_uid, admin_name)}\n"
-        f"👤 Игрок: {tg_link(target_id, p[1])}\n"
-        f"🎮 Предмет: {item_name}"
-    )
+    # Логирование выдачи предмета намеренно отключено
 
 
 @bot.callback_query_handler(func=lambda c: c.data.startswith("adm_gi_"))
