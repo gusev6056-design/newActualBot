@@ -1,4 +1,12 @@
 import os
+import sys
+import functools
+print = functools.partial(print, flush=True)
+try:
+    sys.stdout.reconfigure(line_buffering=True)
+    sys.stderr.reconfigure(line_buffering=True)
+except Exception:
+    pass
 import re
 import telebot
 from telebot import types
