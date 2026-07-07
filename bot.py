@@ -340,10 +340,7 @@ user_private = {}  # uid -> "fade"
 
 # ==================== ТОВАРЫ МАГАЗИНА ====================
 SHOP_ITEMS_DEFAULT = [
-    ("Рамка Gold",             "Золотая рамка профиля",      "decor", 300,  "frame"),
-    ("Рамка Diamond",          "Алмазная рамка профиля",     "decor", 600,  "frame"),
-    ("Рамка Elite",            "Элитная рамка профиля",      "decor", 150,  "frame"),
-    ("Рамка Blue Lock",        "Квадратная рамка в стиле Blue Lock с аниме-глазами", "decor", 800, "frame"),
+    ("Рамка Blue Lock",        "Эксклюзивная PNG-рамка в стиле аниме Blue Lock", "decor", 800, "frame"),
     # Рамки по уровням (1–10) — выдаются только через админ-панель
     ("Рамка Уровень 1",  "Рамка уровня 1 (Iron)",   "decor", 0, "frame"),
     ("Рамка Уровень 2",  "Рамка уровня 2 (Bronze)",  "decor", 0, "frame"),
@@ -360,10 +357,7 @@ SHOP_ITEMS_DEFAULT = [
     ("Стикер ⚡",              "Стикер молнии",              "decor", 50,   "sticker"),
     ("Анимация Победа",        "Анимация при победе",        "decor", 400,  "animation"),
     ("Анимация Убийство",      "Анимация при убийстве",      "decor", 400,  "animation"),
-    ("Баннер Gold",            "Золотой баннер профиля",     "decor", 400,  "banner"),
-    ("Баннер Diamond",         "Алмазный баннер профиля",    "decor", 700,  "banner"),
-    ("Баннер Elite",           "Элитный баннер профиля",     "decor", 250,  "banner"),
-    ("Баннер Blue Lock",       "Баннер Blue Lock: белый хедер с аниме-глазами и слэшем", "decor", 900, "banner"),
+    ("Баннер Blue Lock",       "Эксклюзивный PNG-баннер в стиле аниме Blue Lock", "decor", 900, "banner"),
     ("Фон Blue Lock",          "Геометрический фон карточки в стиле Blue Lock", "decor", 600, "background"),
     ("Premium статус",         "30 дней Premium: x1.5 монет, значок 👑", "goods", 1000, "premium"),
     ("x2 монеты",              "Удвоение монет за 7 дней",   "goods", 300,  "x2coins"),
@@ -2742,6 +2736,10 @@ def activate_inventory_item(inv_id, uid, item_type, item_name):
         row = cur.fetchone()
         if row and row[0] > 0:
             cur.execute("UPDATE players_fade SET warns=warns-1 WHERE user_id=%s", (uid,))
+            cur.execute("DELETE FROM inventory WHERE id=%s AND user_id=%s", (inv_id, uid))
+            conn.commit()
+            conn.close()
+            return True, "✅ Варн снят!"
         else:
             conn.close()
             return False, "❌ У вас нет варнов для снятия"
@@ -8063,10 +8061,7 @@ def handle_rename(msg):
     conn = _db()
     cur = conn.cursor()
     cur.execute("UPDATE players_fade SET username=%s WHERE user_id=%s", (new_nick, uid))
-    cur.execute(
-        "UPDATE inventory SET is_activated=1, activated_at=%s WHERE id=%s",
-        (int(time.time()), inv_id),
-    )
+    cur.execute("DELETE FROM inventory WHERE id=%s AND user_id=%s", (inv_id, uid))
     conn.commit()
     conn.close()
     bot.send_message(uid, f"✅ Никнейм изменён на <b>{new_nick}</b>!")

@@ -27,6 +27,16 @@ LEVEL_FRAME_FILES = {
     10: "frame_level_10_1783334323914.png",
 }
 
+# Named cosmetic frame PNGs (active_frame value lowercase → filename in _ASSETS_DIR)
+NAMED_FRAME_FILES = {
+    "рамка blue lock": "frame_blue_lock.png",
+}
+
+# Named cosmetic banner PNGs (active_banner value lowercase → filename in _ASSETS_DIR)
+NAMED_BANNER_FILES = {
+    "баннер blue lock": "banner_blue_lock.png",
+}
+
 # Level banner palettes — matched to each frame's dominant colour
 LEVEL_BANNER_CFG = {
     1:  {"main": (120, 120, 120), "accent": (190, 190, 190),
@@ -588,6 +598,26 @@ def _draw_frame_border(img: Image.Image, draw: ImageDraw.ImageDraw,
                        ax: int, ay: int, size: int, frame_name: str) -> tuple:
     fn = (frame_name or "").lower()
 
+    # ── Try named PNG frame first ─────────────────────────────────────────────
+    _png_file = NAMED_FRAME_FILES.get(fn)
+    if _png_file:
+        _png_path = os.path.join(_ASSETS_DIR, _png_file)
+        if os.path.exists(_png_path):
+            try:
+                PAD = 20
+                _fpng = Image.open(_png_path).convert("RGBA")
+                _fpng = _fpng.resize((size + PAD * 2, size + PAD * 2), Image.LANCZOS)
+                _fx, _fy = ax - PAD, ay - PAD
+                _src_x, _src_y = max(0, -_fx), max(0, -_fy)
+                _dst_x, _dst_y = max(0, _fx), max(0, _fy)
+                _crop = _fpng.crop((_src_x, _src_y, _fpng.width, _fpng.height))
+                _base = img.convert("RGBA")
+                _base.paste(_crop, (_dst_x, _dst_y), _crop)
+                result = _base.convert("RGB")
+                return result, ImageDraw.Draw(result)
+            except Exception as e:
+                print(f"[_draw_frame_border] PNG load failed ({fn}): {e}")
+
     if "gold" in fn or "золот" in fn:
         COLORS = [(232, 185, 0), (255, 215, 60), (200, 150, 0)]
         for i, col in enumerate(COLORS):
@@ -1106,29 +1136,46 @@ def generate_profile_card(
         return d
 
     # Apply banner
-    if "blue lock" in fn_banner or "блю лок" in fn_banner or "bluelock" in fn_banner:
-        pass  # drawn below after glow step
-    elif "premium" in fn_banner:
-        draw = _draw_premium_banner_hdr(draw, 8, 8, W - 8, 148)
-    elif "gold" in fn_banner or "золот" in fn_banner:
-        draw = _draw_gold_banner_hdr(draw, 8, 8, W - 8, 148)
-    elif "diamond" in fn_banner or "алмаз" in fn_banner:
-        draw = _draw_diamond_banner_hdr(draw, 8, 8, W - 8, 148)
-    elif "elite" in fn_banner or "элит" in fn_banner:
-        draw = _draw_elite_banner_hdr(draw, 8, 8, W - 8, 148)
-    else:
-        # No custom banner → draw level banner automatically
-        draw = _draw_level_banner_hdr(draw, 8, 8, W - 8, 148, lvl)
+    _png_banner_used = False
+    _nb_file = NAMED_BANNER_FILES.get(fn_banner)
+    if _nb_file:
+        _nb_path = os.path.join(_ASSETS_DIR, _nb_file)
+        if os.path.exists(_nb_path):
+            try:
+                _bpng = Image.open(_nb_path).convert("RGBA")
+                _bpng = _bpng.resize((W - 16, 140), Image.LANCZOS)
+                _base = img.convert("RGBA")
+                _base.paste(_bpng, (8, 8), _bpng)
+                img  = _base.convert("RGB")
+                draw = ImageDraw.Draw(img)
+                _png_banner_used = True
+            except Exception as e:
+                print(f"[banner PNG] load failed ({fn_banner}): {e}")
+
+    if not _png_banner_used:
+        if "blue lock" in fn_banner or "блю лок" in fn_banner or "bluelock" in fn_banner:
+            pass  # drawn below after glow step
+        elif "premium" in fn_banner:
+            draw = _draw_premium_banner_hdr(draw, 8, 8, W - 8, 148)
+        elif "gold" in fn_banner or "золот" in fn_banner:
+            draw = _draw_gold_banner_hdr(draw, 8, 8, W - 8, 148)
+        elif "diamond" in fn_banner or "алмаз" in fn_banner:
+            draw = _draw_diamond_banner_hdr(draw, 8, 8, W - 8, 148)
+        elif "elite" in fn_banner or "элит" in fn_banner:
+            draw = _draw_elite_banner_hdr(draw, 8, 8, W - 8, 148)
+        else:
+            # No custom banner → draw level banner automatically
+            draw = _draw_level_banner_hdr(draw, 8, 8, W - 8, 148, lvl)
 
     # ===== HEADER PANEL =====
     glow_color = _GOLD if is_premium else _GOLD_DIM
 
-    if "blue lock" in fn_banner or "блю лок" in fn_banner or "bluelock" in fn_banner:
+    if not _png_banner_used and ("blue lock" in fn_banner or "блю лок" in fn_banner or "bluelock" in fn_banner):
         draw = _draw_bl_banner(draw, img, 8, 8, W - 8, 148)
         _HDR_TEXT      = BL_BLACK
         _HDR_TEXT_GRAY = (60, 60, 100)
         _HDR_GOLD      = BL_BLUE
-    elif fn_banner:
+    elif _png_banner_used or fn_banner:
         if "premium" in fn_banner:
             _rr(draw, (8, 8, W-8, 148), 10, outline=(220, 170, 0),   width=2)
             _rr(draw, (11, 11, W-11, 145), 8, outline=(140, 40, 200), width=1)
