@@ -674,6 +674,34 @@ def init_db():
             )
     conn.commit()
 
+    # Миграция: удалить устаревшие косметические предметы
+    _obsolete_items = [
+        "Рамка Gold", "Рамка Diamond", "Рамка Elite",
+        "Баннер Gold", "Баннер Diamond", "Баннер Elite",
+    ]
+    for _name in _obsolete_items:
+        cur.execute("DELETE FROM inventory WHERE item_id IN (SELECT id FROM shop_items WHERE name=%s)", (_name,))
+        cur.execute("DELETE FROM shop_items WHERE name=%s", (_name,))
+
+    # Миграция: добавить/обновить новые PNG-предметы Blue Lock
+    _new_items = [
+        ("Рамка Blue Lock",  "Эксклюзивная PNG-рамка в стиле аниме Blue Lock", "decor", 800, "frame"),
+        ("Баннер Blue Lock", "Эксклюзивный PNG-баннер в стиле аниме Blue Lock", "decor", 900, "banner"),
+    ]
+    for _row in _new_items:
+        cur.execute("SELECT COUNT(*) FROM shop_items WHERE name=%s", (_row[0],))
+        if cur.fetchone()[0] == 0:
+            cur.execute(
+                "INSERT INTO shop_items (name, deACription, category, price, item_type) VALUES (%s, %s, %s, %s, %s)",
+                _row,
+            )
+        else:
+            cur.execute(
+                "UPDATE shop_items SET deACription=%s, price=%s WHERE name=%s",
+                (_row[1], _row[3], _row[0]),
+            )
+    conn.commit()
+
     cur.execute("""
         CREATE TABLE IF NOT EXISTS inventory (
             id SERIAL PRIMARY KEY,
