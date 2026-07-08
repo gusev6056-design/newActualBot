@@ -1778,3 +1778,138 @@ def generate_duo_leaderboard_card(players: list, title: str = "TOP 2v2 ПО ELO"
     img.save(buf, format="PNG", optimize=True)
     buf.seek(0)
     return buf
+
+
+# ==================== SHOP: КАРТИНКА СО СПИСКОМ ТОВАРОВ ====================
+_SHOP_PUR        = (150,  60, 230)
+_SHOP_PUR_LT     = (190, 110, 255)
+_SHOP_BG_TOP     = (  8,   6,  12)
+_SHOP_BG_BOT     = ( 26,  10,  38)
+_SHOP_CARD_BG    = ( 18,  16,  26)
+_SHOP_CARD_BRD   = (100,  55, 155)
+_SHOP_TEXT_WHITE = (240, 240, 245)
+_SHOP_TEXT_GRAY  = (175, 172, 185)
+
+
+def _shop_star(draw, cx, cy, r, color, width=4):
+    pts = []
+    for i in range(10):
+        ang = math.pi / 2 + i * math.pi / 5
+        rad = r if i % 2 == 0 else r * 0.42
+        pts.append((cx + rad * math.cos(ang), cy - rad * math.sin(ang)))
+    draw.polygon(pts, outline=color, width=width)
+
+
+def _shop_hexagon(draw, cx, cy, r, color, width=4):
+    pts = []
+    for i in range(6):
+        ang = math.pi / 2 + i * math.pi / 3
+        pts.append((cx + r * math.cos(ang), cy - r * math.sin(ang)))
+    draw.polygon(pts, outline=color, width=width)
+
+
+def _shop_icon(draw, item_type, cx, cy, color):
+    """Рисует иконку товара по его типу (в стиле референса магазина)."""
+    if item_type == "premium":
+        _shop_star(draw, cx, cy, 34, color)
+        _text_c(draw, cx, cy - 15, "A", _font(24, bold=True), _SHOP_TEXT_WHITE)
+    elif item_type == "quals":
+        _shop_hexagon(draw, cx, cy, 34, color)
+        _text_c(draw, cx, cy - 17, "?", _font(30, bold=True), _SHOP_TEXT_WHITE)
+    elif item_type == "x2coins":
+        draw.ellipse([cx - 34, cy - 22, cx - 2, cy + 10], outline=color, width=3)
+        draw.ellipse([cx - 14, cy - 30, cx + 26, cy + 10], fill=(28, 20, 42), outline=color, width=3)
+        _text_c(draw, cx + 6, cy - 22, "A", _font(15, bold=True), _SHOP_TEXT_WHITE)
+        draw.ellipse([cx + 6, cy + 2, cx + 34, cy + 28], fill=(214, 42, 42))
+        _text_c(draw, cx + 20, cy + 6, "x2", _font(12, bold=True), (255, 255, 255))
+    elif item_type == "unwarn":
+        draw.ellipse([cx - 30, cy - 30, cx + 30, cy + 30], outline=color, width=4)
+        draw.line([cx - 21, cy + 21, cx + 21, cy - 21], fill=color, width=4)
+    elif item_type == "rename":
+        draw.ellipse([cx - 28, cy - 28, cx + 28, cy + 28], outline=color, width=3)
+        draw.ellipse([cx - 10, cy - 18, cx + 10, cy], outline=color, width=3)
+        draw.arc([cx - 18, cy - 2, cx + 18, cy + 30], 200, 340, fill=color, width=3)
+    elif item_type == "coins":
+        draw.ellipse([cx - 30, cy - 30, cx + 30, cy + 30], outline=color, width=4)
+        _text_c(draw, cx, cy - 15, "A", _font(26, bold=True), _SHOP_TEXT_WHITE)
+    else:
+        draw.ellipse([cx - 30, cy - 30, cx + 30, cy + 30], outline=color, width=3)
+        _text_c(draw, cx, cy - 15, "A", _font(24, bold=True), _SHOP_TEXT_WHITE)
+
+
+def generate_shop_image(items):
+    """
+    Генерирует картинку со списком товаров магазина в стиле "ТОВАРЫ" (тёмная тема,
+    фиолетовые акценты, карточки с иконками) - как на референсе actual_faceit_panel.
+
+    items: список dict {"name": str, "item_type": str}
+    Возвращает io.BytesIO с PNG.
+    """
+    cols = 3
+    card_w, card_h = 300, 148
+    gap_x, gap_y = 18, 18
+    pad_x = 44
+    header_h = 130
+    footer_h = 40
+
+    n = max(1, len(items))
+    rows = math.ceil(n / cols)
+    width = pad_x * 2 + cols * card_w + (cols - 1) * gap_x
+    height = header_h + rows * card_h + (rows - 1) * gap_y + footer_h
+
+    img = Image.new("RGB", (width, height), _SHOP_BG_TOP)
+    draw = ImageDraw.Draw(img)
+
+    for y in range(height):
+        t = y / max(1, height - 1)
+        r = int(_SHOP_BG_TOP[0] + (_SHOP_BG_BOT[0] - _SHOP_BG_TOP[0]) * t)
+        g = int(_SHOP_BG_TOP[1] + (_SHOP_BG_BOT[1] - _SHOP_BG_TOP[1]) * t)
+        b = int(_SHOP_BG_TOP[2] + (_SHOP_BG_BOT[2] - _SHOP_BG_TOP[2]) * t)
+        draw.line([(0, y), (width, y)], fill=(r, g, b))
+
+    # Уголки-рамки по краям (декоративный элемент референса)
+    bl = 26
+    def _corner(x, y, dx, dy):
+        draw.line([(x, y), (x + dx * bl, y)], fill=_SHOP_PUR, width=4)
+        draw.line([(x, y), (x, y + dy * bl)], fill=_SHOP_PUR, width=4)
+    _corner(26, 26, 1, 1)
+    _corner(width - 26, 26, -1, 1)
+    _corner(26, height - 26, 1, -1)
+    _corner(width - 26, height - 26, -1, -1)
+
+    # Заголовок "▽ ТОВАРЫ"
+    f_title = _font(34, bold=True)
+    tx, ty = 50, 50
+    draw.polygon([(tx, ty), (tx + 18, ty), (tx + 9, ty + 22)], fill=_SHOP_PUR_LT)
+    draw.text((tx + 34, ty - 8), "ТОВАРЫ", font=f_title, fill=_SHOP_TEXT_WHITE)
+
+    # Логотип справа сверху
+    f_logo = _font(19, bold=True)
+    tw1 = _tw(draw, "ACTUAL", f_logo)
+    tw2 = _tw(draw, "FACEIT", f_logo)
+    logo_w = max(tw1, tw2)
+    lx = width - 70 - logo_w
+    draw.text((lx, 34), "ACTUAL", font=f_logo, fill=_SHOP_TEXT_WHITE)
+    draw.text((lx, 58), "FACEIT", font=f_logo, fill=_SHOP_TEXT_WHITE)
+    ix = width - 56
+    draw.polygon(
+        [(ix, 78), (ix + 22, 30), (ix + 44, 78), (ix + 22, 60)],
+        outline=_SHOP_TEXT_WHITE, width=3,
+    )
+
+    f_name = _font(17)
+    for idx, it in enumerate(items):
+        col = idx % cols
+        row = idx // cols
+        x0 = pad_x + col * (card_w + gap_x)
+        y0 = header_h + row * (card_h + gap_y)
+        x1, y1 = x0 + card_w, y0 + card_h
+        _rr(draw, [x0, y0, x1, y1], 14, fill=_SHOP_CARD_BG, outline=_SHOP_CARD_BRD, width=2)
+        name = it.get("name", "")
+        draw.text((x0 + 18, y0 + 16), name, font=f_name, fill=_SHOP_TEXT_GRAY)
+        _shop_icon(draw, it.get("item_type"), x0 + card_w // 2, y0 + card_h // 2 + 14, _SHOP_PUR_LT)
+
+    buf = io.BytesIO()
+    img.save(buf, format="PNG", optimize=True)
+    buf.seek(0)
+    return buf

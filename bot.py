@@ -27,6 +27,18 @@ CRYPTO_PAY_API_TOKEN = os.environ.get("CRYPTO_PAY_API_TOKEN", "").strip().strip(
 CRYPTO_PAY_API_URL = "https://pay.crypt.bot/api/"
 CRYPTO_PAY_ASSET = "USDT"
 
+# Токен провайдера для приёма оплаты в рублях через Telegram Payments (например, ЮKassa).
+# Если не задан - кнопка оплаты рублями скрывается.
+PAYMENT_PROVIDER_TOKEN = os.environ.get("PAYMENT_PROVIDER_TOKEN", "").strip().strip('"').strip("'")
+
+# Баннер "ВСЕ ТОВАРЫ" — отправляется первым при открытии магазина.
+# Файл shop_banner.jpg должен лежать в той же папке, что и bot.py.
+SHOP_BANNER_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "shop_banner.jpg")
+
+# Картинка-панель со списком товаров — отправляется второй (с кнопками).
+# Файл shop_panel.png должен лежать в той же папке, что и bot.py.
+SHOP_PANEL_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "shop_panel.png")
+
 # Московское время UTC+3
 MSK = datetime.timezone(datetime.timedelta(hours=3))
 
@@ -83,6 +95,7 @@ try:
         generate_leaderboard_card,
         generate_match_result_card,
         generate_duo_leaderboard_card,
+        generate_shop_image,
     )
     CARDS_ENABLED = True
     print("✅ card_generator_html + card_generator загружены")
@@ -91,6 +104,7 @@ except Exception as _card_err:
         from card_generator import (
             generate_profile_card, generate_leaderboard_card,
             generate_match_result_card, generate_duo_leaderboard_card,
+            generate_shop_image,
         )
         CARDS_ENABLED = True
         print("✅ card_generator (Pillow) загружен как fallback")
@@ -681,6 +695,27 @@ def init_db():
         ]
         for price, item_type in price_updates:
             cur.execute("UPDATE shop_items SET price=%s WHERE item_type=%s", (price, item_type))
+    conn.commit()
+
+    # Мультивалютные цены товаров: Рубли / Telegram Stars / Крипта (USD).
+    for col, definition in [
+        ("price_rub",    "INTEGER DEFAULT 0"),
+        ("price_stars",  "INTEGER DEFAULT 0"),
+        ("price_crypto", "DOUBLE PRECISION DEFAULT 0"),
+    ]:
+        _add_column_if_missing("shop_items", col, definition)
+
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS shop_crypto_invoices (
+            id SERIAL PRIMARY KEY,
+            invoice_id BIGINT NOT NULL,
+            user_id BIGINT NOT NULL,
+            item_id INTEGER NOT NULL,
+            status TEXT DEFAULT 'active',
+            created_at BIGINT DEFAULT EXTRACT(EPOCH FROM NOW())::BIGINT,
+            paid_at BIGINT DEFAULT NULL
+        )
+    """)
     conn.commit()
 
     # Миграция: добавить рамки уровней если их ещё нет в БД
@@ -1654,6 +1689,38 @@ def create_crypto_invoice(uid, pkg_key):
     return True, result.get("bot_invoice_url") or result.get("pay_url"), result["invoice_id"]
 
 
+def create_item_crypto_invoice(uid, item_id):
+    """Создаёт инвойс в @CryptoBot на покупку товара магазина. Возвращает (ok, pay_url_or_error, invoice_id)."""
+    item = get_shop_item_full(item_id)
+    if not item:
+        return False, "❌ Товар не найден", None
+    _, name, _deAC, _category, _price, _item_type, _price_rub, _price_stars, price_crypto = item
+    if not price_crypto or price_crypto <= 0:
+        return False, "❌ Оплата криптой недоступна для этого товара", None
+    ok, result = _crypto_pay_call("createInvoice", {
+        "currency_type": "crypto",
+        "asset": CRYPTO_PAY_ASSET,
+        "amount": str(price_crypto),
+        "description": f"{name} - Actual FACEIT",
+        "payload": f"item_{item_id}_{uid}",
+        "expires_in": 1800,
+    })
+    if not ok:
+        return False, f"❌ Ошибка создания счёта: {result}", None
+    try:
+        conn = _db()
+        cur = conn.cursor()
+        cur.execute(
+            "INSERT INTO shop_crypto_invoices (invoice_id, user_id, item_id) VALUES (%s,%s,%s)",
+            (result["invoice_id"], uid, item_id),
+        )
+        conn.commit()
+        conn.close()
+    except Exception as e:
+        print(f"[create_item_crypto_invoice] db error: {e}")
+    return True, result.get("bot_invoice_url") or result.get("pay_url"), result["invoice_id"]
+
+
 def _crypto_pay_poll_loop():
     """Фоновый поллинг: проверяет активные крипто-инвойсы и начисляет монеты после оплаты."""
     if not CRYPTO_PAY_API_TOKEN:
@@ -1706,6 +1773,59 @@ def _crypto_pay_poll_loop():
                     conn2.close()
         except Exception as e:
             print(f"[_crypto_pay_poll_loop] {e}")
+
+        # Крипто-инвойсы за товары магазина (оплата криптой в разделе ТОВАРЫ).
+        try:
+            conn = _db()
+            cur = conn.cursor()
+            cur.execute("SELECT invoice_id, user_id, item_id FROM shop_crypto_invoices WHERE status='active'")
+            pending_items = cur.fetchall()
+            conn.close()
+            for invoice_id, uid, item_id in pending_items:
+                ok, result = _crypto_pay_call("getInvoices", {"invoice_ids": str(invoice_id)})
+                if not ok:
+                    continue
+                items = result.get("items", []) if isinstance(result, dict) else []
+                if not items:
+                    continue
+                inv = items[0]
+                if inv.get("status") == "paid":
+                    # Атомарно "забираем" инвойс (status='active' -> 'paid') прежде чем выдавать
+                    # товар, чтобы повторный поллинг не смог выдать его дважды.
+                    conn2 = _db()
+                    cur2 = conn2.cursor()
+                    cur2.execute(
+                        "UPDATE shop_crypto_invoices SET status='paid', paid_at=%s WHERE invoice_id=%s AND status='active'",
+                        (int(time.time()), invoice_id),
+                    )
+                    claimed = cur2.rowcount > 0
+                    conn2.commit()
+                    conn2.close()
+                    if not claimed:
+                        continue
+                    grant_ok, grant_msg = grant_shop_item(uid, item_id)
+                    try:
+                        if grant_ok:
+                            bot.send_message(uid, f"✅ <b>Оплата криптой прошла!</b>\n{grant_msg}", parse_mode="HTML")
+                        else:
+                            bot.send_message(uid, f"✅ Оплата получена, но возникла проблема с выдачей товара: {grant_msg}\nОбратитесь в поддержку.")
+                    except Exception:
+                        pass
+                    if ADMIN_ID:
+                        try:
+                            item = get_shop_item(item_id)
+                            bot.send_message(ADMIN_ID, f"💎 Оплата криптой за товар!\nПользователь: {uid}\nТовар: {item[1] if item else item_id}")
+                        except Exception:
+                            pass
+                elif inv.get("status") == "expired":
+                    conn2 = _db()
+                    cur2 = conn2.cursor()
+                    cur2.execute("UPDATE shop_crypto_invoices SET status='expired' WHERE invoice_id=%s", (invoice_id,))
+                    conn2.commit()
+                    conn2.close()
+        except Exception as e:
+            print(f"[_crypto_pay_poll_loop] shop items: {e}")
+
         time.sleep(15)
 
 def apply_mute(uid, hours=2):
@@ -2615,6 +2735,96 @@ def get_shop_item(item_id):
     item = cur.fetchone()
     conn.close()
     return item
+
+def get_shop_item_full(item_id):
+    """Возвращает товар со всеми ценами: coins/rub/stars/crypto."""
+    conn = _db()
+    cur = conn.cursor()
+    cur.execute(
+        "SELECT id, name, deACription, category, price, item_type, "
+        "COALESCE(price_rub,0), COALESCE(price_stars,0), COALESCE(price_crypto,0) "
+        "FROM shop_items WHERE id=%s",
+        (item_id,),
+    )
+    item = cur.fetchone()
+    conn.close()
+    return item
+
+
+SHOP_CURRENCY_LABELS = {
+    "coins":  "💰 Actual Coin",
+    "rub":    "💵 Рубли",
+    "stars":  "⭐ Telegram Stars",
+    "crypto": "💎 Крипта (USDT)",
+}
+_SHOP_CURRENCY_COLUMNS = {
+    "coins":  "price",
+    "rub":    "price_rub",
+    "stars":  "price_stars",
+    "crypto": "price_crypto",
+}
+
+
+def set_shop_item_price(item_id, currency, value):
+    """Обновляет цену товара в указанной валюте (coins/rub/stars/crypto)."""
+    col = _SHOP_CURRENCY_COLUMNS.get(currency)
+    if not col:
+        return False
+    conn = _db()
+    cur = conn.cursor()
+    cur.execute(f"UPDATE shop_items SET {col}=%s WHERE id=%s", (value, item_id))
+    conn.commit()
+    conn.close()
+    return True
+
+
+def grant_shop_item(uid, item_id):
+    """Выдаёт товар игроку без списания монет - используется при оплате
+    Telegram Stars / рублями / криптой (списание там происходит через сам платёж)."""
+    item = get_shop_item(item_id)
+    if not item:
+        return False, "❌ Товар не найден"
+    _, name, _deAC, _category, _price, item_type = item
+    stackable = {"sticker", "unwarn", "x2coins", "rename"}
+    if item_type not in stackable and item_type not in ("premium", "quals") and has_item_in_inventory(uid, item_id):
+        return False, "❌ Этот предмет уже есть в вашем инвентаре!"
+    conn = _db()
+    cur = conn.cursor()
+    try:
+        if item_type in ("premium", "quals"):
+            now = int(time.time())
+            days30 = 30 * 24 * 3600
+            if item_type == "premium":
+                cur.execute("SELECT premium_until FROM players_fade WHERE user_id=%s", (uid,))
+                row = cur.fetchone()
+                base = max(row[0] or 0, now)
+                new_until = base + days30
+                cur.execute("UPDATE players_fade SET premium_until=%s WHERE user_id=%s", (new_until, uid))
+                dt = fmt_dt(new_until)
+                conn.commit(); conn.close()
+                return True, f"👑 <b>Premium активирован на 30 дней!</b>\nДействует до: {dt}"
+            else:
+                cur.execute("SELECT quals_until FROM players_fade WHERE user_id=%s", (uid,))
+                row = cur.fetchone()
+                base = max(row[0] or 0, now)
+                new_until = base + days30
+                cur.execute("UPDATE players_fade SET quals_until=%s, quals_access=1 WHERE user_id=%s", (new_until, uid))
+                dt = fmt_dt(new_until)
+                conn.commit(); conn.close()
+                return True, f"⭐ <b>Quals доступ выдан на 30 дней!</b>\nДействует до: {dt}"
+
+        cur.execute("INSERT INTO inventory (user_id, item_id) VALUES (%s, %s)", (uid, item_id))
+        conn.commit()
+        conn.close()
+        return True, f"✅ Куплено: <b>{name}</b>\n\n💡 Активируйте предмет в 🎒 Инвентаре"
+    except Exception as e:
+        try:
+            conn.rollback(); conn.close()
+        except Exception:
+            pass
+        print(f"[grant_shop_item] Ошибка: {e}")
+        return False, "❌ Ошибка при выдаче товара. Обратитесь в поддержку."
+
 
 def get_shop_items_by_category(category):
     conn = _db()
@@ -8077,14 +8287,41 @@ def cb_shop(c):
     if err:
         safe_answer(c.id, "⚠️ Доступ ограничен", show_alert=True)
         return
+    items = get_shop_items_by_category("goods")
+    p = get_player(uid)
+    coins = p[5] if p else 0
     kb = types.InlineKeyboardMarkup(row_width=1)
-    for cat, name in CATEGORY_NAMES.items():
-        if cat == "decor":
-            kb.add(types.InlineKeyboardButton("🔧 Декор (Тех. работы)", callback_data="shop_cat_decor"))
-        else:
-            kb.add(types.InlineKeyboardButton(name, callback_data=f"shop_cat_{cat}"))
+    for item_id, name, deAC, price, item_type in items:
+        owned = has_item_in_inventory(uid, item_id)
+        kb.add(types.InlineKeyboardButton(f"{'✅ ' if owned else ''}{name}", callback_data=f"shop_item_{item_id}"))
+    kb.add(types.InlineKeyboardButton("🔧 Декор (Тех. работы)", callback_data="shop_cat_decor"))
     kb.add(types.InlineKeyboardButton("🔙 Назад", callback_data="back"))
-    bot.edit_message_text("🛒 <b>МАГАЗИН</b>\n\nВыберите категорию:", c.message.chat.id, c.message.message_id, reply_markup=kb)
+
+    try:
+        bot.delete_message(c.message.chat.id, c.message.message_id)
+    except Exception:
+        pass
+
+    # 1) Баннер "ВСЕ ТОВАРЫ" (статичный файл)
+    try:
+        if os.path.isfile(SHOP_BANNER_PATH):
+            with open(SHOP_BANNER_PATH, "rb") as img:
+                bot.send_photo(c.message.chat.id, img)
+    except Exception as e:
+        print(f"[cb_shop] banner error: {e}")
+
+    # 2) Панель со списком товаров (статичный файл) + кнопки выбора
+    caption = f"💰 Баланс: <b>{coins} AC</b>\n\nВыберите товар:"
+    sent = False
+    try:
+        if os.path.isfile(SHOP_PANEL_PATH):
+            with open(SHOP_PANEL_PATH, "rb") as img:
+                bot.send_photo(c.message.chat.id, img, caption=caption, reply_markup=kb, parse_mode="HTML")
+            sent = True
+    except Exception as e:
+        print(f"[cb_shop] panel error: {e}")
+    if not sent:
+        bot.send_message(c.message.chat.id, f"🛒 <b>ТОВАРЫ</b>\n\n{caption}", reply_markup=kb, parse_mode="HTML")
     safe_answer(c.id)
 
 
@@ -8125,45 +8362,151 @@ def cb_shop_category(c):
 def cb_shop_item(c):
     uid = c.from_user.id
     item_id = int(c.data.split("shop_item_")[1])
-    item = get_shop_item(item_id)
+    item = get_shop_item_full(item_id)
     if not item:
         safe_answer(c.id, "❌ Товар не найден")
         return
-    _, name, deAC, category, price, item_type = item
+    _, name, deAC, category, price, item_type, price_rub, price_stars, price_crypto = item
     p = get_player(uid)
     coins = p[5] if p else 0
     owned = has_item_in_inventory(uid, item_id)
     icon = CATEGORY_ICONS.get(category, "")
+    price_lines = []
+    if price and price > 0:
+        price_lines.append(f"💰 Actual Coin: <b>{price} AC</b>")
+    if price_rub and price_rub > 0:
+        price_lines.append(f"💵 Рубли: <b>{price_rub} ₽</b>")
+    if price_stars and price_stars > 0:
+        price_lines.append(f"⭐ Telegram Stars: <b>{price_stars}</b>")
+    if price_crypto and price_crypto > 0:
+        price_lines.append(f"💎 Крипта: <b>${price_crypto:g}</b>")
     text = (
         f"{icon} <b>{name}</b>\n\n"
         f"📝 {deAC}\n"
-        f"💰 Цена: <b>{price} AC</b>\n"
+        + "\n".join(price_lines) + "\n"
         f"💳 Ваш баланс: <b>{coins} AC</b>\n"
         + ("✅ Уже куплено\n" if owned else "")
     )
-    kb = types.InlineKeyboardMarkup()
-    if not owned or item_type in {"sticker", "unwarn", "x2coins", "rename"}:
-        kb.add(types.InlineKeyboardButton(f"💳 Купить за {price} AC", callback_data=f"shop_buy_{item_id}"))
-    kb.add(types.InlineKeyboardButton("🔙 Назад", callback_data=f"shop_cat_{category}"))
-    bot.edit_message_text(text, c.message.chat.id, c.message.message_id, reply_markup=kb)
+    kb = types.InlineKeyboardMarkup(row_width=1)
+    can_buy_again = not owned or item_type in {"sticker", "unwarn", "x2coins", "rename"}
+    if can_buy_again:
+        if price and price > 0:
+            kb.add(types.InlineKeyboardButton(f"💰 Купить за {price} AC", callback_data=f"shop_pay_{item_id}_coins"))
+        if price_rub and price_rub > 0:
+            if PAYMENT_PROVIDER_TOKEN:
+                kb.add(types.InlineKeyboardButton(f"💵 Оплатить {price_rub} ₽", callback_data=f"shop_pay_{item_id}_rub"))
+            else:
+                kb.add(types.InlineKeyboardButton("💵 Рубли (временно недоступно)", callback_data="admin_noop"))
+        if price_stars and price_stars > 0:
+            kb.add(types.InlineKeyboardButton(f"⭐ Оплатить {price_stars} Stars", callback_data=f"shop_pay_{item_id}_stars"))
+        if price_crypto and price_crypto > 0:
+            if CRYPTO_PAY_API_TOKEN:
+                kb.add(types.InlineKeyboardButton(f"💎 Оплатить ${price_crypto:g} криптой", callback_data=f"shop_pay_{item_id}_crypto"))
+            else:
+                kb.add(types.InlineKeyboardButton("💎 Крипта (временно недоступно)", callback_data="admin_noop"))
+    kb.add(types.InlineKeyboardButton("🔙 Назад", callback_data=f"shop_cat_{category}" if category == "decor" else "shop"))
+    try:
+        bot.edit_message_text(text, c.message.chat.id, c.message.message_id, reply_markup=kb, parse_mode="HTML")
+    except Exception:
+        bot.send_message(c.message.chat.id, text, reply_markup=kb, parse_mode="HTML")
     safe_answer(c.id)
 
 
-@bot.callback_query_handler(func=lambda c: c.data.startswith("shop_buy_"))
-def cb_shop_buy(c):
+@bot.callback_query_handler(func=lambda c: c.data.startswith("shop_pay_"))
+def cb_shop_pay(c):
     uid = c.from_user.id
-    item_id = int(c.data.split("shop_buy_")[1])
-    # Блокируем покупку декора - раздел на тех. работах
-    _item_check = get_shop_item(item_id)
-    if _item_check and _item_check[3] == "decor":
+    try:
+        _, _, item_id_str, currency = c.data.split("_", 3)
+    except ValueError:
+        safe_answer(c.id, "❌ Ошибка")
+        return
+    item_id = int(item_id_str)
+    item = get_shop_item_full(item_id)
+    if not item:
+        safe_answer(c.id, "❌ Товар не найден")
+        return
+    _, name, _deAC, category, price, _item_type, price_rub, price_stars, price_crypto = item
+    if category == "decor":
         safe_answer(c.id, "🔧 Декор временно недоступен (тех. работы)", show_alert=True)
         return
-    ok, msg = buy_item(uid, item_id)
-    safe_answer(c.id, msg[:200], show_alert=not ok)
-    if ok:
-        item = get_shop_item(item_id)
-        if item:
-            bot.edit_message_text(msg, c.message.chat.id, c.message.message_id)
+
+    if currency == "coins":
+        ok, msg = buy_item(uid, item_id)
+        safe_answer(c.id, msg[:200], show_alert=not ok)
+        if ok:
+            kb = types.InlineKeyboardMarkup()
+            kb.add(types.InlineKeyboardButton("🛒 В магазин", callback_data="shop"))
+            try:
+                bot.edit_message_text(msg, c.message.chat.id, c.message.message_id, reply_markup=kb, parse_mode="HTML")
+            except Exception:
+                bot.send_message(c.message.chat.id, msg, reply_markup=kb, parse_mode="HTML")
+        return
+
+    if currency == "rub":
+        if not PAYMENT_PROVIDER_TOKEN:
+            safe_answer(c.id, "❌ Оплата рублями временно недоступна", show_alert=True)
+            return
+        if not price_rub or price_rub <= 0:
+            safe_answer(c.id, "❌ Цена в рублях не задана", show_alert=True)
+            return
+        safe_answer(c.id)
+        try:
+            bot.send_invoice(
+                chat_id=uid,
+                title=name,
+                description=f"{name} - Actual FACEIT",
+                invoice_payload=f"item_{item_id}_{uid}",
+                provider_token=PAYMENT_PROVIDER_TOKEN,
+                currency="RUB",
+                prices=[types.LabeledPrice(label=name, amount=int(price_rub) * 100)],
+                start_parameter=f"buy_item_{item_id}",
+            )
+        except Exception as e:
+            bot.send_message(uid, f"❌ Ошибка создания счёта: {e}")
+        return
+
+    if currency == "stars":
+        if not price_stars or price_stars <= 0:
+            safe_answer(c.id, "❌ Цена в Stars не задана", show_alert=True)
+            return
+        safe_answer(c.id)
+        try:
+            bot.send_invoice(
+                chat_id=uid,
+                title=name,
+                description=f"{name} - Actual FACEIT",
+                invoice_payload=f"item_{item_id}_{uid}",
+                provider_token="",
+                currency="XTR",
+                prices=[types.LabeledPrice(label=name, amount=int(price_stars))],
+                start_parameter=f"buy_item_{item_id}",
+            )
+        except Exception as e:
+            bot.send_message(uid, f"❌ Ошибка создания счёта: {e}")
+        return
+
+    if currency == "crypto":
+        if not CRYPTO_PAY_API_TOKEN:
+            safe_answer(c.id, "❌ Оплата криптой временно недоступна", show_alert=True)
+            return
+        safe_answer(c.id, "⏳ Создаём счёт...")
+        ok, pay_url_or_err, invoice_id = create_item_crypto_invoice(uid, item_id)
+        if not ok:
+            bot.send_message(uid, pay_url_or_err)
+            return
+        kb = types.InlineKeyboardMarkup()
+        kb.add(types.InlineKeyboardButton("💎 Оплатить в @CryptoBot", url=pay_url_or_err))
+        bot.send_message(
+            uid,
+            f"💎 <b>Счёт создан</b>\n\n"
+            f"Товар: <b>{name}</b> (${price_crypto:g})\n"
+            f"Оплатите по кнопке ниже (USDT / TON / BTC). "
+            f"Товар зачислится автоматически в течение минуты после оплаты.",
+            reply_markup=kb, parse_mode="HTML",
+        )
+        return
+
+    safe_answer(c.id, "❌ Неизвестный способ оплаты")
 
 
 # ==================== ИНВЕНТАРЬ ====================
@@ -9180,16 +9523,38 @@ def successful_payment(msg):
     uid = msg.from_user.id
     payload = msg.successful_payment.invoice_payload
     try:
-        _, pkg_key, _ = payload.split("_", 2)
-        pkg = get_coin_package_by_key(pkg_key, uid)
-        name, coins_amount, stars = pkg["name"], pkg["coins"], pkg["stars"]
-        add_coins_to_player(uid, coins_amount)
-        p = get_player(uid)
-        bot.send_message(uid, f"✅ <b>Оплата прошла!</b>\n💰 Начислено: <b>{coins_amount} AC</b>\n💳 Баланс: <b>{p[5] if p else '?'} AC</b>")
-        if ADMIN_ID:
-            bot.send_message(ADMIN_ID, f"💳 Покупка!\nПользователь: {uid}\nПакет: {name} ({coins_amount} AC)\nОплачено: {stars} Stars")
+        if payload.startswith("coins_"):
+            _, pkg_key, _ = payload.split("_", 2)
+            pkg = get_coin_package_by_key(pkg_key, uid)
+            if not pkg:
+                bot.send_message(uid, "✅ Оплата получена, но пакет монет более недоступен. Обратитесь в поддержку - монеты будут начислены вручную.")
+                if ADMIN_ID:
+                    bot.send_message(ADMIN_ID, f"⚠️ Оплата получена, но пакет '{pkg_key}' не найден!\nПользователь: {uid}\nPayload: {payload}")
+                return
+            name, coins_amount, stars = pkg["name"], pkg["coins"], pkg["stars"]
+            add_coins_to_player(uid, coins_amount)
+            p = get_player(uid)
+            bot.send_message(uid, f"✅ <b>Оплата прошла!</b>\n💰 Начислено: <b>{coins_amount} AC</b>\n💳 Баланс: <b>{p[5] if p else '?'} AC</b>")
+            if ADMIN_ID:
+                bot.send_message(ADMIN_ID, f"💳 Покупка!\nПользователь: {uid}\nПакет: {name} ({coins_amount} AC)\nОплачено: {stars} Stars")
+        elif payload.startswith("item_"):
+            _, item_id_str, _ = payload.split("_", 2)
+            item_id = int(item_id_str)
+            ok, grant_msg = grant_shop_item(uid, item_id)
+            item = get_shop_item(item_id)
+            currency = msg.successful_payment.currency
+            amount_paid = msg.successful_payment.total_amount
+            paid_label = f"{amount_paid} XTR" if currency == "XTR" else f"{amount_paid / 100:.2f} {currency}"
+            if ok:
+                bot.send_message(uid, f"✅ <b>Оплата прошла!</b>\n{grant_msg}", parse_mode="HTML")
+            else:
+                bot.send_message(uid, f"✅ Оплата получена, но возникла проблема с выдачей товара: {grant_msg}\nОбратитесь в поддержку.")
+            if ADMIN_ID:
+                bot.send_message(ADMIN_ID, f"💳 Покупка товара!\nПользователь: {uid}\nТовар: {item[1] if item else item_id}\nОплачено: {paid_label}")
+        else:
+            bot.send_message(uid, "✅ Оплата получена.")
     except Exception as e:
-        bot.send_message(uid, f"✅ Оплата получена, монеты будут начислены вручную. Ошибка: {e}")
+        bot.send_message(uid, f"✅ Оплата получена, но не удалось начислить автоматически. Ошибка: {e}")
 
 
 # ==================== РЕДАКТИРОВАНИЕ СТАТЫ ====================
@@ -11612,6 +11977,9 @@ def _creator_panel_kb():
         types.InlineKeyboardButton("📦 Добавить пакет монет",     callback_data="creator_add_coinpack"),
     )
     kb.add(
+        types.InlineKeyboardButton("💱 Цены товаров",             callback_data="creator_shop_prices"),
+    )
+    kb.add(
         types.InlineKeyboardButton("🧹 Обнулить стату всех",      callback_data="creator_reset_all"),
         types.InlineKeyboardButton("👤 Обнулить стату игрока",    callback_data="creator_reset_player"),
     )
@@ -11957,6 +12325,7 @@ def handle_creator_flow(msg):
         "give_coins_id", "give_coins_amount",
         "add_coinpack_name", "add_coinpack_coins", "add_coinpack_stars",
         "add_coinpack_crypto", "add_coinpack_target",
+        "shop_price_value",
     }
     if step in _extended_steps:
         _handle_creator_flow_extended(msg, uid, flow, step)
@@ -12331,6 +12700,98 @@ def cb_creator_give_coins(c):
         reply_markup=kb, parse_mode="HTML")
 
 
+def _creator_shop_prices_kb():
+    kb = types.InlineKeyboardMarkup(row_width=1)
+    conn = _db(); cur = conn.cursor()
+    cur.execute("SELECT id, name FROM shop_items WHERE is_active=1 ORDER BY category, id")
+    rows = cur.fetchall()
+    conn.close()
+    for item_id, name in rows:
+        kb.add(types.InlineKeyboardButton(name, callback_data=f"creator_price_item_{item_id}"))
+    kb.add(types.InlineKeyboardButton("🔙 Назад", callback_data="creator_panel"))
+    return kb
+
+
+@bot.callback_query_handler(func=lambda c: c.data == "creator_shop_prices")
+def cb_creator_shop_prices(c):
+    uid = c.from_user.id
+    if not is_creator(uid):
+        safe_answer(c.id, "❌ Нет доступа")
+        return
+    text = "💱 <b>ЦЕНЫ ТОВАРОВ</b>\n\nВыберите товар, чтобы изменить его цену в каждой валюте:"
+    try:
+        bot.edit_message_text(text, c.message.chat.id, c.message.message_id,
+                              reply_markup=_creator_shop_prices_kb(), parse_mode="HTML")
+    except Exception:
+        bot.send_message(c.message.chat.id, text, reply_markup=_creator_shop_prices_kb(), parse_mode="HTML")
+    safe_answer(c.id)
+
+
+@bot.callback_query_handler(func=lambda c: c.data.startswith("creator_price_item_"))
+def cb_creator_price_item(c):
+    uid = c.from_user.id
+    if not is_creator(uid):
+        safe_answer(c.id, "❌ Нет доступа")
+        return
+    item_id = int(c.data.split("creator_price_item_")[1])
+    item = get_shop_item_full(item_id)
+    if not item:
+        safe_answer(c.id, "❌ Товар не найден")
+        return
+    _, name, _deAC, _category, price, _item_type, price_rub, price_stars, price_crypto = item
+    text = (
+        f"💱 <b>{name}</b>\n\n"
+        f"💰 Actual Coin: <b>{price} AC</b>\n"
+        f"💵 Рубли: <b>{price_rub} ₽</b>\n"
+        f"⭐ Telegram Stars: <b>{price_stars}</b>\n"
+        f"💎 Крипта: <b>${price_crypto:g}</b>\n\n"
+        "Выберите валюту, чтобы изменить цену:"
+    )
+    kb = types.InlineKeyboardMarkup(row_width=1)
+    kb.add(
+        types.InlineKeyboardButton("💰 Изменить цену в Actual Coin", callback_data=f"creator_price_edit_{item_id}_coins"),
+        types.InlineKeyboardButton("💵 Изменить цену в Рублях",      callback_data=f"creator_price_edit_{item_id}_rub"),
+        types.InlineKeyboardButton("⭐ Изменить цену в Stars",       callback_data=f"creator_price_edit_{item_id}_stars"),
+        types.InlineKeyboardButton("💎 Изменить цену в Крипте",      callback_data=f"creator_price_edit_{item_id}_crypto"),
+    )
+    kb.add(types.InlineKeyboardButton("🔙 Назад", callback_data="creator_shop_prices"))
+    try:
+        bot.edit_message_text(text, c.message.chat.id, c.message.message_id, reply_markup=kb, parse_mode="HTML")
+    except Exception:
+        bot.send_message(c.message.chat.id, text, reply_markup=kb, parse_mode="HTML")
+    safe_answer(c.id)
+
+
+@bot.callback_query_handler(func=lambda c: c.data.startswith("creator_price_edit_"))
+def cb_creator_price_edit(c):
+    uid = c.from_user.id
+    if not is_creator(uid):
+        safe_answer(c.id, "❌ Нет доступа")
+        return
+    try:
+        _, _, _, item_id_str, currency = c.data.split("_", 4)
+    except ValueError:
+        safe_answer(c.id, "❌ Ошибка")
+        return
+    item_id = int(item_id_str)
+    item = get_shop_item_full(item_id)
+    if not item or currency not in SHOP_CURRENCY_LABELS:
+        safe_answer(c.id, "❌ Товар не найден")
+        return
+    name = item[1]
+    creator_flow[uid] = {"step": "shop_price_value", "item_id": item_id, "currency": currency}
+    safe_answer(c.id)
+    hint = "целое число" if currency in ("coins", "rub", "stars") else "число, например 1.5"
+    kb = types.InlineKeyboardMarkup()
+    kb.add(types.InlineKeyboardButton("❌ Отмена", callback_data=f"creator_price_item_{item_id}"))
+    bot.send_message(
+        uid,
+        f"💱 <b>{name}</b>\nВалюта: {SHOP_CURRENCY_LABELS[currency]}\n\n"
+        f"Введите новую цену ({hint}). 0 - скрыть оплату в этой валюте:",
+        reply_markup=kb, parse_mode="HTML",
+    )
+
+
 @bot.callback_query_handler(func=lambda c: c.data == "creator_add_coinpack")
 def cb_creator_add_coinpack(c):
     uid = c.from_user.id
@@ -12687,6 +13148,39 @@ def _handle_creator_flow_extended(msg, uid, flow, step):
             "🎯 Кому показывать пакет?\n\nНажмите кнопку ниже для показа всем, "
             "или введите Telegram ID/ник конкретного игрока:",
             reply_markup=kb)
+        return True
+
+    if step == "shop_price_value":
+        item_id = flow.get("item_id")
+        currency = flow.get("currency")
+        item = get_shop_item_full(item_id) if item_id else None
+        if not item or currency not in SHOP_CURRENCY_LABELS:
+            creator_flow.pop(uid, None)
+            bot.send_message(uid, "❌ Товар не найден.")
+            return True
+        name = item[1]
+        raw = inp.replace(",", ".")
+        try:
+            if currency == "crypto":
+                value = round(float(raw), 2)
+            else:
+                value = int(float(raw))
+            if value < 0:
+                raise ValueError
+        except ValueError:
+            bot.send_message(uid, f"❌ Введите корректное число (0 или больше). Попробуйте ещё раз:")
+            return True
+        creator_flow.pop(uid, None)
+        set_shop_item_price(item_id, currency, value)
+        log_admin_action(uid, "shop_price_update", details=f"{name} [{currency}] -> {value}")
+        kb = types.InlineKeyboardMarkup()
+        kb.add(types.InlineKeyboardButton("🔙 К товару", callback_data=f"creator_price_item_{item_id}"))
+        kb.add(types.InlineKeyboardButton("💱 Все товары", callback_data="creator_shop_prices"))
+        bot.send_message(
+            uid,
+            f"✅ Цена товара <b>{name}</b> в {SHOP_CURRENCY_LABELS[currency]} обновлена: <b>{value}</b>",
+            reply_markup=kb, parse_mode="HTML",
+        )
         return True
 
     if step == "add_coinpack_target":
