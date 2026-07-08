@@ -8287,6 +8287,32 @@ def cb_shop(c):
     if err:
         safe_answer(c.id, "⚠️ Доступ ограничен", show_alert=True)
         return
+    try:
+        bot.delete_message(c.message.chat.id, c.message.message_id)
+    except Exception:
+        pass
+    # Баннер "ВСЕ ТОВАРЫ" + одна кнопка "Товары"
+    kb = types.InlineKeyboardMarkup()
+    kb.add(types.InlineKeyboardButton("🛒 Товары", callback_data="shop_items"))
+    try:
+        if os.path.isfile(SHOP_BANNER_PATH):
+            with open(SHOP_BANNER_PATH, "rb") as img:
+                bot.send_photo(c.message.chat.id, img, reply_markup=kb)
+        else:
+            bot.send_message(c.message.chat.id, "🛒 <b>МАГАЗИН</b>", reply_markup=kb, parse_mode="HTML")
+    except Exception as e:
+        print(f"[cb_shop] banner error: {e}")
+        bot.send_message(c.message.chat.id, "🛒 <b>МАГАЗИН</b>", reply_markup=kb, parse_mode="HTML")
+    safe_answer(c.id)
+
+
+@bot.callback_query_handler(func=lambda c: c.data == "shop_items")
+def cb_shop_items(c):
+    uid = c.from_user.id
+    err = check_blocked(uid)
+    if err:
+        safe_answer(c.id, "⚠️ Доступ ограничен", show_alert=True)
+        return
     items = get_shop_items_by_category("goods")
     p = get_player(uid)
     coins = p[5] if p else 0
@@ -8295,22 +8321,12 @@ def cb_shop(c):
         owned = has_item_in_inventory(uid, item_id)
         kb.add(types.InlineKeyboardButton(f"{'✅ ' if owned else ''}{name}", callback_data=f"shop_item_{item_id}"))
     kb.add(types.InlineKeyboardButton("🔧 Декор (Тех. работы)", callback_data="shop_cat_decor"))
-    kb.add(types.InlineKeyboardButton("🔙 Назад", callback_data="back"))
-
+    kb.add(types.InlineKeyboardButton("🔙 Назад", callback_data="shop"))
+    # Удаляем баннер, присылаем панель с товарами
     try:
         bot.delete_message(c.message.chat.id, c.message.message_id)
     except Exception:
         pass
-
-    # 1) Баннер "ВСЕ ТОВАРЫ" (статичный файл)
-    try:
-        if os.path.isfile(SHOP_BANNER_PATH):
-            with open(SHOP_BANNER_PATH, "rb") as img:
-                bot.send_photo(c.message.chat.id, img)
-    except Exception as e:
-        print(f"[cb_shop] banner error: {e}")
-
-    # 2) Панель со списком товаров (статичный файл) + кнопки выбора
     caption = f"💰 Баланс: <b>{coins} AC</b>\n\nВыберите товар:"
     sent = False
     try:
@@ -8319,7 +8335,7 @@ def cb_shop(c):
                 bot.send_photo(c.message.chat.id, img, caption=caption, reply_markup=kb, parse_mode="HTML")
             sent = True
     except Exception as e:
-        print(f"[cb_shop] panel error: {e}")
+        print(f"[cb_shop_items] panel error: {e}")
     if not sent:
         bot.send_message(c.message.chat.id, f"🛒 <b>ТОВАРЫ</b>\n\n{caption}", reply_markup=kb, parse_mode="HTML")
     safe_answer(c.id)
