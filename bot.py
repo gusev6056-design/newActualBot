@@ -3068,46 +3068,45 @@ def _kb_button(text, callback_data, icon_key=None):
 
 def main_menu(uid, frame=0):
     kb = types.InlineKeyboardMarkup(row_width=2)
-    profile_icon = _menu_icon('profile', '👤', frame)
     if uid in user_lobby:
         kb.add(
-            _kb_button(f"{profile_icon} Профиль", "profile", "profile"),
-            _kb_button(f"{_menu_icon('rejoin_lobby', '🔄', frame)} Вернуться в лобби", "rejoin_lobby", "rejoin_lobby"),
+            _kb_button("Профиль", "profile", "profile"),
+            _kb_button("Вернуться в лобби", "rejoin_lobby", "rejoin_lobby"),
         )
     else:
         kb.add(
-            _kb_button(f"{profile_icon} Профиль", "profile", "profile"),
-            _kb_button(f"{_menu_icon('find', '🎮', frame)} Найти матч", "find", "find"),
+            _kb_button("Профиль", "profile", "profile"),
+            _kb_button("Найти матч", "find", "find"),
         )
     _menu_btns = [
-        _kb_button(f"{_menu_icon('top', '🏆', frame)} Топ", "top", "top"),
+        _kb_button("Топ", "top", "top"),
     ]
     if get_user_private(uid) == "fade":
-        _menu_btns.append(_kb_button(f"{_menu_icon('season_info', '🏅', frame)} О сезоне", "season_info", "season_info"))
+        _menu_btns.append(_kb_button("О сезоне", "season_info", "season_info"))
     _menu_btns += [
-        _kb_button(f"{_menu_icon('shop', '🛒', frame)} Магазин", "shop", "shop"),
-        _kb_button(f"{_menu_icon('inv', '🎒', frame)} Инвентарь", "inv", "inv"),
-        _kb_button(f"{_menu_icon('buy_coins', '💳', frame)} Купить монеты", "buy_coins", "buy_coins"),
-        _kb_button(f"{_menu_icon('slots_menu', '🎰', frame)} Слоты", "slots_menu", "slots_menu"),
-        _kb_button(f"{_menu_icon('promo', '🎁', frame)} Промокод", "promo", "promo"),
-        _kb_button(f"{_menu_icon('ticket_start', '🎟', frame)} Тикет / Жалоба", "ticket_start", "ticket_start"),
+        _kb_button("Магазин", "shop", "shop"),
+        _kb_button("Инвентарь", "inv", "inv"),
+        _kb_button("Купить монеты", "buy_coins", "buy_coins"),
+        _kb_button("Слоты", "slots_menu", "slots_menu"),
+        _kb_button("Промокод", "promo", "promo"),
+        _kb_button("Тикет / Жалоба", "ticket_start", "ticket_start"),
     ]
     kb.add(*_menu_btns)
     in_party = uid in user_party
     kb.add(_kb_button(
-        f"{_menu_icon('party_menu', '👥' if in_party else '➕', frame)} " + ("Моя пати" if in_party else "Создать пати"),
+        "Моя пати" if in_party else "Создать пати",
         "party_menu",
         None if in_party else "party_menu_add",
     ))
     if is_admin(uid):
         kb.add(
-            _kb_button(f"{_menu_icon('add_bots_admin', '🤖', frame)} Добавить ботов", "add_bots_admin", "add_bots_admin"),
-            _kb_button(f"{_menu_icon('admin_panel', '⚙️', frame)} Админ панель", "admin_panel", "admin_panel"),
+            _kb_button("Добавить ботов", "add_bots_admin", "add_bots_admin"),
+            _kb_button("Админ панель", "admin_panel", "admin_panel"),
         )
     elif is_game_reg_check(uid):
-        kb.add(_kb_button(f"{_menu_icon('game_reg_panel', '📋', frame)} Регистрация матчей", "game_reg_panel", "game_reg_panel"))
+        kb.add(_kb_button("Регистрация матчей", "game_reg_panel", "game_reg_panel"))
     if is_creator(uid):
-        kb.add(_kb_button(f"{_menu_icon('creator_panel', '🔴', frame)} Креаторская панель", "creator_panel", "creator_panel"))
+        kb.add(_kb_button("Креаторская панель", "creator_panel", "creator_panel"))
     return kb
 
 
@@ -3117,9 +3116,9 @@ def main_menu_text(uid):
     priv_display = get_user_private_display(uid)
     return (
         f"⚡ <b>Actual FACEIT</b>\n"
-        f"🏠 Приватка: <b>{priv_display}</b>\n"
-        f"🪙 Кошелёк: <b>{coins} AC</b>\n"
-        f"🆔 Ваш TG ID: <code>{uid}</code>\n\n"
+        f"<tg-emoji emoji-id=\"5447410659077661506\">🏠</tg-emoji> Приватка: <b>{priv_display}</b>\n"
+        f"<tg-emoji emoji-id=\"5325547803936572038\">🪙</tg-emoji> Кошелёк: <b>{coins} AC</b>\n"
+        f"<tg-emoji emoji-id=\"5334544901428229844\">🆔</tg-emoji> Ваш TG ID: <code>{uid}</code>\n\n"
         f"💳 Пополнение: "
         f"<tg-emoji emoji-id=\"{STARS_EMOJI_ID}\">⭐</tg-emoji> Stars · "
         f"<tg-emoji emoji-id=\"{CRYPTO_EMOJI_ID}\">💎</tg-emoji> Крипта"
