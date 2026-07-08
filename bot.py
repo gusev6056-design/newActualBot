@@ -340,10 +340,7 @@ user_private = {}  # uid -> "fade"
 
 # ==================== ТОВАРЫ МАГАЗИНА ====================
 SHOP_ITEMS_DEFAULT = [
-    ("Рамка Gold",             "Золотая рамка профиля",      "decor", 300,  "frame"),
-    ("Рамка Diamond",          "Алмазная рамка профиля",     "decor", 600,  "frame"),
-    ("Рамка Elite",            "Элитная рамка профиля",      "decor", 150,  "frame"),
-    ("Рамка Blue Lock",        "Квадратная рамка в стиле Blue Lock с аниме-глазами", "decor", 800, "frame"),
+    ("Рамка Blue Lock",        "Эксклюзивная PNG-рамка в стиле аниме Blue Lock", "decor", 800, "frame"),
     # Рамки по уровням (1–10) — выдаются только через админ-панель
     ("Рамка Уровень 1",  "Рамка уровня 1 (Iron)",   "decor", 0, "frame"),
     ("Рамка Уровень 2",  "Рамка уровня 2 (Bronze)",  "decor", 0, "frame"),
@@ -360,10 +357,7 @@ SHOP_ITEMS_DEFAULT = [
     ("Стикер ⚡",              "Стикер молнии",              "decor", 50,   "sticker"),
     ("Анимация Победа",        "Анимация при победе",        "decor", 400,  "animation"),
     ("Анимация Убийство",      "Анимация при убийстве",      "decor", 400,  "animation"),
-    ("Баннер Gold",            "Золотой баннер профиля",     "decor", 400,  "banner"),
-    ("Баннер Diamond",         "Алмазный баннер профиля",    "decor", 700,  "banner"),
-    ("Баннер Elite",           "Элитный баннер профиля",     "decor", 250,  "banner"),
-    ("Баннер Blue Lock",       "Баннер Blue Lock: белый хедер с аниме-глазами и слэшем", "decor", 900, "banner"),
+    ("Баннер Blue Lock",       "Эксклюзивный PNG-баннер в стиле аниме Blue Lock", "decor", 900, "banner"),
     ("Фон Blue Lock",          "Геометрический фон карточки в стиле Blue Lock", "decor", 600, "background"),
     ("Premium статус",         "30 дней Premium: x1.5 монет, значок 👑", "goods", 1000, "premium"),
     ("x2 монеты",              "Удвоение монет за 7 дней",   "goods", 300,  "x2coins"),
@@ -378,20 +372,6 @@ CATEGORY_ICONS = {"decor": "🖼", "goods": "📦"}
 STARS_TO_USD = 0.015  # ориентировочный курс Telegram Stars -> USD для крипто-оплаты
 STARS_EMOJI_ID = "5064709487953183440"
 CRYPTO_EMOJI_ID = "5382164415019768638"
-PREMIUM_CROWN_EMOJI_ID = "5217822164362739968"  # 👑 из пака NewsEmoji (тот же, что у Walker)
-
-
-def _prem_crown_tag():
-    return f'<tg-emoji emoji-id="{PREMIUM_CROWN_EMOJI_ID}">👑</tg-emoji>'
-
-
-PREMIUM_GOLD_EMOJI_ID = "5440539497383087970"    # 🥇 из пака NewsEmoji
-PREMIUM_SILVER_EMOJI_ID = "5447203607294265305"  # 🥈 из пака NewsEmoji
-PREMIUM_BRONZE_EMOJI_ID = "5453902265922376865"  # 🥉 из пака NewsEmoji
-
-
-def _prem_tag(emoji_id, glyph):
-    return f'<tg-emoji emoji-id="{emoji_id}">{glyph}</tg-emoji>'
 
 COIN_PACKAGES = [
     ("Стартовый",   200,   15,  "15 ⭐"),
@@ -691,6 +671,34 @@ def init_db():
             cur.execute(
                 "INSERT INTO shop_items (name, deACription, category, price, item_type) VALUES (%s, %s, %s, %s, %s)",
                 row,
+            )
+    conn.commit()
+
+    # Миграция: удалить устаревшие косметические предметы
+    _obsolete_items = [
+        "Рамка Gold", "Рамка Diamond", "Рамка Elite",
+        "Баннер Gold", "Баннер Diamond", "Баннер Elite",
+    ]
+    for _name in _obsolete_items:
+        cur.execute("DELETE FROM inventory WHERE item_id IN (SELECT id FROM shop_items WHERE name=%s)", (_name,))
+        cur.execute("DELETE FROM shop_items WHERE name=%s", (_name,))
+
+    # Миграция: добавить/обновить новые PNG-предметы Blue Lock
+    _new_items = [
+        ("Рамка Blue Lock",  "Эксклюзивная PNG-рамка в стиле аниме Blue Lock", "decor", 800, "frame"),
+        ("Баннер Blue Lock", "Эксклюзивный PNG-баннер в стиле аниме Blue Lock", "decor", 900, "banner"),
+    ]
+    for _row in _new_items:
+        cur.execute("SELECT COUNT(*) FROM shop_items WHERE name=%s", (_row[0],))
+        if cur.fetchone()[0] == 0:
+            cur.execute(
+                "INSERT INTO shop_items (name, deACription, category, price, item_type) VALUES (%s, %s, %s, %s, %s)",
+                _row,
+            )
+        else:
+            cur.execute(
+                "UPDATE shop_items SET deACription=%s, price=%s WHERE name=%s",
+                (_row[1], _row[3], _row[0]),
             )
     conn.commit()
 
@@ -2756,6 +2764,10 @@ def activate_inventory_item(inv_id, uid, item_type, item_name):
         row = cur.fetchone()
         if row and row[0] > 0:
             cur.execute("UPDATE players_fade SET warns=warns-1 WHERE user_id=%s", (uid,))
+            cur.execute("DELETE FROM inventory WHERE id=%s AND user_id=%s", (inv_id, uid))
+            conn.commit()
+            conn.close()
+            return True, "✅ Варн снят!"
         else:
             conn.close()
             return False, "❌ У вас нет варнов для снятия"
@@ -2996,79 +3008,45 @@ def check_blocked(uid):
 
 
 # ==================== ГЛАВНОЕ МЕНЮ ====================
-# ==================== АНИМАЦИЯ КНОПОК ГЛАВНОГО МЕНЮ ====================
-# Пока меню открыто, фоновый поток циклически подменяет иконки на кнопках
-# обычными (не премиум) эмодзи из пула ниже - Telegram не поддерживает
-# анимацию/кастомные эмодзи в тексте самих кнопок, поэтому "движение"
-# имитируется частым переизданием клавиатуры (как это делает Walker Faceit).
-MENU_ANIM_POOLS = {
-    "profile":        ["👤", "🙂", "😎"],
-    "find":           ["🎮", "🕹", "👾"],
-    "rejoin_lobby":   ["🔄", "🔁", "↩️"],
-    "top":            ["🏆", "🥇", "🎖"],
-    "season_info":    ["🏅", "🎗", "🏵"],
-    "shop":           ["🛒", "🛍", "📦"],
-    "inv":            ["🎒", "🧳", "📦"],
-    "buy_coins":      ["💳", "💰", "🪙"],
-    "slots_menu":     ["🎰", "🎲", "🃏"],
-    "promo":          ["🎁", "🎊", "🎀"],
-    "ticket_start":   ["🎟", "📩", "✉️"],
-    "party_menu":     ["👥", "🧑‍🤝‍🧑", "👫"],
-    "add_bots_admin": ["🤖", "⚙️", "🛠"],
-    "admin_panel":    ["⚙️", "🛠", "🔧"],
-    "game_reg_panel": ["📋", "📝", "🗒"],
-    "creator_panel":  ["🔴", "🟥", "⭕"],
-}
-
-
-def _menu_icon(cb_key, base_emoji, frame):
-    """Возвращает иконку для кадра анимации frame (frame=0 - оригинальная иконка)."""
-    pool = MENU_ANIM_POOLS.get(cb_key)
-    if not pool or frame <= 0:
-        return base_emoji
-    return pool[frame % len(pool)]
-
-
-def main_menu(uid, frame=0):
+def main_menu(uid):
     kb = types.InlineKeyboardMarkup(row_width=2)
     if uid in user_lobby:
         kb.add(
-            types.InlineKeyboardButton(f"{_menu_icon('profile', '👤', frame)} Профиль", callback_data="profile"),
-            types.InlineKeyboardButton(f"{_menu_icon('rejoin_lobby', '🔄', frame)} Вернуться в лобби", callback_data="rejoin_lobby"),
+            types.InlineKeyboardButton("👤 Профиль", callback_data="profile"),
+            types.InlineKeyboardButton("🔄 Вернуться в лобби", callback_data="rejoin_lobby"),
         )
     else:
         kb.add(
-            types.InlineKeyboardButton(f"{_menu_icon('profile', '👤', frame)} Профиль", callback_data="profile"),
-            types.InlineKeyboardButton(f"{_menu_icon('find', '🎮', frame)} Найти матч", callback_data="find"),
+            types.InlineKeyboardButton("👤 Профиль", callback_data="profile"),
+            types.InlineKeyboardButton("🎮 Найти матч", callback_data="find"),
         )
     _menu_btns = [
-        types.InlineKeyboardButton(f"{_menu_icon('top', '🏆', frame)} Топ", callback_data="top"),
+        types.InlineKeyboardButton("🏆 Топ", callback_data="top"),
     ]
     if get_user_private(uid) == "fade":
-        _menu_btns.append(types.InlineKeyboardButton(f"{_menu_icon('season_info', '🏅', frame)} О сезоне", callback_data="season_info"))
+        _menu_btns.append(types.InlineKeyboardButton("🏅 О сезоне", callback_data="season_info"))
     _menu_btns += [
-        types.InlineKeyboardButton(f"{_menu_icon('shop', '🛒', frame)} Магазин", callback_data="shop"),
-        types.InlineKeyboardButton(f"{_menu_icon('inv', '🎒', frame)} Инвентарь", callback_data="inv"),
-        types.InlineKeyboardButton(f"{_menu_icon('buy_coins', '💳', frame)} Купить монеты", callback_data="buy_coins"),
-        types.InlineKeyboardButton(f"{_menu_icon('slots_menu', '🎰', frame)} Слоты", callback_data="slots_menu"),
-        types.InlineKeyboardButton(f"{_menu_icon('promo', '🎁', frame)} Промокод", callback_data="promo"),
-        types.InlineKeyboardButton(f"{_menu_icon('ticket_start', '🎟', frame)} Тикет / Жалоба", callback_data="ticket_start"),
+        types.InlineKeyboardButton("🛒 Магазин", callback_data="shop"),
+        types.InlineKeyboardButton("🎒 Инвентарь", callback_data="inv"),
+        types.InlineKeyboardButton("💳 Купить монеты", callback_data="buy_coins"),
+        types.InlineKeyboardButton("🎰 Слоты", callback_data="slots_menu"),
+        types.InlineKeyboardButton("🎁 Промокод", callback_data="promo"),
+        types.InlineKeyboardButton("🎟 Тикет / Жалоба", callback_data="ticket_start"),
     ]
     kb.add(*_menu_btns)
     in_party = uid in user_party
     kb.add(types.InlineKeyboardButton(
-        f"{_menu_icon('party_menu', '👥' if in_party else '➕', frame)} " + ("Моя пати" if in_party else "Создать пати"),
-        callback_data="party_menu"
+        "👥 Моя пати" if in_party else "➕ Создать пати", callback_data="party_menu"
     ))
     if is_admin(uid):
         kb.add(
-            types.InlineKeyboardButton(f"{_menu_icon('add_bots_admin', '🤖', frame)} Добавить ботов", callback_data="add_bots_admin"),
-            types.InlineKeyboardButton(f"{_menu_icon('admin_panel', '⚙️', frame)} Админ панель", callback_data="admin_panel"),
+            types.InlineKeyboardButton("🤖 Добавить ботов", callback_data="add_bots_admin"),
+            types.InlineKeyboardButton("⚙️ Админ панель", callback_data="admin_panel"),
         )
     elif is_game_reg_check(uid):
-        kb.add(types.InlineKeyboardButton(f"{_menu_icon('game_reg_panel', '📋', frame)} Регистрация матчей", callback_data="game_reg_panel"))
+        kb.add(types.InlineKeyboardButton("📋 Регистрация матчей", callback_data="game_reg_panel"))
     if is_creator(uid):
-        kb.add(types.InlineKeyboardButton(f"{_menu_icon('creator_panel', '🔴', frame)} Креаторская панель", callback_data="creator_panel"))
+        kb.add(types.InlineKeyboardButton("🔴 Креаторская панель", callback_data="creator_panel"))
     return kb
 
 
@@ -3080,119 +3058,8 @@ def main_menu_text(uid):
         f"⚡ <b>Actual FACEIT</b>\n"
         f"🏠 Приватка: <b>{priv_display}</b>\n"
         f"🪙 Кошелёк: <b>{coins} AC</b>\n"
-        f"🆔 Ваш TG ID: <code>{uid}</code>\n\n"
-        f"💳 Пополнение: "
-        f"<tg-emoji emoji-id=\"{STARS_EMOJI_ID}\">⭐</tg-emoji> Stars · "
-        f"<tg-emoji emoji-id=\"{CRYPTO_EMOJI_ID}\">💎</tg-emoji> Крипта"
+        f"🆔 Ваш TG ID: <code>{uid}</code>"
     )
-
-
-MAIN_MENU_MARKER = "⚡ <b>Actual FACEIT</b>"
-MENU_ANIM_INTERVAL = 1.3        # секунд между кадрами анимации кнопок
-MENU_ANIM_MAX_SECONDS = 600     # не крутить анимацию бесконечно на забытом открытом меню
-
-_menu_anim_views: dict = {}     # chat_id -> {"message_id", "uid", "frame", "started_at"}
-_menu_anim_lock = threading.Lock()
-
-
-def _register_menu_view(chat_id, uid, message_id):
-    if not message_id:
-        return
-    with _menu_anim_lock:
-        _menu_anim_views[chat_id] = {
-            "message_id": message_id,
-            "uid": uid,
-            "frame": 0,
-            "started_at": time.time(),
-        }
-
-
-def _unregister_menu_view(chat_id):
-    with _menu_anim_lock:
-        _menu_anim_views.pop(chat_id, None)
-
-
-def _menu_animation_loop():
-    """Фоновый поток: пока у пользователя открыто главное меню, постоянно
-    переиздаёт клавиатуру с другими иконками на кнопках, создавая эффект
-    анимации. Останавливается сразу, как только пользователь уходит на
-    другой экран (тогда bot.send_message/edit_message_text снимут регистрацию)."""
-    while True:
-        try:
-            with _menu_anim_lock:
-                snapshot = list(_menu_anim_views.items())
-            now = time.time()
-            for chat_id, info in snapshot:
-                if now - info["started_at"] > MENU_ANIM_MAX_SECONDS:
-                    with _menu_anim_lock:
-                        cur = _menu_anim_views.get(chat_id)
-                        if cur and cur["message_id"] == info["message_id"]:
-                            _menu_anim_views.pop(chat_id, None)
-                    continue
-                frame = info["frame"] + 1
-                try:
-                    bot.edit_message_reply_markup(
-                        chat_id, info["message_id"],
-                        reply_markup=main_menu(info["uid"], frame),
-                    )
-                    with _menu_anim_lock:
-                        cur = _menu_anim_views.get(chat_id)
-                        # обновляем кадр, только если это всё ещё та же самая
-                        # регистрация - за время edit могла прийти новая
-                        if cur and cur["message_id"] == info["message_id"]:
-                            cur["frame"] = frame
-                except Exception as _anim_err:
-                    if "message is not modified" not in str(_anim_err).lower():
-                        with _menu_anim_lock:
-                            cur = _menu_anim_views.get(chat_id)
-                            if cur and cur["message_id"] == info["message_id"]:
-                                _menu_anim_views.pop(chat_id, None)
-        except Exception as e:
-            print(f"[menu_animation] Ошибка: {e}")
-        time.sleep(MENU_ANIM_INTERVAL)
-
-
-_orig_bot_send_message = bot.send_message
-_orig_bot_edit_message_text = bot.edit_message_text
-
-
-def _menu_tracking_send_message(chat_id, text, *args, **kwargs):
-    result = _orig_bot_send_message(chat_id, text, *args, **kwargs)
-    try:
-        # Новое сообщение в чате никак не влияет на уже открытое меню -
-        # снимаем регистрацию только когда САМО отслеживаемое сообщение
-        # меняется (см. _menu_tracking_edit_message_text), а не при любой
-        # отправке чего-либо ещё в этот чат.
-        if isinstance(text, str) and text.startswith(MAIN_MENU_MARKER):
-            _register_menu_view(chat_id, chat_id, getattr(result, "message_id", None))
-    except Exception:
-        pass
-    return result
-
-
-def _menu_tracking_edit_message_text(text, chat_id=None, message_id=None, *args, **kwargs):
-    result = _orig_bot_edit_message_text(text, chat_id, message_id, *args, **kwargs)
-    try:
-        if chat_id is not None:
-            if isinstance(text, str) and text.startswith(MAIN_MENU_MARKER):
-                mid = message_id or getattr(result, "message_id", None)
-                _register_menu_view(chat_id, chat_id, mid)
-            elif message_id is not None:
-                # снимаем анимацию, только если перезаписали именно то
-                # сообщение, на котором она крутилась - правки других
-                # сообщений в этом же чате не должны её обрывать
-                with _menu_anim_lock:
-                    cur = _menu_anim_views.get(chat_id)
-                    if cur and cur["message_id"] == message_id:
-                        _menu_anim_views.pop(chat_id, None)
-    except Exception:
-        pass
-    return result
-
-
-bot.send_message = _menu_tracking_send_message
-bot.edit_message_text = _menu_tracking_edit_message_text
-threading.Thread(target=_menu_animation_loop, daemon=True).start()
 
 
 @bot.message_handler(commands=["setlogtopic"])
@@ -3927,7 +3794,7 @@ def cb_profile(c):
     warns   = p[15] if len(p) > 15 else 0
     quals   = "✅" if (len(p) > 16 and p[16] == 1) else "❌"
     premium = has_active_premium(uid)
-    crown   = f" {_prem_crown_tag()} Premium" if premium else ""
+    crown   = " 👑 Premium" if premium else ""
     verified_badge = " ✅" if is_verified_check(uid) else ""
     lvl     = get_faceit_level(p[4])
     bar     = elo_bar(p[4], lvl)
@@ -3947,9 +3814,7 @@ def cb_profile(c):
     if has_quals_access(uid):
         extra_btns.append(types.InlineKeyboardButton("⭐ Quals профиль", callback_data="profile_quals"))
     _priv_table_check = get_user_table(uid)
-    _duo_check = get_player_duo_stats(uid, _priv_table_check)
-    if _duo_check:
-        extra_btns.append(types.InlineKeyboardButton("🤝 2vs2 профиль", callback_data="profile_duo"))
+    extra_btns.append(types.InlineKeyboardButton("🤝 2vs2 профиль", callback_data="profile_duo"))
     if extra_btns:
         kb.add(*extra_btns)
     kb.add(types.InlineKeyboardButton("🔙 Назад", callback_data="back"))
@@ -4229,7 +4094,7 @@ def cb_profile_quals(c):
     q_assists= qs["assists"]if qs else 0
 
     premium  = has_active_premium(uid)
-    crown    = f" {_prem_crown_tag()} Premium" if premium else ""
+    crown    = " 👑 Premium" if premium else ""
     lvl      = get_faceit_level(q_elo)
 
     kb = types.InlineKeyboardMarkup(row_width=1)
@@ -4331,7 +4196,7 @@ def cb_profile_duo(c):
     d_assists = ds.get("assists", 0)
 
     premium = has_active_premium(uid)
-    crown   = f" {_prem_crown_tag()} Premium" if premium else ""
+    crown   = " 👑 Premium" if premium else ""
     lvl     = get_faceit_level(d_elo)
 
     kb = types.InlineKeyboardMarkup(row_width=1)
@@ -4676,9 +4541,9 @@ def cb_season_info(c):
         season_line = ""
 
     prizes = [
-        (f"{_prem_tag(PREMIUM_GOLD_EMOJI_ID, '🥇')} 1 место", 250000),
-        (f"{_prem_tag(PREMIUM_SILVER_EMOJI_ID, '🥈')} 2 место", 200000),
-        (f"{_prem_tag(PREMIUM_BRONZE_EMOJI_ID, '🥉')} 3 место", 150000),
+        ("🥇 1 место", 250000),
+        ("🥈 2 место", 200000),
+        ("🥉 3 место", 150000),
         ("4️⃣ 4 место",  100000),
         ("5️⃣ 5 место",   80000),
         ("6️⃣ 6 место",   60000),
@@ -8224,10 +8089,7 @@ def handle_rename(msg):
     conn = _db()
     cur = conn.cursor()
     cur.execute("UPDATE players_fade SET username=%s WHERE user_id=%s", (new_nick, uid))
-    cur.execute(
-        "UPDATE inventory SET is_activated=1, activated_at=%s WHERE id=%s",
-        (int(time.time()), inv_id),
-    )
+    cur.execute("DELETE FROM inventory WHERE id=%s AND user_id=%s", (inv_id, uid))
     conn.commit()
     conn.close()
     bot.send_message(uid, f"✅ Никнейм изменён на <b>{new_nick}</b>!")
@@ -9023,11 +8885,7 @@ def cb_buy_coins(c):
         kb.add(types.InlineKeyboardButton(f"📦 {pkg['name']}: {pkg['coins']} AC", callback_data=f"buy_pack_{pkg['key']}"))
     kb.add(types.InlineKeyboardButton("🔙 Назад", callback_data="back"))
     bot.edit_message_text(
-        f"💳 <b>КУПИТЬ Actual Coin</b>\n💰 Баланс: <b>{coins} AC</b>\n\n"
-        f"Способы оплаты: "
-        f"<tg-emoji emoji-id=\"{STARS_EMOJI_ID}\">⭐</tg-emoji> Stars · "
-        f"<tg-emoji emoji-id=\"{CRYPTO_EMOJI_ID}\">💎</tg-emoji> Крипта\n\n"
-        f"Выберите пакет, затем способ оплаты:",
+        f"💳 <b>КУПИТЬ Actual Coin</b>\n💰 Баланс: <b>{coins} AC</b>\n\nВыберите пакет, затем способ оплаты:",
         c.message.chat.id, c.message.message_id, reply_markup=kb,
     )
     safe_answer(c.id)
