@@ -3041,14 +3041,19 @@ MENU_ICON_CUSTOM_EMOJI = {
     "profile":        "5391112412445288650",  # прислано заказчиком
     "find":           "5231012545799666522",  # прислано заказчиком
     "rejoin_lobby":   "5375338737028841420",  # 🔄
+    "top":            "5188344996356448758",  # прислано заказчиком
     "season_info":    "5334544901428229844",  # прислано заказчиком
     "shop":           "5406683434124859552",  # прислано заказчиком
+    "inv":            "5417924076503062111",  # прислано заказчиком
+    "buy_coins":      "5201873447554145566",  # прислано заказчиком
     "slots_menu":     "5235989279024373566",  # прислано заказчиком
     "promo":          "5188481279963715781",  # прислано заказчиком
     "ticket_start":   "5253742260054409879",  # ✉️
     "party_menu_add": "5397916757333654639",  # прислано заказчиком
     "admin_panel":    "5341715473882955310",  # ⚙️
     "creator_panel":  "5411225014148014586",  # 🔴
+    "add_bots_admin": "5019523782004441717",  # прислано заказчиком
+    "game_reg_panel": "5021905410089550576",  # прислано заказчиком
 }
 
 
@@ -3075,14 +3080,14 @@ def main_menu(uid, frame=0):
             _kb_button(f"{_menu_icon('find', '🎮', frame)} Найти матч", "find", "find"),
         )
     _menu_btns = [
-        types.InlineKeyboardButton(f"{_menu_icon('top', '🏆', frame)} Топ", callback_data="top"),
+        _kb_button(f"{_menu_icon('top', '🏆', frame)} Топ", "top", "top"),
     ]
     if get_user_private(uid) == "fade":
         _menu_btns.append(_kb_button(f"{_menu_icon('season_info', '🏅', frame)} О сезоне", "season_info", "season_info"))
     _menu_btns += [
         _kb_button(f"{_menu_icon('shop', '🛒', frame)} Магазин", "shop", "shop"),
-        types.InlineKeyboardButton(f"{_menu_icon('inv', '🎒', frame)} Инвентарь", callback_data="inv"),
-        types.InlineKeyboardButton(f"{_menu_icon('buy_coins', '💳', frame)} Купить монеты", callback_data="buy_coins"),
+        _kb_button(f"{_menu_icon('inv', '🎒', frame)} Инвентарь", "inv", "inv"),
+        _kb_button(f"{_menu_icon('buy_coins', '💳', frame)} Купить монеты", "buy_coins", "buy_coins"),
         _kb_button(f"{_menu_icon('slots_menu', '🎰', frame)} Слоты", "slots_menu", "slots_menu"),
         _kb_button(f"{_menu_icon('promo', '🎁', frame)} Промокод", "promo", "promo"),
         _kb_button(f"{_menu_icon('ticket_start', '🎟', frame)} Тикет / Жалоба", "ticket_start", "ticket_start"),
@@ -3096,11 +3101,11 @@ def main_menu(uid, frame=0):
     ))
     if is_admin(uid):
         kb.add(
-            types.InlineKeyboardButton(f"{_menu_icon('add_bots_admin', '🤖', frame)} Добавить ботов", callback_data="add_bots_admin"),
+            _kb_button(f"{_menu_icon('add_bots_admin', '🤖', frame)} Добавить ботов", "add_bots_admin", "add_bots_admin"),
             _kb_button(f"{_menu_icon('admin_panel', '⚙️', frame)} Админ панель", "admin_panel", "admin_panel"),
         )
     elif is_game_reg_check(uid):
-        kb.add(types.InlineKeyboardButton(f"{_menu_icon('game_reg_panel', '📋', frame)} Регистрация матчей", callback_data="game_reg_panel"))
+        kb.add(_kb_button(f"{_menu_icon('game_reg_panel', '📋', frame)} Регистрация матчей", "game_reg_panel", "game_reg_panel"))
     if is_creator(uid):
         kb.add(_kb_button(f"{_menu_icon('creator_panel', '🔴', frame)} Креаторская панель", "creator_panel", "creator_panel"))
     return kb
