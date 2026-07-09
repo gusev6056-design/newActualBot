@@ -7010,8 +7010,9 @@ def cb_reg_match(c):
         except Exception:
             pass
 
+    _reg_priv_table_names = PRIVATE_CONFIG.get(lobby.get("private", "fade"), PRIVATE_CONFIG["fade"])["table"]
     def pln(uid2):
-        p = get_player(uid2)
+        p = get_player_from_table(uid2, _reg_priv_table_names) or get_player(uid2)
         return f"{p[1]} - <code>{uid2}</code>" if p else str(uid2)
     ct_list = "\n".join([pln(u) for u in lobby.get("team_ct", [])])
     t_list  = "\n".join([pln(u) for u in lobby.get("team_t",  [])])
@@ -8294,6 +8295,7 @@ def cb_shop(c):
     # Баннер "ВСЕ ТОВАРЫ" + одна кнопка "Товары"
     kb = types.InlineKeyboardMarkup()
     kb.add(types.InlineKeyboardButton("🛒 Товары", callback_data="shop_items"))
+    kb.add(types.InlineKeyboardButton("🔙 Назад", callback_data="back"))
     try:
         if os.path.isfile(SHOP_BANNER_PATH):
             with open(SHOP_BANNER_PATH, "rb") as img:
