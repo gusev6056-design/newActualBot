@@ -237,7 +237,7 @@ REQUIRED_CHANNELS = [
     },
 ]
 
-def check_subACriptions(user_id: int) -> list:
+async def check_subACriptions(user_id: int) -> list:
     """Возвращает список каналов, на которые пользователь не подписан."""
     not_subACribed = []
     for ch in REQUIRED_CHANNELS:
@@ -3908,7 +3908,7 @@ async def cmd_ranks(message: Message):
     sep   = "┄" * 18
     icons = NUMBER_EMOJI  # ①②③…⑩
 
-    def _league_block(title: str, subtitle: str, promo_text: str) -> str:
+    async def _league_block(title: str, subtitle: str, promo_text: str) -> str:
         lines = [f"<b>{title}</b>\n<i>{subtitle}</i>\n{sep}"]
         for i, rng in enumerate(ELO_RANGES_TEXT):
             icon = icons[i] if i < len(icons) else f"{i+1}."
@@ -5627,7 +5627,7 @@ async def _start_map_ban_phase_inner(lobby_id):
 
     # Группируем игроков так, чтобы участники одной пати стояли рядом -
     # это гарантирует что пати не окажется разбита по разным половинам при сплите.
-    def _group_by_party(player_list):
+    async def _group_by_party(player_list):
         placed = set()
         grouped = []
         player_set = set(player_list)
@@ -5873,7 +5873,7 @@ def _build_draft_status_text(lobby_id):
     t_cap_uid  = lobby.get("t_captain")
     priv_table = PRIVATE_CONFIG.get(lobby.get("private", "fade"), PRIVATE_CONFIG["fade"])["table"]
 
-    def pname(uid):
+    async def pname(uid):
         p = get_player_from_table(uid, priv_table) or get_player(uid)
         return p[1] if p else str(uid)
 
@@ -6009,7 +6009,7 @@ async def _start_draft_phase_inner(lobby_id):
     # Inform all players
     priv_table = PRIVATE_CONFIG.get(lobby.get("private", "fade"), PRIVATE_CONFIG["fade"])["table"]
 
-    def pname(uid):
+    async def pname(uid):
         p = get_player_from_table(uid, priv_table) or get_player(uid)
         return p[1] if p else str(uid)
 
@@ -6133,7 +6133,7 @@ async def _do_draft_turn(lobby_id):
         _send_draft_pick_keyboard(lobby_id, captain_uid, turn)
         snap_count = draft.get("turn_count", 0)
 
-        def _afk_timeout(snap=snap_count, cap=captain_uid, t=turn):
+        async def _afk_timeout(snap=snap_count, cap=captain_uid, t=turn):
             await asyncio.sleep(DRAFT_TURN_TIMEOUT)  # converted from time.sleep
             l2 = active_lobbies.get(lobby_id)
             if not l2 or l2.get("status") != "draft":
@@ -6284,7 +6284,7 @@ async def _finish_draft(lobby_id):
     # Announce final rosters
     priv_table = PRIVATE_CONFIG.get(lobby.get("private", "fade"), PRIVATE_CONFIG["fade"])["table"]
 
-    def pname(uid):
+    async def pname(uid):
         p = get_player_from_table(uid, priv_table) or get_player(uid)
         return p[1] if p else str(uid)
 
@@ -6569,7 +6569,7 @@ async def _launch_match_inner(lobby_id):
 
     _launch_league = lobby.get("league", "default")
 
-    def admin_pline(idx, u):
+    async def admin_pline(idx, u):
         p = get_player_from_table(u, _launch_priv_table) or get_player(u)
         num = NUMBER_EMOJI[idx] if idx < len(NUMBER_EMOJI) else f"{idx+1}."
         if p:
@@ -10602,7 +10602,7 @@ async def handle_admin_action(message: Message):
 
     elif action == "give_item":
         # Find player by text (ID or nickname) then show item keyboard
-        def _find_p(inp):
+        async def _find_p(inp):
             if inp.isdigit():
                 return get_player(int(inp))
             c3 = _db(); cr3 = c3.cursor()
@@ -13026,7 +13026,7 @@ async def _handle_creator_flow_extended(message, uid, flow, step):
     """Возвращает True если шаг обработан, иначе False."""
     inp = message.text.strip()
 
-    def _find_player_by_inp(inp):
+    async def _find_player_by_inp(inp):
         if inp.isdigit():
             return get_player(int(inp))
         try:
