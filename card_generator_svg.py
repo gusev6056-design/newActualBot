@@ -212,7 +212,7 @@ def generate_profile_card(
         av_data_uri = f"data:image/jpeg;base64,{b64}"
 
     # Canvas
-    W, H = 1055, 695
+    W, H = 1055, 820
 
     # ── Section layout ─────────────────────────────────────────────────────
     HDR_H   = 155        # header height
@@ -290,8 +290,9 @@ def generate_profile_card(
         uname_display += " ★"
     p(_text(IX, 64, uname_display, 30, _WHITE, "bold"))
     if is_admin:
-        p(_rrect(IX + len(username)*18 + 22, 44, 42, 22, rx=4, fill="#aa1818"))
-        p(_text(IX + len(username)*18 + 26, 59, "ADM", 11, _WHITE, "bold"))
+        adm_x = IX + min(len(uname_display) * 17 + 10, W - 250 - IX)
+        p(_rrect(adm_x, 44, 42, 22, rx=4, fill="#aa1818"))
+        p(_text(adm_x + 4, 59, "ADM", 11, _WHITE, "bold"))
     p(_text(IX, 88, f"ID: {game_id}", 13, _GRAY))
 
     # ELO (right)

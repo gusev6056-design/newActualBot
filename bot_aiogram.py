@@ -5084,6 +5084,7 @@ def build_lobby_kb(lobby_id, uid):
     if not lobby or lobby.get("status") != "accepting":
         kb.button(text="🚪 Выйти из лобби", callback_data=f"leave_{lobby_id}")
     kb.button(text="🔙 К списку", callback_data=f"lobby_{league}")
+    kb.adjust(2)
     return kb
 
 async def broadcast_lobby_update(lobby_id, exclude_uid=None):
@@ -5111,11 +5112,10 @@ async def cb_find(callback: CallbackQuery):
     kb.add(
         types.InlineKeyboardButton(text="🎮 Default", callback_data="lobby_default"),
         types.InlineKeyboardButton(text="⭐ Quals", callback_data="lobby_quals"),
-    )
-    kb.add(
         types.InlineKeyboardButton(text="🤝 2v2 (Duo)", callback_data="lobby_duo"),
         types.InlineKeyboardButton(text="🔙 Назад", callback_data="back"),
     )
+    kb.adjust(2)
     await callback.message.edit_text("🎮 Выбери лигу:", reply_markup=kb.as_markup())
     await safe_answer(callback.id)
 
@@ -5140,10 +5140,11 @@ async def cb_lobby(callback: CallbackQuery):
         m_cnt = len(active_lobbies.get(f"{private_key}_{league}_mobile_{slot}", {}).get("players", []))
         p_cnt = len(active_lobbies.get(f"{private_key}_{league}_pc_{slot}", {}).get("players", []))
         kb.add(
-            types.InlineKeyboardButton(text=f"M{slot}({m_cnt})", callback_data=f"join_{private_key}_{league}_mobile_{slot}"),
-            types.InlineKeyboardButton(text=f"P{slot}({p_cnt})", callback_data=f"join_{private_key}_{league}_pc_{slot}"),
+            types.InlineKeyboardButton(text=f"📱 Mobile #{slot}  ({m_cnt}/{max_size})", callback_data=f"join_{private_key}_{league}_mobile_{slot}"),
+            types.InlineKeyboardButton(text=f"💻 PC #{slot}  ({p_cnt}/{max_size})", callback_data=f"join_{private_key}_{league}_pc_{slot}"),
         )
     kb.button(text="🔙 Назад", callback_data="find")
+    kb.adjust(2)
     await callback.message.edit_text(text, reply_markup=kb.as_markup())
     await safe_answer(callback.id)
 
