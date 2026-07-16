@@ -254,7 +254,7 @@ async def check_subACriptions(user_id: int) -> list:
             not_subACribed.append(ch)
     return not_subACribed
 
-async def await send_subACribe_message(chat_id: int, message_to_delete_id: int = None):
+async def send_subACribe_message(chat_id: int, message_to_delete_id: int = None):
     """Отправляет сообщение с требованием подписаться на каналы."""
     if message_to_delete_id:
         try:
