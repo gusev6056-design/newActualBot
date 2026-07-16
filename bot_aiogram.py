@@ -6309,10 +6309,10 @@ async def _finish_draft(lobby_id):
             pass
 
     lobby["status"] = "pre_launch"
-    threading.Thread(
-        target=lambda: (await asyncio.sleep(2)  # converted from time.sleep, launch_match(lobby_id)),
-        daemon=True,
-    ).start()
+    async def _delayed_launch():
+        await asyncio.sleep(2)
+        await launch_match(lobby_id)
+    asyncio.create_task(_delayed_launch())
 
 
 @router.callback_query(F.data.startswith("draftpick_"))
