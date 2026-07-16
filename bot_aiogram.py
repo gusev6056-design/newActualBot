@@ -237,7 +237,7 @@ REQUIRED_CHANNELS = [
     },
 ]
 
-async def check_subACriptions(user_id: int) -> list:
+async def await check_subACriptions(user_id: int) -> list:
     """Возвращает список каналов, на которые пользователь не подписан."""
     not_subACribed = []
     for ch in REQUIRED_CHANNELS:
@@ -254,7 +254,7 @@ async def check_subACriptions(user_id: int) -> list:
             not_subACribed.append(ch)
     return not_subACribed
 
-async def send_subACribe_message(chat_id: int, message_to_delete_id: int = None):
+async def await send_subACribe_message(chat_id: int, message_to_delete_id: int = None):
     """Отправляет сообщение с требованием подписаться на каналы."""
     if message_to_delete_id:
         try:
@@ -3864,9 +3864,9 @@ async def cmd_start(message: Message):
         if message.from_user.username:
             update_tg_username(uid, message.from_user.username)
         # Проверка обязательной подписки на каналы
-        not_subbed = check_subACriptions(uid)
+        not_subbed = await check_subACriptions(uid)
         if not_subbed:
-            send_subACribe_message(uid)
+            await send_subACribe_message(uid)
             return
         # Убираем любую ReplyKeyboard
         try:
@@ -3945,7 +3945,7 @@ async def cmd_ranks(message: Message):
 @router.callback_query(F.data == "check_sub")
 async def cb_check_sub(callback: CallbackQuery):
     uid = callback.from_user.id
-    not_subbed = check_subACriptions(uid)
+    not_subbed = await check_subACriptions(uid)
     if not_subbed:
         names = " и ".join(ch["name"] for ch in not_subbed)
         await safe_answer(callback.id, f"❌ Вы не подписаны на: {names}. Подпишитесь и попробуйте снова.", show_alert=True)
@@ -13340,7 +13340,7 @@ async def main():
     print("🏠 Загрузка приваток...")
     load_user_privates()
     print("♻️ Восстановление матчей...")
-    restore_active_matches()
+    await restore_active_matches()
     print("⏰ Запуск авто-разбана...")
     asyncio.create_task(auto_unban_loop())
     print("🗑️ Запуск авто-удаления...")
