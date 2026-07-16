@@ -3332,7 +3332,7 @@ def main_menu(uid, frame=0):
         kb.add(_kb_button("Регистрация матчей", "game_reg_panel", "game_reg_panel"))
     if is_creator(uid):
         kb.add(_kb_button("Креаторская панель", "creator_panel", "creator_panel"))
-    return kb
+    return kb.as_markup()
 
 
 def main_menu_text(uid):
