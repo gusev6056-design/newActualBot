@@ -9571,9 +9571,9 @@ async def cb_buy_crypto(callback: CallbackQuery):
     )
 
 
-@bot.pre_checkout_query_handler(func=lambda q: True)
-def pre_checkout(query):
-    bot.answer_pre_checkout_query(query.id, ok=True)
+@router.pre_checkout_query(lambda q: True)
+async def pre_checkout(query: types.PreCheckoutQuery):
+    await query.answer(ok=True)
 
 
 @router.message(F.content_type.in_({"successful_payment"}))
