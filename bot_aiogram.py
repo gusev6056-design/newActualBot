@@ -5704,7 +5704,7 @@ async def _do_ban_turn(lobby_id):
 
     if is_bot_player(captain_uid):
         async def bot_auto_ban():
-            await asyncio.sleep(random.uniform(3, 5)  # converted from time.sleep)
+            await asyncio.sleep(random.uniform(3, 5))  # converted from time.sleep
             lobby2 = active_lobbies.get(lobby_id)
             if not lobby2 or lobby2["status"] != "mapban" or not lobby2.get("maps_remaining"):
                 return
@@ -6115,7 +6115,7 @@ async def _do_draft_turn(lobby_id):
     # --- Bot captain: auto-pick best unit by avg ELO ---
     if captain_uid and is_bot_player(captain_uid):
         async def _bot_pick():
-            await asyncio.sleep(random.uniform(2, 4)  # converted from time.sleep)
+            await asyncio.sleep(random.uniform(2, 4))  # converted from time.sleep
             l2 = active_lobbies.get(lobby_id)
             if not l2 or l2.get("status") != "draft":
                 return
