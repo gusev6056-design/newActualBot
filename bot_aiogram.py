@@ -246,7 +246,7 @@ REQUIRED_CHANNELS = [
     },
 ]
 
-def check_subACriptions(user_id: int) -> list:
+async def check_subACriptions(user_id: int) -> list:
     """Возвращает список каналов, на которые пользователь не подписан."""
     not_subACribed = []
     for ch in REQUIRED_CHANNELS:
@@ -3872,9 +3872,9 @@ async def cmd_start(message: Message):
         if message.from_user.username:
             update_tg_username(uid, message.from_user.username)
         # Проверка обязательной подписки на каналы
-        not_subbed = check_subACriptions(uid)
+        not_subbed = await check_subACriptions(uid)
         if not_subbed:
-            send_subACribe_message(uid)
+            await send_subACribe_message(uid)
             return
         # Убираем любую ReplyKeyboard
         try:
@@ -3953,7 +3953,7 @@ async def cmd_ranks(message: Message):
 @router.callback_query(F.data == "check_sub")
 async def cb_check_sub(callback: CallbackQuery):
     uid = callback.from_user.id
-    not_subbed = check_subACriptions(uid)
+    not_subbed = await check_subACriptions(uid)
     if not_subbed:
         names = " и ".join(ch["name"] for ch in not_subbed)
         await safe_answer(callback.id, f"❌ Вы не подписаны на: {names}. Подпишитесь и попробуйте снова.", show_alert=True)
@@ -5369,7 +5369,7 @@ async def start_accept_phase(lobby_id):
         except Exception:
             pass
 
-    def check_accept():
+    async def check_accept():
         await asyncio.sleep(ACCEPT_TIMEOUT)  # converted from time.sleep
         lobby2 = active_lobbies.get(lobby_id)
         if not lobby2 or lobby2["status"] != "accepting":
@@ -5693,7 +5693,7 @@ async def _do_ban_turn(lobby_id):
 
     # Если капитан не определён - авто-баним через 1 сек
     if captain_uid is None:
-        def _auto_ban_null():
+        async def _auto_ban_null():
             await asyncio.sleep(1)  # converted from time.sleep
             lobby2 = active_lobbies.get(lobby_id)
             if not lobby2 or lobby2["status"] != "mapban" or not lobby2.get("maps_remaining"):
@@ -5716,7 +5716,7 @@ async def _do_ban_turn(lobby_id):
     else:
         _send_ban_keyboard(lobby_id, captain_uid)
         # AFK-таймер: сравниваем ban_count, а не ban_turn - иначе 2-й ход того же капитана ложно срабатывает
-        def captain_afk_timeout():
+        async def captain_afk_timeout():
             await asyncio.sleep(BAN_TURN_TIMEOUT)  # converted from time.sleep
             lobby2 = active_lobbies.get(lobby_id)
             if not lobby2 or lobby2["status"] != "mapban":
@@ -6142,7 +6142,7 @@ async def _do_draft_turn(lobby_id):
         _send_draft_pick_keyboard(lobby_id, captain_uid, turn)
         snap_count = draft.get("turn_count", 0)
 
-        def _afk_timeout(snap=snap_count, cap=captain_uid, t=turn):
+        async def _afk_timeout(snap=snap_count, cap=captain_uid, t=turn):
             await asyncio.sleep(DRAFT_TURN_TIMEOUT)  # converted from time.sleep
             l2 = active_lobbies.get(lobby_id)
             if not l2 or l2.get("status") != "draft":
@@ -6604,7 +6604,7 @@ async def _launch_match_inner(lobby_id):
         thread_id = None
         # Пытаемся создать ветку форума
         try:
-            topic = bot.create_forum_topic(ADMIN_CHAT_ID, f"MATCH #{match_code}")
+            topic = await bot.create_forum_topic(ADMIN_CHAT_ID, f"MATCH #{match_code}")
             thread_id = topic.message_thread_id
             print(f"✅ Ветка создана: MATCH #{match_code}, thread_id={thread_id}")
         except Exception as e:
@@ -7194,7 +7194,7 @@ async def handle_ai_reg_photo(message):
     await bot.send_message(uid, "⏳ Анализирую скрин через нейросеть...", parse_mode="HTML")
 
     # Вызываем GPT-4o Vision в отдельном потоке чтобы не блокировать поллинг
-    def _analyze():
+    async def _analyze():
         try:
             ai_result = _call_openai_vision(image_bytes)
         except Exception as _e:
