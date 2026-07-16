@@ -111,7 +111,10 @@ async def _auto_delete_loop():
 
 import os as _os
 # Directory containing map images (Province.jpeg, Rust.jpeg, etc.)
-MAP_IMAGES_DIR = _os.path.join(_os.path.dirname(_os.path.abspath(__file__)), "map_images")
+# Falls back to the bot's own directory if map_images/ subfolder doesn't exist
+_script_dir = _os.path.dirname(_os.path.abspath(__file__))
+_map_subdir  = _os.path.join(_script_dir, "map_images")
+MAP_IMAGES_DIR = _map_subdir if _os.path.isdir(_map_subdir) else _script_dir
 
 try:
     from card_generator_svg import generate_profile_card   # cairosvg renderer

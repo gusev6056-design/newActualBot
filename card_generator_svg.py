@@ -376,13 +376,13 @@ def generate_profile_card(
     p(_text(36, CONT_Y + 22, "Statistic", 13, _GRAY))
 
     # ── KD Ring position (drawn AFTER stat cards so it renders on top) ────────
-    KD_CX, KD_CY, KD_R = 80, CONT_Y + 110, 52
+    KD_CX, KD_CY, KD_R = 80, CONT_Y + 85, 38
 
     # Kill / Death text (drawn here, before the ring, so ring stays on top)
     KDT_X = KD_CX + KD_R + 18
-    p(_text(KDT_X, CONT_Y + 60, "Kill/Deaths", 12, _GRAY))
-    p(_text(KDT_X, CONT_Y + 82, f"K = {kills}", 14, _BLUE, "bold"))
-    p(_text(KDT_X + 90, CONT_Y + 82, f"D = {deaths}", 14, _PINK, "bold"))
+    p(_text(KDT_X, CONT_Y + 55, "Kill/Deaths", 12, _GRAY))
+    p(_text(KDT_X, CONT_Y + 74, f"K = {kills}", 14, _BLUE, "bold"))
+    p(_text(KDT_X + 90, CONT_Y + 74, f"D = {deaths}", 14, _PINK, "bold"))
 
     # ── Level / ELO section ────────────────────────────────────────────────
     LP_X = 345
@@ -441,11 +441,10 @@ def generate_profile_card(
         p(_text(cx + 8, cy + CARD_H - 4, grade_lbl, 9, grade_col))
 
     # ── KD Ring drawn AFTER stat cards so it renders fully on top ──────────
-    # Dark backing disc so the ring stands out against any overlapping cards
-    p(f'<circle cx="{KD_CX}" cy="{KD_CY}" r="{KD_R + 14}" fill="{_PANEL}"/>')
-    p(_ring(KD_CX, KD_CY, KD_R, 10, "#3a3a60", kd_pct, _BLUE, _PINK, "kd"))
-    p(_text(KD_CX, KD_CY - 7, f"{kd:.2f}", 22, _WHITE, "bold", anchor="middle"))
-    p(_text(KD_CX, KD_CY + 13, "K/D", 10, _GRAY, anchor="middle"))
+    p(f'<circle cx="{KD_CX}" cy="{KD_CY}" r="{KD_R + 10}" fill="{_PANEL}"/>')
+    p(_ring(KD_CX, KD_CY, KD_R, 8, "#3a3a60", kd_pct, _BLUE, _PINK, "kd"))
+    p(_text(KD_CX, KD_CY - 5, f"{kd:.2f}", 17, _WHITE, "bold", anchor="middle"))
+    p(_text(KD_CX, KD_CY + 11, "K/D", 9, _GRAY, anchor="middle"))
 
     # ══════════════════════════════════════════════════════════════════════
     #  MAP STATISTIC SECTION (left column, bottom)
