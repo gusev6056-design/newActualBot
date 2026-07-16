@@ -1,23 +1,9 @@
 services:
   - type: web
     name: actual-faceit-bot
-    env: python
+    env: docker
     region: frankfurt
     plan: free
-    runtime: python
-    pythonVersion: "3.11.9"
-    buildCommand: >
-      apt-get update -y &&
-      apt-get install -y
-        libcairo2
-        libpango-1.0-0
-        libpangocairo-1.0-0
-        libgdk-pixbuf2.0-0
-        libffi-dev
-        shared-mime-info
-        fonts-dejavu-core &&
-      pip install -r requirements_aiogram.txt
-    startCommand: python bot_aiogram.py
     healthCheckPath: /
     envVars:
       - key: BOT_TOKEN
