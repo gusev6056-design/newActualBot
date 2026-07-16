@@ -109,6 +109,10 @@ async def _auto_delete_loop():
             print(f"[auto_delete] Ошибка: {e}")
         await asyncio.sleep(30)  # converted from time.sleep
 
+import os as _os
+# Directory containing map images (Province.jpeg, Rust.jpeg, etc.)
+MAP_IMAGES_DIR = _os.path.join(_os.path.dirname(_os.path.abspath(__file__)), "map_images")
+
 try:
     from card_generator_svg import generate_profile_card   # cairosvg renderer
     from card_generator import (                           # остальные карточки остаются на Pillow
@@ -4304,6 +4308,7 @@ async def cb_profile(callback: CallbackQuery):
                 active_frame       = active_frame,
                 active_banner      = active_banner,
                 active_background  = active_background,
+                map_images_dir     = MAP_IMAGES_DIR,
             )
 
             # delete old message, send photo with buttons
@@ -4575,6 +4580,7 @@ async def cb_profile_quals(callback: CallbackQuery):
                 active_frame      = active_frame,
                 active_banner     = active_banner,
                 active_background = active_background,
+                map_images_dir    = MAP_IMAGES_DIR,
             )
             try:
                 await bot.delete_message(callback.message.chat.id, callback.message.message_id)
@@ -4676,6 +4682,7 @@ async def cb_profile_duo(callback: CallbackQuery):
                 active_frame      = active_frame,
                 active_banner     = active_banner,
                 active_background = active_background,
+                map_images_dir    = MAP_IMAGES_DIR,
             )
             try:
                 await bot.delete_message(callback.message.chat.id, callback.message.message_id)

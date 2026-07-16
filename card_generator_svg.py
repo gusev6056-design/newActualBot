@@ -8,7 +8,47 @@ Requirements:  pip install cairosvg
 import io
 import math
 import base64
+import os
 from typing import Optional
+
+
+# ════════════════════════════════════════════════════════════════════════════
+#  MAP IMAGE HELPERS
+# ════════════════════════════════════════════════════════════════════════════
+
+# Mapping of known aliases → canonical filename prefix (case-insensitive)
+_MAP_NAME_ALIASES: dict = {
+    "zone":      "Zone",
+    "zone 9":    "Zone",
+    "zone9":     "Zone",
+    "rust":      "Rust",
+    "sandstone": "Sandstone",
+    "province":  "Province",
+    "sakura":    "Sakura",
+}
+
+
+def _map_data_uri(map_name: str, images_dir: Optional[str]) -> Optional[str]:
+    """Return a base64 data URI for a map image, or None if not found."""
+    if not images_dir or not os.path.isdir(images_dir):
+        return None
+    key = map_name.lower().strip()
+    canonical = _MAP_NAME_ALIASES.get(key, map_name)
+    search_prefix = canonical.lower()
+    try:
+        for fn in sorted(os.listdir(images_dir)):
+            if fn.lower().startswith(search_prefix) and fn.lower().endswith(
+                (".jpeg", ".jpg", ".png")
+            ):
+                fpath = os.path.join(images_dir, fn)
+                with open(fpath, "rb") as f:
+                    data = f.read()
+                ext = fn.rsplit(".", 1)[-1].lower()
+                mime = "image/jpeg" if ext in ("jpg", "jpeg") else "image/png"
+                return f"data:{mime};base64,{base64.b64encode(data).decode()}"
+    except Exception:
+        pass
+    return None
 
 try:
     import cairosvg as _cairosvg
@@ -172,6 +212,7 @@ def generate_profile_card(
     active_frame:      str   = None,
     active_banner:     str   = None,
     active_background: str   = None,
+    map_images_dir:    str   = None,
 ) -> io.BytesIO:
 
     # ── Derived stats ──────────────────────────────────────────────────────
@@ -334,13 +375,10 @@ def generate_profile_card(
         p(f'<rect x="{bx}" y="{CONT_Y + 24 - bh}" width="4" height="{bh}" fill="{_GRAY}"/>')
     p(_text(36, CONT_Y + 22, "Statistic", 13, _GRAY))
 
-    # ── KD Ring ────────────────────────────────────────────────────────────
-    KD_CX, KD_CY, KD_R = 80, CONT_Y + 100, 52
-    p(_ring(KD_CX, KD_CY, KD_R, 10, _PANEL3, kd_pct, _BLUE, _PINK, "kd"))
-    p(_text(KD_CX, KD_CY - 7, f"{kd:.2f}", 22, _WHITE, "bold", anchor="middle"))
-    p(_text(KD_CX, KD_CY + 13, "K/D", 10, _GRAY, anchor="middle"))
+    # ── KD Ring position (drawn AFTER stat cards so it renders on top) ────────
+    KD_CX, KD_CY, KD_R = 80, CONT_Y + 110, 52
 
-    # Kill / Death text
+    # Kill / Death text (drawn here, before the ring, so ring stays on top)
     KDT_X = KD_CX + KD_R + 18
     p(_text(KDT_X, CONT_Y + 60, "Kill/Deaths", 12, _GRAY))
     p(_text(KDT_X, CONT_Y + 82, f"K = {kills}", 14, _BLUE, "bold"))
@@ -402,6 +440,13 @@ def generate_profile_card(
         p(f'<rect x="{cx+8}" y="{BY2}" width="{bar_w}" height="3" rx="1" fill="{grade_col}"/>')
         p(_text(cx + 8, cy + CARD_H - 4, grade_lbl, 9, grade_col))
 
+    # ── KD Ring drawn AFTER stat cards so it renders fully on top ──────────
+    # Dark backing disc so the ring stands out against any overlapping cards
+    p(f'<circle cx="{KD_CX}" cy="{KD_CY}" r="{KD_R + 14}" fill="{_PANEL}"/>')
+    p(_ring(KD_CX, KD_CY, KD_R, 10, "#3a3a60", kd_pct, _BLUE, _PINK, "kd"))
+    p(_text(KD_CX, KD_CY - 7, f"{kd:.2f}", 22, _WHITE, "bold", anchor="middle"))
+    p(_text(KD_CX, KD_CY + 13, "K/D", 10, _GRAY, anchor="middle"))
+
     # ══════════════════════════════════════════════════════════════════════
     #  MAP STATISTIC SECTION (left column, bottom)
     # ══════════════════════════════════════════════════════════════════════
@@ -446,14 +491,23 @@ def generate_profile_card(
           f'font-weight="bold" text-anchor="middle" '
           f'transform="rotate(90 {BPX+BPW-10} {BPY+BPH//2})">BEST MAP</text>')
 
-        # Map color thumbnail
+        # Map thumbnail (real image if available, else colored box)
         thumb_x, thumb_y, thumb_s = BPX + 8, BPY + 8, 78
+        bm_img_uri = _map_data_uri(bm_name, map_images_dir)
         p(_rrect(thumb_x, thumb_y, thumb_s, thumb_s, rx=4, fill="#1e304a", stroke=_BLUE, sw=1))
-        p(_text(thumb_x + thumb_s//2, thumb_y + thumb_s//2 + 6,
-                bm_name[:3].upper(), 14, _WHITE, "bold", anchor="middle"))
-        # Small map icon
-        p(f'<rect x="{thumb_x+6}" y="{thumb_y+60}" width="{thumb_s-12}" height="12" '
-          f'rx="2" fill="#2a4060" opacity="0.7"/>')
+        if bm_img_uri:
+            clip_id = "bmThumbClip"
+            p(f'<defs><clipPath id="{clip_id}">'
+              f'<rect x="{thumb_x}" y="{thumb_y}" width="{thumb_s}" height="{thumb_s}" rx="4"/>'
+              f'</clipPath></defs>')
+            p(f'<image clip-path="url(#{clip_id})" href="{bm_img_uri}" '
+              f'x="{thumb_x}" y="{thumb_y}" width="{thumb_s}" height="{thumb_s}" '
+              f'preserveAspectRatio="xMidYMid slice"/>')
+        else:
+            p(_text(thumb_x + thumb_s//2, thumb_y + thumb_s//2 + 6,
+                    bm_name[:3].upper(), 14, _WHITE, "bold", anchor="middle"))
+            p(f'<rect x="{thumb_x+6}" y="{thumb_y+60}" width="{thumb_s-12}" height="12" '
+              f'rx="2" fill="#2a4060" opacity="0.7"/>')
 
         # Stats
         TX2 = BPX + thumb_s + 18
@@ -482,10 +536,20 @@ def generate_profile_card(
         mname = ms.get("map", "").title()
 
         p(_rrect(mx, my, MCOL_W, MCOL_H, rx=6, fill=_PANEL2, stroke=_BORDER, sw=1))
-        # Map thumb
+        # Map thumb (real image if available)
         TS = MCOL_H - 12
+        mg_img_uri = _map_data_uri(mname, map_images_dir)
         p(_rrect(mx+6, my+6, TS, TS, rx=4, fill="#1e304a"))
-        p(_text(mx+6+TS//2, my+6+TS//2+5, mname[:3].upper(), 8, _WHITE, "bold", anchor="middle"))
+        if mg_img_uri:
+            clip_id2 = f"mgClip{mi}"
+            p(f'<defs><clipPath id="{clip_id2}">'
+              f'<rect x="{mx+6}" y="{my+6}" width="{TS}" height="{TS}" rx="4"/>'
+              f'</clipPath></defs>')
+            p(f'<image clip-path="url(#{clip_id2})" href="{mg_img_uri}" '
+              f'x="{mx+6}" y="{my+6}" width="{TS}" height="{TS}" '
+              f'preserveAspectRatio="xMidYMid slice"/>')
+        else:
+            p(_text(mx+6+TS//2, my+6+TS//2+5, mname[:3].upper(), 8, _WHITE, "bold", anchor="middle"))
         # Text
         TX3 = mx + TS + 12
         p(_text(TX3, my + 20, mname[:12], 11, _WHITE, "bold"))
