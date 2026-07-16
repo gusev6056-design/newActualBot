@@ -7158,13 +7158,10 @@ async def cb_reg_ai_photo(callback: CallbackQuery):
         pass
 
 
-@bot.message_handler(
-    func=lambda m: m.from_user.id in ai_reg_pending
+@router.message(lambda m: m.from_user.id in ai_reg_pending
                    and ai_reg_pending[m.from_user.id].get("step") == "awaiting_photo"
-                   and m.chat.type == "private",
-    content_types=["photo"],
-)
-async def handle_ai_reg_photo(message):
+                   and m.chat.type == "private", F.photo)
+async def handle_ai_reg_photo(message: Message):
     """Получаем скрин, анализируем через GPT-4o, показываем превью."""
     uid = message.from_user.id
     pending = ai_reg_pending.get(uid, {})
@@ -7587,12 +7584,12 @@ async def cb_reg_abandon_confirm(callback: CallbackQuery):
         pass
 
 
-@bot.message_handler(func=lambda m: (
+@router.message(lambda m: (
     m.from_user.id in match_registration
     and match_registration[m.from_user.id].get("step") == "ACore"
     and m.chat.id == match_registration[m.from_user.id].get("reply_chat_id", m.from_user.id)
 ))
-async def reg_step_ACore(message):
+async def reg_step_ACore(message: Message):
     uid = message.from_user.id
     if not is_game_reg_check(uid):
         return
@@ -7712,12 +7709,12 @@ def _parse_all_kda(text, all_players):
     return result, None
 
 
-@bot.message_handler(func=lambda m: (
+@router.message(lambda m: (
     m.from_user.id in match_registration
     and match_registration[m.from_user.id].get("step") == "all_kills"
     and m.chat.id == match_registration[m.from_user.id].get("reply_chat_id", m.from_user.id)
 ))
-def reg_step_all_kills(message):
+async def reg_step_all_kills(message: Message):
     uid = message.from_user.id
     if not is_game_reg_check(uid):
         return
@@ -10222,14 +10219,14 @@ _RESTRICT_MAP = {
     "give_verified": "give_verified",
 }
 
-@bot.callback_query_handler(func=lambda c: callback.data in [
+@router.callback_query(F.data.in_([
     "admin_search", "admin_search_gameid", "admin_give_coins", "admin_set_elo",
     "admin_warn", "admin_broadcast", "admin_give_admin",
     "admin_quals_access", "admin_give_game_reg", "admin_mute", "admin_unmute",
     "admin_check", "admin_uncheck", "admin_change_nick", "admin_change_gid",
     "admin_edit_stats", "admin_give_verified", "admin_give_item",
-])
-async def cb_admin_action(c):
+]))
+async def cb_admin_action(c: CallbackQuery):
     uid = callback.from_user.id
     if not is_admin(uid):
         await safe_answer(callback.id, "❌ Нет доступа")
