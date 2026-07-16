@@ -1222,7 +1222,7 @@ def get_player(user_id):
     try:
         conn = _db()
         cur = conn.cursor()
-        cur.execute("SELECT * FROM players_fade WHERE user_id=%s", (user_id,))
+        cur.execute("SELECT * FROM players WHERE user_id=%s", (user_id,))
         row = cur.fetchone()
         conn.close()
         return row
@@ -3988,7 +3988,7 @@ async def cb_back_main(callback: CallbackQuery):
     uid = callback.from_user.id
     await safe_answer(callback.id)
     try:
-        await bot.edit_message_text(main_menu_text(uid), callback.message.chat.id, callback.message.message_id,
+        await bot.edit_message_text(main_menu_text(uid), chat_id=callback.message.chat.id, message_id=callback.message.message_id,
                               reply_markup=main_menu(uid), parse_mode="HTML")
     except Exception:
         await bot.send_message(uid, main_menu_text(uid), reply_markup=main_menu(uid), parse_mode="HTML")
@@ -4000,16 +4000,16 @@ async def cb_rejoin_lobby(callback: CallbackQuery):
     lobby_id = user_lobby.get(uid)
     if not lobby_id:
         await safe_answer(callback.id, "❌ Вы не в лобби")
-        await bot.edit_message_text(main_menu_text(uid), callback.message.chat.id, callback.message.message_id, reply_markup=main_menu(uid), parse_mode="HTML")
+        await bot.edit_message_text(main_menu_text(uid), chat_id=callback.message.chat.id, message_id=callback.message.message_id, reply_markup=main_menu(uid), parse_mode="HTML")
         return
     lobby = active_lobbies.get(lobby_id)
     if not lobby or lobby.get("status") != "waiting":
         await safe_answer(callback.id, "❌ Лобби недоступно")
-        await bot.edit_message_text(main_menu_text(uid), callback.message.chat.id, callback.message.message_id, reply_markup=main_menu(uid), parse_mode="HTML")
+        await bot.edit_message_text(main_menu_text(uid), chat_id=callback.message.chat.id, message_id=callback.message.message_id, reply_markup=main_menu(uid), parse_mode="HTML")
         return
     text = build_lobby_text(lobby_id)
     kb = build_lobby_kb(lobby_id, uid)
-    await bot.edit_message_text(text, callback.message.chat.id, callback.message.message_id, reply_markup=kb.as_markup())
+    await bot.edit_message_text(text, chat_id=callback.message.chat.id, message_id=callback.message.message_id, reply_markup=kb.as_markup())
     if lobby_player_messages.get(lobby_id) is None:
         lobby_player_messages[lobby_id] = {}
     lobby_player_messages[lobby_id][uid] = (callback.message.chat.id, callback.message.message_id)
@@ -4221,7 +4221,7 @@ async def cb_profile(callback: CallbackQuery):
     uid = callback.from_user.id
     p = get_current_player(uid)
     if not p:
-        await bot.edit_message_text("❌ Ошибка", callback.message.chat.id, callback.message.message_id)
+        await bot.edit_message_text("❌ Ошибка", chat_id=callback.message.chat.id, message_id=callback.message.message_id)
         await safe_answer(callback.id)
         return
 
@@ -4341,7 +4341,7 @@ async def cb_profile(callback: CallbackQuery):
         f"🏆 {p[6]}W · ❌ {p[7]}L · 📈 {winrate}%\n"
         f"🔫 K: {p[8]} · 💀 D: {p[9]} · 🤝 A: {p[10]} · K/D: {kd}"
     )
-    await bot.edit_message_text(text, callback.message.chat.id, callback.message.message_id, reply_markup=kb.as_markup())
+    await bot.edit_message_text(text, chat_id=callback.message.chat.id, message_id=callback.message.message_id, reply_markup=kb.as_markup())
     await safe_answer(callback.id)
 
 
@@ -4602,7 +4602,7 @@ async def cb_profile_quals(callback: CallbackQuery):
         f"🏆 {q_wins}W · ❌ {q_losses}L · 📈 {q_wr}%\n"
         f"🔫 K: {q_kills} · 💀 D: {q_deaths} · 🤝 A: {q_assists} · K/D: {q_kd}"
     )
-    await bot.edit_message_text(text, callback.message.chat.id, callback.message.message_id,
+    await bot.edit_message_text(text, chat_id=callback.message.chat.id, message_id=callback.message.message_id,
                           reply_markup=kb.as_markup(), parse_mode="HTML")
     await safe_answer(callback.id)
 
@@ -4704,7 +4704,7 @@ async def cb_profile_duo(callback: CallbackQuery):
         f"🏆 {d_wins}W · ❌ {d_losses}L · 📈 {d_wr}%\n"
         f"🔫 K: {d_kills} · 💀 D: {d_deaths} · 🤝 A: {d_assists} · K/D: {d_kd}"
     )
-    await bot.edit_message_text(text, callback.message.chat.id, callback.message.message_id,
+    await bot.edit_message_text(text, chat_id=callback.message.chat.id, message_id=callback.message.message_id,
                           reply_markup=kb.as_markup(), parse_mode="HTML")
     await safe_answer(callback.id)
 
@@ -4722,8 +4722,8 @@ async def cb_top(callback: CallbackQuery):
     )
     kb.button(text="🔙 Назад", callback_data="back")
     try:
-        await bot.edit_message_text("🏆 <b>Выберите таблицу лидеров:</b>", callback.message.chat.id,
-                              callback.message.message_id, reply_markup=kb.as_markup(), parse_mode="HTML")
+        await bot.edit_message_text("🏆 <b>Выберите таблицу лидеров:</b>", chat_id=callback.message.chat.id,
+                              message_id=callback.message.message_id, reply_markup=kb.as_markup(), parse_mode="HTML")
     except Exception:
         try:
             await bot.delete_message(callback.message.chat.id, callback.message.message_id)
@@ -4746,8 +4746,8 @@ async def cb_top_default(callback: CallbackQuery):
         types.InlineKeyboardButton(text="🔙 Назад",     callback_data="back"),
     )
     if not players:
-        await bot.edit_message_text(f"🏆 <b>ТОП {priv_display}</b>\n\nИгроков нет.", callback.message.chat.id,
-                              callback.message.message_id, reply_markup=kb.as_markup(), parse_mode="HTML")
+        await bot.edit_message_text(f"🏆 <b>ТОП {priv_display}</b>\n\nИгроков нет.", chat_id=callback.message.chat.id,
+                              message_id=callback.message.message_id, reply_markup=kb.as_markup(), parse_mode="HTML")
         await safe_answer(callback.id)
         return
     if CARDS_ENABLED:
@@ -4794,7 +4794,7 @@ async def cb_top_default(callback: CallbackQuery):
         prem    = " 👑" if has_active_premium(uid2) else ""
         text   += f"{medals.get(i, f'{i}.')} <b>{name}</b>{prem} [Lvl {lvl}]\n   ELO: {elo} | {wins}W/{losses}L ({winrate}%) | K/D: {kd}\n\n"
     try:
-        await bot.edit_message_text(text, callback.message.chat.id, callback.message.message_id,
+        await bot.edit_message_text(text, chat_id=callback.message.chat.id, message_id=callback.message.message_id,
                               reply_markup=kb.as_markup(), parse_mode="HTML")
     except Exception:
         try:
@@ -4819,7 +4819,7 @@ async def cb_top_quals(callback: CallbackQuery):
     if not players:
         await bot.edit_message_text(
             f"⭐ <b>QUALS ТОП {priv_display}</b>\n\nНет игроков с доступом к Quals.",
-            callback.message.chat.id, callback.message.message_id, reply_markup=kb.as_markup(), parse_mode="HTML"
+            chat_id=callback.message.chat.id, message_id=callback.message.message_id, reply_markup=kb.as_markup(), parse_mode="HTML"
         )
         await safe_answer(callback.id)
         return
@@ -4866,7 +4866,7 @@ async def cb_top_quals(callback: CallbackQuery):
         prem    = " 👑" if has_active_premium(uid2) else ""
         text   += f"{medals.get(i, f'{i}.')} <b>{name}</b>{prem}\n   Q.ELO: {qelo or 1000} | {qw}W/{ql}L ({winrate}%) | K/D: {kd}\n\n"
     try:
-        await bot.edit_message_text(text, callback.message.chat.id, callback.message.message_id,
+        await bot.edit_message_text(text, chat_id=callback.message.chat.id, message_id=callback.message.message_id,
                               reply_markup=kb.as_markup(), parse_mode="HTML")
     except Exception:
         try:
@@ -4893,7 +4893,7 @@ async def cb_top_duo(callback: CallbackQuery):
         try:
             await bot.edit_message_text(
                 f"🤝 <b>2v2 ТОП {priv_display}</b>\n\nЕщё нет 2v2 матчей. Сыграй первым!",
-                callback.message.chat.id, callback.message.message_id, reply_markup=kb.as_markup(), parse_mode="HTML"
+                chat_id=callback.message.chat.id, message_id=callback.message.message_id, reply_markup=kb.as_markup(), parse_mode="HTML"
             )
         except Exception:
             try:
@@ -4950,7 +4950,7 @@ async def cb_top_duo(callback: CallbackQuery):
         prem    = " 👑" if has_active_premium(uid2) else ""
         text   += f"{medals.get(i, f'{i}.')} <b>{name}</b>{prem}\n   2v2 ELO: {deo or 1000} | {dw}W/{dl}L ({winrate}%) | K/D: {kd}\n\n"
     try:
-        await bot.edit_message_text(text, callback.message.chat.id, callback.message.message_id,
+        await bot.edit_message_text(text, chat_id=callback.message.chat.id, message_id=callback.message.message_id,
                               reply_markup=kb.as_markup(), parse_mode="HTML")
     except Exception:
         try:
@@ -4997,7 +4997,7 @@ async def cb_season_info(callback: CallbackQuery):
     kb = InlineKeyboardBuilder()
     kb.button(text="🔙 Назад", callback_data="back")
     try:
-        await bot.edit_message_text(text, callback.message.chat.id, callback.message.message_id,
+        await bot.edit_message_text(text, chat_id=callback.message.chat.id, message_id=callback.message.message_id,
                               reply_markup=kb.as_markup(), parse_mode="HTML")
     except Exception:
         try:
@@ -5014,7 +5014,7 @@ async def cb_back(callback: CallbackQuery):
     uid = callback.from_user.id
     try:
         # Если сообщение - текст, редактируем его
-        await bot.edit_message_text(main_menu_text(uid), callback.message.chat.id, callback.message.message_id,
+        await bot.edit_message_text(main_menu_text(uid), chat_id=callback.message.chat.id, message_id=callback.message.message_id,
                               reply_markup=main_menu(uid), parse_mode="HTML")
     except Exception:
         # Если сообщение - фото (карточка профиля/топа), удаляем и шлём новое
@@ -5101,7 +5101,7 @@ async def broadcast_lobby_update(lobby_id, exclude_uid=None):
         if pid == exclude_uid or pid not in lobby.get("players", []):
             continue
         try:
-            await bot.edit_message_text(text, cid, mid, reply_markup=build_lobby_kb(lobby_id, pid))
+            await bot.edit_message_text(text, chat_id=cid, message_id=mid, reply_markup=build_lobby_kb(lobby_id, pid))
         except Exception:
             pass
 
@@ -5122,7 +5122,7 @@ async def cb_find(callback: CallbackQuery):
         types.InlineKeyboardButton(text="🤝 2v2 (Duo)", callback_data="lobby_duo"),
         types.InlineKeyboardButton(text="🔙 Назад", callback_data="back"),
     )
-    await bot.edit_message_text("🎮 Выбери лигу:", callback.message.chat.id, callback.message.message_id, reply_markup=kb.as_markup())
+    await bot.edit_message_text("🎮 Выбери лигу:", chat_id=callback.message.chat.id, message_id=callback.message.message_id, reply_markup=kb.as_markup())
     await safe_answer(callback.id)
 
 
@@ -5150,7 +5150,7 @@ async def cb_lobby(callback: CallbackQuery):
             types.InlineKeyboardButton(text=f"P{slot}({p_cnt})", callback_data=f"join_{private_key}_{league}_pc_{slot}"),
         )
     kb.button(text="🔙 Назад", callback_data="find")
-    await bot.edit_message_text(text, callback.message.chat.id, callback.message.message_id, reply_markup=kb.as_markup())
+    await bot.edit_message_text(text, chat_id=callback.message.chat.id, message_id=callback.message.message_id, reply_markup=kb.as_markup())
     await safe_answer(callback.id)
 
 
@@ -5230,7 +5230,7 @@ async def cb_join(callback: CallbackQuery):
         text = build_lobby_text(lobby_id)
         kb = build_lobby_kb(lobby_id, uid)
         try:
-            await bot.edit_message_text(text, callback.message.chat.id, callback.message.message_id, reply_markup=kb.as_markup())
+            await bot.edit_message_text(text, chat_id=callback.message.chat.id, message_id=callback.message.message_id, reply_markup=kb.as_markup())
             lobby_player_messages[lobby_id][uid] = (callback.message.chat.id, callback.message.message_id)
         except Exception:
             pass
@@ -5261,14 +5261,14 @@ async def cb_leave(callback: CallbackQuery):
             broadcast_lobby_update(lobby_id)
         user_lobby.pop(uid, None)
         await safe_answer(callback.id, "✅ Вы вышли из лобби")
-        await bot.edit_message_text(main_menu_text(uid), callback.message.chat.id, callback.message.message_id, reply_markup=main_menu(uid), parse_mode="HTML")
+        await bot.edit_message_text(main_menu_text(uid), chat_id=callback.message.chat.id, message_id=callback.message.message_id, reply_markup=main_menu(uid), parse_mode="HTML")
     else:
         # Игрок не найден в лобби (лобби удалено или игрок уже вышел)
         # Всё равно чистим зависший user_lobby
         user_lobby.pop(uid, None)
         await safe_answer(callback.id, "❌ Лобби недоступно")
         try:
-            await bot.edit_message_text(main_menu_text(uid), callback.message.chat.id, callback.message.message_id, reply_markup=main_menu(uid), parse_mode="HTML")
+            await bot.edit_message_text(main_menu_text(uid), chat_id=callback.message.chat.id, message_id=callback.message.message_id, reply_markup=main_menu(uid), parse_mode="HTML")
         except Exception:
             pass
 
@@ -5298,7 +5298,7 @@ async def update_accept_status(lobby_id):
     text = build_accept_text(lobby_id)
     for uid, (cid, mid) in list(msgs.items()):
         try:
-            await bot.edit_message_text(text, cid, mid)
+            await bot.edit_message_text(text, chat_id=cid, message_id=mid)
         except Exception:
             pass
 
@@ -5522,7 +5522,7 @@ async def send_ban_status_to_all(lobby_id):
         if existing:
             cid, mid = existing
             try:
-                await bot.edit_message_text(text, cid, mid)
+                await bot.edit_message_text(text, chat_id=cid, message_id=mid)
                 continue
             except Exception:
                 pass
@@ -5924,7 +5924,7 @@ async def _send_draft_status_to_all(lobby_id):
         if existing:
             cid, mid = existing
             try:
-                await bot.edit_message_text(text, cid, mid, parse_mode="HTML")
+                await bot.edit_message_text(text, chat_id=cid, message_id=mid, parse_mode="HTML")
                 continue
             except Exception:
                 pass
@@ -8392,7 +8392,7 @@ async def cb_shop_category(callback: CallbackQuery):
             "🔧 <b>Декор - Технические работы</b>\n\n"
             "⚙️ Раздел временно недоступен.\n"
             "Приносим извинения за неудобства!",
-            callback.message.chat.id, callback.message.message_id, reply_markup=kb.as_markup(), parse_mode="HTML",
+            chat_id=callback.message.chat.id, message_id=callback.message.message_id, reply_markup=kb.as_markup(), parse_mode="HTML",
         )
         await safe_answer(callback.id)
         return
@@ -8408,7 +8408,7 @@ async def cb_shop_category(callback: CallbackQuery):
     kb.button(text="🔙 Назад", callback_data="shop")
     await bot.edit_message_text(
         f"{cat_name}\n💰 Баланс: <b>{coins} AC</b>\n\nВыберите товар:",
-        callback.message.chat.id, callback.message.message_id, reply_markup=kb.as_markup(),
+        chat_id=callback.message.chat.id, message_id=callback.message.message_id, reply_markup=kb.as_markup(),
     )
     await safe_answer(callback.id)
 
@@ -8461,7 +8461,7 @@ async def cb_shop_item(callback: CallbackQuery):
                 kb.button(text="💎 Крипта (временно недоступно)", callback_data="admin_noop")
     kb.button(text="🔙 Назад", callback_data=f"shop_cat_{category}" if category == "decor" else "shop")
     try:
-        await bot.edit_message_text(text, callback.message.chat.id, callback.message.message_id, reply_markup=kb.as_markup(), parse_mode="HTML")
+        await bot.edit_message_text(text, chat_id=callback.message.chat.id, message_id=callback.message.message_id, reply_markup=kb.as_markup(), parse_mode="HTML")
     except Exception:
         await bot.send_message(callback.message.chat.id, text, reply_markup=kb.as_markup(), parse_mode="HTML")
     await safe_answer(callback.id)
@@ -8492,7 +8492,7 @@ async def cb_shop_pay(callback: CallbackQuery):
             kb = InlineKeyboardBuilder()
             kb.button(text="🛒 В магазин", callback_data="shop")
             try:
-                await bot.edit_message_text(message, callback.message.chat.id, callback.message.message_id, reply_markup=kb.as_markup(), parse_mode="HTML")
+                await bot.edit_message_text(message, chat_id=callback.message.chat.id, message_id=callback.message.message_id, reply_markup=kb.as_markup(), parse_mode="HTML")
             except Exception:
                 await bot.send_message(callback.message.chat.id, message, reply_markup=kb.as_markup(), parse_mode="HTML")
         return
@@ -8577,7 +8577,7 @@ async def cb_inventory(callback: CallbackQuery):
         kb = InlineKeyboardBuilder()
         kb.button(text="🛒 В магазин", callback_data="shop")
         kb.button(text="🔙 Назад", callback_data="back")
-        await bot.edit_message_text("🎒 <b>Инвентарь пуст</b>", callback.message.chat.id, callback.message.message_id, reply_markup=kb.as_markup())
+        await bot.edit_message_text("🎒 <b>Инвентарь пуст</b>", chat_id=callback.message.chat.id, message_id=callback.message.message_id, reply_markup=kb.as_markup())
         await safe_answer(callback.id)
         return
     kb = InlineKeyboardBuilder()
@@ -8585,7 +8585,7 @@ async def cb_inventory(callback: CallbackQuery):
         status = "✅ " if is_activated else ""
         kb.button(text=f"{status}{name}", callback_data=f"inv_item_{inv_id}")
     kb.button(text="🔙 Назад", callback_data="back")
-    await bot.edit_message_text("🎒 <b>Ваш инвентарь:</b>", callback.message.chat.id, callback.message.message_id, reply_markup=kb.as_markup())
+    await bot.edit_message_text("🎒 <b>Ваш инвентарь:</b>", chat_id=callback.message.chat.id, message_id=callback.message.message_id, reply_markup=kb.as_markup())
     await safe_answer(callback.id)
 
 
@@ -8613,7 +8613,7 @@ async def cb_inv_item(callback: CallbackQuery):
     elif item_type in _deactivatable:
         kb.button(text="❌ Снять", callback_data=f"inv_deactivate_{inv_id}")
     kb.button(text="🔙 Назад", callback_data="inv")
-    await bot.edit_message_text(text, callback.message.chat.id, callback.message.message_id, reply_markup=kb.as_markup())
+    await bot.edit_message_text(text, chat_id=callback.message.chat.id, message_id=callback.message.message_id, reply_markup=kb.as_markup())
     await safe_answer(callback.id)
 
 
@@ -8636,7 +8636,7 @@ async def cb_inv_activate(callback: CallbackQuery):
     await safe_answer(callback.id, message[:200], show_alert=not result)
     if result:
         try:
-            await bot.edit_message_text(message, callback.message.chat.id, callback.message.message_id)
+            await bot.edit_message_text(message, chat_id=callback.message.chat.id, message_id=callback.message.message_id)
         except Exception:
             pass
 
@@ -8655,7 +8655,7 @@ async def cb_inv_deactivate(callback: CallbackQuery):
     await safe_answer(callback.id, message[:200], show_alert=not result)
     if result:
         try:
-            await bot.edit_message_text(message, callback.message.chat.id, callback.message.message_id)
+            await bot.edit_message_text(message, chat_id=callback.message.chat.id, message_id=callback.message.message_id)
         except Exception:
             pass
 
@@ -8871,7 +8871,7 @@ async def cb_slots_menu(callback: CallbackQuery):
     await safe_answer(callback.id)
     text = _slots_menu_text(coins)
     try:
-        await bot.edit_message_text(text, callback.message.chat.id, callback.message.message_id,
+        await bot.edit_message_text(text, chat_id=callback.message.chat.id, message_id=callback.message.message_id,
                               reply_markup=_slots_menu_kb(), parse_mode="HTML")
     except Exception:
         await bot.send_message(uid, text, reply_markup=_slots_menu_kb(), parse_mode="HTML")
@@ -8906,7 +8906,7 @@ async def cb_slots_odds(callback: CallbackQuery):
     kb = InlineKeyboardBuilder()
     kb.button(text="🔙 Назад к слотам", callback_data="slots_menu")
     try:
-        await bot.edit_message_text(text, callback.message.chat.id, callback.message.message_id,
+        await bot.edit_message_text(text, chat_id=callback.message.chat.id, message_id=callback.message.message_id,
                               reply_markup=kb.as_markup(), parse_mode="HTML")
     except Exception:
         await bot.send_message(callback.from_user.id, text, reply_markup=kb.as_markup(), parse_mode="HTML")
@@ -8975,7 +8975,7 @@ async def cb_slots_bet(callback: CallbackQuery):
     await safe_answer(callback.id)
     text = _slots_menu_text(coins, selected_bet=bet)
     try:
-        await bot.edit_message_text(text, callback.message.chat.id, callback.message.message_id,
+        await bot.edit_message_text(text, chat_id=callback.message.chat.id, message_id=callback.message.message_id,
                               reply_markup=_slots_menu_kb(bet), parse_mode="HTML")
     except Exception:
         pass
@@ -9034,7 +9034,7 @@ async def cb_slots_spin(callback: CallbackQuery):
     )
     await safe_answer(callback.id)
     try:
-        await bot.edit_message_text(text, callback.message.chat.id, callback.message.message_id,
+        await bot.edit_message_text(text, chat_id=callback.message.chat.id, message_id=callback.message.message_id,
                               reply_markup=kb.as_markup(), parse_mode="HTML")
     except Exception:
         await bot.send_message(uid, text, reply_markup=kb.as_markup(), parse_mode="HTML")
@@ -9083,7 +9083,7 @@ async def cb_admin_slots_settings(callback: CallbackQuery):
         return
     await safe_answer(callback.id)
     try:
-        await bot.edit_message_text(_slots_settings_text(), callback.message.chat.id, callback.message.message_id,
+        await bot.edit_message_text(_slots_settings_text(), chat_id=callback.message.chat.id, message_id=callback.message.message_id,
                               reply_markup=_slots_settings_kb(), parse_mode="HTML")
     except Exception:
         await bot.send_message(uid, _slots_settings_text(), reply_markup=_slots_settings_kb(), parse_mode="HTML")
@@ -9297,7 +9297,7 @@ async def cb_party_menu(callback: CallbackQuery):
             types.InlineKeyboardButton(text="➕ Создать пати", callback_data="party_create"),
             types.InlineKeyboardButton(text="🔙 Назад", callback_data="back"),
         )
-    await bot.edit_message_text(text, callback.message.chat.id, callback.message.message_id, reply_markup=kb.as_markup())
+    await bot.edit_message_text(text, chat_id=callback.message.chat.id, message_id=callback.message.message_id, reply_markup=kb.as_markup())
     await safe_answer(callback.id)
 
 
@@ -9313,7 +9313,7 @@ async def cb_party_create(callback: CallbackQuery):
     await safe_answer(callback.id, "✅ Пати создана!")
     kb = InlineKeyboardBuilder()
     kb.button(text="👥 Управление пати", callback_data="party_menu")
-    await bot.edit_message_text("✅ <b>Пати создана!</b>", callback.message.chat.id, callback.message.message_id, reply_markup=kb.as_markup())
+    await bot.edit_message_text("✅ <b>Пати создана!</b>", chat_id=callback.message.chat.id, message_id=callback.message.message_id, reply_markup=kb.as_markup())
 
 
 @router.callback_query(F.data == "party_invite")
@@ -9436,7 +9436,7 @@ async def cb_party_leave(callback: CallbackQuery):
     elif party["leader"] == uid:
         party["leader"] = party["members"][0]
     await safe_answer(callback.id, "✅ Вы покинули пати")
-    await bot.edit_message_text(main_menu_text(uid), callback.message.chat.id, callback.message.message_id, reply_markup=main_menu(uid), parse_mode="HTML")
+    await bot.edit_message_text(main_menu_text(uid), chat_id=callback.message.chat.id, message_id=callback.message.message_id, reply_markup=main_menu(uid), parse_mode="HTML")
 
 
 @router.callback_query(F.data == "party_disband")
@@ -9456,7 +9456,7 @@ async def cb_party_disband(callback: CallbackQuery):
                 pass
     parties.pop(party_id, None)
     await safe_answer(callback.id, "✅ Пати распущена")
-    await bot.edit_message_text(main_menu_text(uid), callback.message.chat.id, callback.message.message_id, reply_markup=main_menu(uid), parse_mode="HTML")
+    await bot.edit_message_text(main_menu_text(uid), chat_id=callback.message.chat.id, message_id=callback.message.message_id, reply_markup=main_menu(uid), parse_mode="HTML")
 
 
 # ==================== ПОКУПКА МОНЕТ ====================
@@ -9483,7 +9483,7 @@ async def cb_buy_coins(callback: CallbackQuery):
         f"<tg-emoji emoji-id=\"{STARS_EMOJI_ID}\">⭐</tg-emoji> Stars · "
         f"<tg-emoji emoji-id=\"{CRYPTO_EMOJI_ID}\">💎</tg-emoji> Крипта\n\n"
         f"Выберите пакет, затем способ оплаты:",
-        callback.message.chat.id, callback.message.message_id, reply_markup=kb.as_markup(),
+        chat_id=callback.message.chat.id, message_id=callback.message.message_id, reply_markup=kb.as_markup(),
     )
     await safe_answer(callback.id)
 
@@ -9514,7 +9514,7 @@ async def cb_buy_pack(callback: CallbackQuery):
     kb.button(text="🔙 Назад", callback_data="buy_coins")
     await bot.edit_message_text(
         "\n".join(text_lines),
-        callback.message.chat.id, callback.message.message_id, reply_markup=kb.as_markup(),
+        chat_id=callback.message.chat.id, message_id=callback.message.message_id, reply_markup=kb.as_markup(),
     )
     await safe_answer(callback.id)
 
@@ -9801,7 +9801,7 @@ async def cb_admin_panel(callback: CallbackQuery):
         kb.button(text="🎰 Настройки слотов", callback_data="admin_slots_settings")
         kb.button(text="🔙 Назад", callback_data="back")
 
-        await bot.edit_message_text(text, callback.message.chat.id, callback.message.message_id,
+        await bot.edit_message_text(text, chat_id=callback.message.chat.id, message_id=callback.message.message_id,
                               reply_markup=kb.as_markup(), parse_mode="HTML")
         await safe_answer(callback.id)
     except Exception as e:
@@ -9890,7 +9890,7 @@ async def cb_admin_promos(callback: CallbackQuery):
         types.InlineKeyboardButton(text="❌ Деактивировать промокод", callback_data="admin_promo_deactivate"),
         types.InlineKeyboardButton(text="🔙 Назад",                   callback_data="admin_panel"),
     )
-    await bot.edit_message_text(text, callback.message.chat.id, callback.message.message_id, reply_markup=kb.as_markup())
+    await bot.edit_message_text(text, chat_id=callback.message.chat.id, message_id=callback.message.message_id, reply_markup=kb.as_markup())
     await safe_answer(callback.id)
 
 
@@ -10116,7 +10116,7 @@ async def cb_admin_matches(callback: CallbackQuery):
         text = "🎮 <b>Управление матчами</b>\n\nАктивных матчей нет."
         kb = InlineKeyboardBuilder()
         kb.button(text="🔙 Назад", callback_data="admin_panel")
-        await bot.edit_message_text(text, callback.message.chat.id, callback.message.message_id, reply_markup=kb.as_markup())
+        await bot.edit_message_text(text, chat_id=callback.message.chat.id, message_id=callback.message.message_id, reply_markup=kb.as_markup())
         await safe_answer(callback.id)
         return
     text = "🎮 <b>Активные матчи</b>\n\n"
@@ -10127,7 +10127,7 @@ async def cb_admin_matches(callback: CallbackQuery):
         text += f"- Match #{mid} | 📸{AC}\n"
         kb.button(text=f"⚙️ Match #{mid}", callback_data=f"admin_match_manage_{mk}")
     kb.button(text="🔙 Назад", callback_data="admin_panel")
-    await bot.edit_message_text(text, callback.message.chat.id, callback.message.message_id, reply_markup=kb.as_markup())
+    await bot.edit_message_text(text, chat_id=callback.message.chat.id, message_id=callback.message.message_id, reply_markup=kb.as_markup())
     await safe_answer(callback.id)
 
 
@@ -10155,7 +10155,7 @@ async def cb_admin_match_manage(callback: CallbackQuery):
         types.InlineKeyboardButton(text="❌ Отменить",    callback_data=f"cancel_match|{match_key}"),
         types.InlineKeyboardButton(text="🔙 Назад",       callback_data="admin_matches"),
     )
-    await bot.edit_message_text(text, callback.message.chat.id, callback.message.message_id, reply_markup=kb.as_markup())
+    await bot.edit_message_text(text, chat_id=callback.message.chat.id, message_id=callback.message.message_id, reply_markup=kb.as_markup())
     await safe_answer(callback.id)
 
 
@@ -10179,7 +10179,7 @@ async def cb_admin_players(callback: CallbackQuery):
         text += "Игроков нет."
     kb = InlineKeyboardBuilder()
     kb.button(text="🔙 Назад", callback_data="admin_panel")
-    await bot.edit_message_text(text, callback.message.chat.id, callback.message.message_id, reply_markup=kb.as_markup())
+    await bot.edit_message_text(text, chat_id=callback.message.chat.id, message_id=callback.message.message_id, reply_markup=kb.as_markup())
     await safe_answer(callback.id)
 
 
@@ -10198,7 +10198,7 @@ async def cb_admin_match_history(callback: CallbackQuery):
         text += f"🔢 <b>Match ID {match_id}</b> | {dt}\n   {league.upper()}/{device.upper()} | {map_name}\n   {winner_str} | {ACore_w}:{ACore_l}\n\n"
     kb = InlineKeyboardBuilder()
     kb.button(text="🔙 Назад", callback_data="admin_panel")
-    await bot.edit_message_text(text, callback.message.chat.id, callback.message.message_id, reply_markup=kb.as_markup())
+    await bot.edit_message_text(text, chat_id=callback.message.chat.id, message_id=callback.message.message_id, reply_markup=kb.as_markup())
     await safe_answer(callback.id)
 
 
@@ -11130,7 +11130,7 @@ async def cb_add_bots(callback: CallbackQuery):
         await safe_answer(callback.id, "❌ Нет доступных лобби", show_alert=True)
         return
     kb.button(text="🔙 Назад", callback_data="back")
-    await bot.edit_message_text("🤖 Выберите лобби для заполнения ботами:", callback.message.chat.id, callback.message.message_id, reply_markup=kb.as_markup())
+    await bot.edit_message_text("🤖 Выберите лобби для заполнения ботами:", chat_id=callback.message.chat.id, message_id=callback.message.message_id, reply_markup=kb.as_markup())
     await safe_answer(callback.id)
 
 
@@ -11171,7 +11171,7 @@ async def cb_game_reg_panel(callback: CallbackQuery):
         text = "📋 <b>Регистрация матчей</b>\n\nАктивных матчей нет."
         kb = InlineKeyboardBuilder()
         kb.button(text="🔙 Назад", callback_data="back")
-        await bot.edit_message_text(text, callback.message.chat.id, callback.message.message_id, reply_markup=kb.as_markup())
+        await bot.edit_message_text(text, chat_id=callback.message.chat.id, message_id=callback.message.message_id, reply_markup=kb.as_markup())
         await safe_answer(callback.id)
         return
     text = "📋 <b>Активные матчи</b>\n\n"
@@ -11184,7 +11184,7 @@ async def cb_game_reg_panel(callback: CallbackQuery):
         text += f"- Match #{mid} | {_gr_priv_label} | 📸{AC}\n"
         kb.button(text=f"📝 Зарегистрировать Match #{mid}", callback_data=f"reg_match|{mk}")
     kb.button(text="🔙 Назад", callback_data="back")
-    await bot.edit_message_text(text, callback.message.chat.id, callback.message.message_id, reply_markup=kb.as_markup())
+    await bot.edit_message_text(text, chat_id=callback.message.chat.id, message_id=callback.message.message_id, reply_markup=kb.as_markup())
     await safe_answer(callback.id)
 
 
@@ -11343,7 +11343,7 @@ async def cb_admin_seasons(callback: CallbackQuery):
     if season:
         kb.button(text=f"🏅 Топ сезона #{season[1]}", callback_data=f"admin_season_top|{season[0]}")
     kb.button(text="🔙 Назад", callback_data="admin_panel")
-    await bot.edit_message_text(text, callback.message.chat.id, callback.message.message_id, reply_markup=kb.as_markup(), parse_mode="HTML")
+    await bot.edit_message_text(text, chat_id=callback.message.chat.id, message_id=callback.message.message_id, reply_markup=kb.as_markup(), parse_mode="HTML")
     await safe_answer(callback.id)
 
 
@@ -11374,7 +11374,7 @@ async def cb_admin_season_reset_confirm(callback: CallbackQuery):
         types.InlineKeyboardButton(text="✅ Да, сбросить",  callback_data="admin_season_reset_execute"),
         types.InlineKeyboardButton(text="❌ Отмена",         callback_data="admin_seasons"),
     )
-    await bot.edit_message_text(text, callback.message.chat.id, callback.message.message_id, reply_markup=kb.as_markup(), parse_mode="HTML")
+    await bot.edit_message_text(text, chat_id=callback.message.chat.id, message_id=callback.message.message_id, reply_markup=kb.as_markup(), parse_mode="HTML")
     await safe_answer(callback.id)
 
 
@@ -11401,7 +11401,7 @@ async def cb_admin_season_reset_execute(callback: CallbackQuery):
             types.InlineKeyboardButton(text="🏆 К сезонам", callback_data="admin_seasons"),
             types.InlineKeyboardButton(text="🔙 Админ панель", callback_data="admin_panel"),
         )
-        await bot.edit_message_text(text, callback.message.chat.id, callback.message.message_id, reply_markup=kb.as_markup(), parse_mode="HTML")
+        await bot.edit_message_text(text, chat_id=callback.message.chat.id, message_id=callback.message.message_id, reply_markup=kb.as_markup(), parse_mode="HTML")
 
         # Уведомить всех администраторов
         notif_text = (
@@ -11451,7 +11451,7 @@ async def cb_admin_season_history(callback: CallbackQuery):
         if not is_active:
             kb.button(text=f"🏅 Топ: {sname}", callback_data=f"admin_season_top|{sid}")
     kb.button(text="🔙 Назад", callback_data="admin_seasons")
-    await bot.edit_message_text(text, callback.message.chat.id, callback.message.message_id, reply_markup=kb.as_markup(), parse_mode="HTML")
+    await bot.edit_message_text(text, chat_id=callback.message.chat.id, message_id=callback.message.message_id, reply_markup=kb.as_markup(), parse_mode="HTML")
     await safe_answer(callback.id)
 
 
@@ -11488,7 +11488,7 @@ async def cb_admin_season_top(callback: CallbackQuery):
 
     kb = InlineKeyboardBuilder()
     kb.button(text="🔙 Назад", callback_data="admin_season_history")
-    await bot.edit_message_text(text, callback.message.chat.id, callback.message.message_id, reply_markup=kb.as_markup(), parse_mode="HTML")
+    await bot.edit_message_text(text, chat_id=callback.message.chat.id, message_id=callback.message.message_id, reply_markup=kb.as_markup(), parse_mode="HTML")
     await safe_answer(callback.id)
 
 
@@ -11505,7 +11505,7 @@ async def cb_admin_tickets(callback: CallbackQuery):
         text = "🎟 <b>ОТКРЫТЫЕ ТИКЕТЫ</b>\n\n✅ Нет открытых тикетов."
         kb = InlineKeyboardBuilder()
         kb.button(text="🔙 Назад", callback_data="admin_panel")
-        await bot.edit_message_text(text, callback.message.chat.id, callback.message.message_id, reply_markup=kb.as_markup(), parse_mode="HTML")
+        await bot.edit_message_text(text, chat_id=callback.message.chat.id, message_id=callback.message.message_id, reply_markup=kb.as_markup(), parse_mode="HTML")
         await safe_answer(callback.id)
         return
 
@@ -11526,7 +11526,7 @@ async def cb_admin_tickets(callback: CallbackQuery):
     if len(tickets) > 15:
         text += f"<i>...и ещё {len(tickets)-15}</i>\n"
     kb.button(text="🔙 Назад", callback_data="admin_panel")
-    await bot.edit_message_text(text, callback.message.chat.id, callback.message.message_id, reply_markup=kb.as_markup(), parse_mode="HTML")
+    await bot.edit_message_text(text, chat_id=callback.message.chat.id, message_id=callback.message.message_id, reply_markup=kb.as_markup(), parse_mode="HTML")
     await safe_answer(callback.id)
 
 
@@ -11578,7 +11578,7 @@ async def cb_admin_ticket_view(callback: CallbackQuery):
         except Exception:
             pass
     try:
-        await bot.edit_message_text(text, callback.message.chat.id, callback.message.message_id, reply_markup=kb.as_markup(), parse_mode="HTML")
+        await bot.edit_message_text(text, chat_id=callback.message.chat.id, message_id=callback.message.message_id, reply_markup=kb.as_markup(), parse_mode="HTML")
     except Exception:
         await bot.send_message(callback.message.chat.id, text, reply_markup=kb.as_markup(), parse_mode="HTML")
 
@@ -11607,7 +11607,7 @@ async def cb_ticket_cancel(callback: CallbackQuery):
     ticket_flow.pop(uid, None)
     await safe_answer(callback.id, "❌ Тикет отменён")
     try:
-        await bot.edit_message_text("❌ Создание тикета отменено.", callback.message.chat.id, callback.message.message_id)
+        await bot.edit_message_text("❌ Создание тикета отменено.", chat_id=callback.message.chat.id, message_id=callback.message.message_id)
     except Exception:
         pass
     await bot.send_message(uid, "🏠 Главное меню:", reply_markup=main_menu(uid))
@@ -11631,7 +11631,7 @@ async def cb_ticket_back(callback: CallbackQuery):
                 "🎟 <b>СОЗДАНИЕ ТИКЕТА</b>\n\n"
                 "<b>Шаг 1/4</b> - Введите код матча (#XXXXXXX) к которому относится жалоба:\n"
                 "<i>Если жалоба не связана с конкретным матчем - напишите <code>нет</code></i>",
-                callback.message.chat.id, callback.message.message_id,
+                chat_id=callback.message.chat.id, message_id=callback.message.message_id,
                 parse_mode="HTML", reply_markup=_ticket_cancel_kb(),
             )
         except Exception:
@@ -11647,7 +11647,7 @@ async def cb_ticket_back(callback: CallbackQuery):
             await bot.edit_message_text(
                 "🎟 <b>Шаг 2/4</b> - Опишите причину жалобы подробно:\n"
                 "<i>(читы, токсик, AFK, нечестная игра и т.д.)</i>",
-                callback.message.chat.id, callback.message.message_id,
+                chat_id=callback.message.chat.id, message_id=callback.message.message_id,
                 parse_mode="HTML", reply_markup=_ticket_back_kb(),
             )
         except Exception:
@@ -11663,7 +11663,7 @@ async def cb_ticket_back(callback: CallbackQuery):
             await bot.edit_message_text(
                 "🎟 <b>Шаг 3/4</b> - Отправьте доказательство:\n"
                 "📷 Фото / скриншот, или напишите <code>нет</code> если доказательств нет.",
-                callback.message.chat.id, callback.message.message_id,
+                chat_id=callback.message.chat.id, message_id=callback.message.message_id,
                 parse_mode="HTML", reply_markup=_ticket_back_kb(),
             )
         except Exception:
@@ -11675,7 +11675,7 @@ async def cb_ticket_back(callback: CallbackQuery):
         # На первом шаге - просто отмена
         ticket_flow.pop(uid, None)
         try:
-            await bot.edit_message_text("❌ Создание тикета отменено.", callback.message.chat.id, callback.message.message_id)
+            await bot.edit_message_text("❌ Создание тикета отменено.", chat_id=callback.message.chat.id, message_id=callback.message.message_id)
         except Exception:
             await bot.send_message(uid, "❌ Создание тикета отменено.")
 
@@ -11697,7 +11697,7 @@ async def cb_ticket_start(callback: CallbackQuery):
             "🎟 <b>СОЗДАНИЕ ТИКЕТА</b>\n\n"
             "<b>Шаг 1/4</b> - Введите код матча (#XXXXXXX) к которому относится жалоба:\n"
             "<i>Если жалоба не связана с конкретным матчем - напишите <code>нет</code></i>",
-            callback.message.chat.id, callback.message.message_id,
+            chat_id=callback.message.chat.id, message_id=callback.message.message_id,
             parse_mode="HTML", reply_markup=_ticket_cancel_kb(),
         )
     except Exception:
@@ -11868,9 +11868,9 @@ async def cb_ticket_action(callback: CallbackQuery):
         original_text = callback.message.caption or callback.message.text or ""
         new_text = original_text + f"\n\n{status_emoji} <b>{close_reason}</b>\n👮 Администратор: {admin_name}"
         if callback.message.caption:
-            await bot.edit_message_caption(new_text, callback.message.chat.id, callback.message.message_id, parse_mode="HTML")
+            await bot.edit_message_caption(new_text, chat_id=callback.message.chat.id, message_id=callback.message.message_id, parse_mode="HTML")
         else:
-            await bot.edit_message_text(new_text, callback.message.chat.id, callback.message.message_id, parse_mode="HTML")
+            await bot.edit_message_text(new_text, chat_id=callback.message.chat.id, message_id=callback.message.message_id, parse_mode="HTML")
     except Exception:
         pass
 
@@ -12078,7 +12078,7 @@ async def cb_creator_panel(callback: CallbackQuery):
         "🔒 Ограничения для администраторов"
     )
     try:
-        await bot.edit_message_text(text, callback.message.chat.id, callback.message.message_id,
+        await bot.edit_message_text(text, chat_id=callback.message.chat.id, message_id=callback.message.message_id,
                               reply_markup=_creator_panel_kb(), parse_mode="HTML")
     except Exception:
         await bot.send_message(callback.message.chat.id, text,
@@ -12107,7 +12107,7 @@ async def cb_creator_logs(callback: CallbackQuery):
     kb = InlineKeyboardBuilder()
     kb.button(text="🔙 Назад", callback_data="creator_panel")
     try:
-        await bot.edit_message_text(text, callback.message.chat.id, callback.message.message_id,
+        await bot.edit_message_text(text, chat_id=callback.message.chat.id, message_id=callback.message.message_id,
                               reply_markup=kb.as_markup(), parse_mode="HTML")
     except Exception:
         await bot.send_message(callback.message.chat.id, text, reply_markup=kb.as_markup(), parse_mode="HTML")
@@ -12130,7 +12130,7 @@ async def cb_creator_reset_all(callback: CallbackQuery):
         "Вы уверены, что хотите обнулить статистику <b>ВСЕХ</b> игроков?\n"
         "Это действие необратимо!\n\n"
         "(ELO сбрасывается к 1000, все матч-стата обнуляется)",
-        callback.message.chat.id, callback.message.message_id,
+        chat_id=callback.message.chat.id, message_id=callback.message.message_id,
         reply_markup=kb.as_markup(), parse_mode="HTML",
     )
     await safe_answer(callback.id)
@@ -12148,7 +12148,7 @@ async def cb_creator_reset_all_exec(callback: CallbackQuery):
         await safe_answer(callback.id, "✅ Статистика всех игроков обнулена!", show_alert=True)
         await bot.edit_message_text(
             "✅ <b>Статистика всех игроков успешно обнулена.</b>",
-            callback.message.chat.id, callback.message.message_id,
+            chat_id=callback.message.chat.id, message_id=callback.message.message_id,
             reply_markup=_creator_panel_kb(), parse_mode="HTML",
         )
     except Exception as e:
@@ -12178,7 +12178,7 @@ async def cb_creator_reset_everything(callback: CallbackQuery):
         "- Мут → снят\n"
         "- Премиум → удалён\n\n"
         "Вы уверены?",
-        callback.message.chat.id, callback.message.message_id,
+        chat_id=callback.message.chat.id, message_id=callback.message.message_id,
         reply_markup=kb.as_markup(), parse_mode="HTML",
     )
     await safe_answer(callback.id)
@@ -12197,7 +12197,7 @@ async def cb_creator_reset_everything_exec(callback: CallbackQuery):
         await bot.edit_message_text(
             "💣 <b>Полное обнуление выполнено.</b>\n\n"
             "У всех игроков сброшены: ELO, статы, монеты, варны, баны, мут, премиум.",
-            callback.message.chat.id, callback.message.message_id,
+            chat_id=callback.message.chat.id, message_id=callback.message.message_id,
             reply_markup=_creator_panel_kb(), parse_mode="HTML",
         )
     except Exception as e:
@@ -12228,7 +12228,7 @@ async def cb_creator_restrict_menu(callback: CallbackQuery):
         kb.button(text="🔙 Назад", callback_data="creator_panel")
         await bot.edit_message_text(
             "🔒 <b>Ограничения для админов</b>\n\nАдминов нет.",
-            callback.message.chat.id, callback.message.message_id, reply_markup=kb.as_markup(), parse_mode="HTML",
+            chat_id=callback.message.chat.id, message_id=callback.message.message_id, reply_markup=kb.as_markup(), parse_mode="HTML",
         )
         await safe_answer(callback.id)
         return
@@ -12241,7 +12241,7 @@ async def cb_creator_restrict_menu(callback: CallbackQuery):
     kb.button(text="🔙 Назад", callback_data="creator_panel")
     await bot.edit_message_text(
         "🔒 <b>Ограничения для администраторов</b>\n\nВыберите админа для настройки:",
-        callback.message.chat.id, callback.message.message_id, reply_markup=kb.as_markup(), parse_mode="HTML",
+        chat_id=callback.message.chat.id, message_id=callback.message.message_id, reply_markup=kb.as_markup(), parse_mode="HTML",
     )
     await safe_answer(callback.id)
 
@@ -12276,7 +12276,7 @@ async def cb_creator_restrict_admin(callback: CallbackQuery):
         f"Сейчас заблокировано:\n{blocked_str}\n\n"
         "🚫 = запрещено  |  ✅ = разрешено"
     )
-    await bot.edit_message_text(text, callback.message.chat.id, callback.message.message_id,
+    await bot.edit_message_text(text, chat_id=callback.message.chat.id, message_id=callback.message.message_id,
                           reply_markup=kb.as_markup(), parse_mode="HTML")
     await safe_answer(callback.id)
 
@@ -12344,7 +12344,7 @@ async def cb_creator_toggle_restriction(callback: CallbackQuery):
         f"Сейчас заблокировано:\n{blocked_str}\n\n"
         "🚫 = запрещено  |  ✅ = разрешено"
     )
-    await bot.edit_message_text(text, callback.message.chat.id, callback.message.message_id,
+    await bot.edit_message_text(text, chat_id=callback.message.chat.id, message_id=callback.message.message_id,
                           reply_markup=kb.as_markup(), parse_mode="HTML")
 
 
@@ -12367,7 +12367,7 @@ async def cb_creator_reset_exec(callback: CallbackQuery):
         await safe_answer(callback.id, f"✅ Стата {t_name} обнулена!", show_alert=True)
         await bot.edit_message_text(
             f"✅ <b>Статистика игрока {t_name} успешно обнулена.</b>",
-            callback.message.chat.id, callback.message.message_id,
+            chat_id=callback.message.chat.id, message_id=callback.message.message_id,
             reply_markup=_creator_panel_kb(), parse_mode="HTML",
         )
     except Exception as e:
@@ -12487,7 +12487,7 @@ async def cb_creator_botstats(callback: CallbackQuery):
     kb = InlineKeyboardBuilder()
     kb.button(text="🔙 Назад", callback_data="creator_panel")
     try:
-        await bot.edit_message_text(text, callback.message.chat.id, callback.message.message_id,
+        await bot.edit_message_text(text, chat_id=callback.message.chat.id, message_id=callback.message.message_id,
                               reply_markup=kb.as_markup(), parse_mode="HTML")
     except Exception:
         await bot.send_message(callback.message.chat.id, text, reply_markup=kb.as_markup(), parse_mode="HTML")
@@ -12606,7 +12606,7 @@ async def cb_creator_premium_exec(callback: CallbackQuery):
         kb.button(text="🔙 В панель", callback_data="creator_panel")
         await bot.edit_message_text(
             f"✅ <b>Premium выдан игроку {t_name}</b> на <b>{days} дней</b>.",
-            callback.message.chat.id, callback.message.message_id, reply_markup=kb.as_markup(), parse_mode="HTML")
+            chat_id=callback.message.chat.id, message_id=callback.message.message_id, reply_markup=kb.as_markup(), parse_mode="HTML")
         try:
             await bot.send_message(t_uid,
                 f"🎉 Вам выдан <b>Premium статус</b> на <b>{days} дней</b>!\n"
@@ -12665,7 +12665,7 @@ async def cb_creator_verify_exec(callback: CallbackQuery):
         kb.button(text="🔙 В панель", callback_data="creator_panel")
         await bot.edit_message_text(
             f"✅ Верификация <b>{label}</b> игроку <b>{t_name}</b>.",
-            callback.message.chat.id, callback.message.message_id, reply_markup=kb.as_markup(), parse_mode="HTML")
+            chat_id=callback.message.chat.id, message_id=callback.message.message_id, reply_markup=kb.as_markup(), parse_mode="HTML")
         if new_val:
             try:
                 await bot.send_message(t_uid,
@@ -12703,7 +12703,7 @@ async def cb_creator_manage_admins(callback: CallbackQuery):
     kb.button(text="➕ Назначить нового админа", callback_data="creator_promote")
     kb.button(text="🔙 Назад", callback_data="creator_panel")
     try:
-        await bot.edit_message_text(text, callback.message.chat.id, callback.message.message_id,
+        await bot.edit_message_text(text, chat_id=callback.message.chat.id, message_id=callback.message.message_id,
                               reply_markup=kb.as_markup(), parse_mode="HTML")
     except Exception:
         await bot.send_message(callback.message.chat.id, text, reply_markup=kb.as_markup(), parse_mode="HTML")
@@ -12789,7 +12789,7 @@ async def cb_creator_shop_prices(callback: CallbackQuery):
         return
     text = "💱 <b>ЦЕНЫ ТОВАРОВ</b>\n\nВыберите товар, чтобы изменить его цену в каждой валюте:"
     try:
-        await bot.edit_message_text(text, callback.message.chat.id, callback.message.message_id,
+        await bot.edit_message_text(text, chat_id=callback.message.chat.id, message_id=callback.message.message_id,
                               reply_markup=_creator_shop_prices_kb(), parse_mode="HTML")
     except Exception:
         await bot.send_message(callback.message.chat.id, text, reply_markup=_creator_shop_prices_kb(), parse_mode="HTML")
@@ -12825,7 +12825,7 @@ async def cb_creator_price_item(callback: CallbackQuery):
     )
     kb.button(text="🔙 Назад", callback_data="creator_shop_prices")
     try:
-        await bot.edit_message_text(text, callback.message.chat.id, callback.message.message_id, reply_markup=kb.as_markup(), parse_mode="HTML")
+        await bot.edit_message_text(text, chat_id=callback.message.chat.id, message_id=callback.message.message_id, reply_markup=kb.as_markup(), parse_mode="HTML")
     except Exception:
         await bot.send_message(callback.message.chat.id, text, reply_markup=kb.as_markup(), parse_mode="HTML")
     await safe_answer(callback.id)
@@ -12911,7 +12911,7 @@ async def cb_creator_coins_exec(callback: CallbackQuery):
         kb.button(text="🔙 В панель", callback_data="creator_panel")
         await bot.edit_message_text(
             f"✅ Игроку <b>{t_name}</b>: <b>{sign}{amount} AC</b>\nНовый баланс: <b>{new_bal} AC</b>",
-            callback.message.chat.id, callback.message.message_id, reply_markup=kb.as_markup(), parse_mode="HTML")
+            chat_id=callback.message.chat.id, message_id=callback.message.message_id, reply_markup=kb.as_markup(), parse_mode="HTML")
         try:
             action_word = "начислено" if amount >= 0 else "списано"
             await bot.send_message(t_uid,
@@ -12955,7 +12955,7 @@ async def cb_creator_new_season(callback: CallbackQuery):
         "- ELO сброситься к 1000, вся матч-стата обнулится\n"
         "- Это действие необратимо!\n\n"
         f"Запустить сезон <b>#{current_season + 1}</b>?",
-        callback.message.chat.id, callback.message.message_id,
+        chat_id=callback.message.chat.id, message_id=callback.message.message_id,
         reply_markup=kb.as_markup(), parse_mode="HTML",
     )
     await safe_answer(callback.id)
@@ -13009,7 +13009,7 @@ async def cb_creator_new_season_exec(callback: CallbackQuery):
             f"🏆 <b>Сезон #{new_season_num} успешно начат!</b>\n\n"
             "Статистика предыдущего сезона сохранена в архиве.\n"
             "Все игроки начинают с ELO 1000.",
-            callback.message.chat.id, callback.message.message_id, reply_markup=kb.as_markup(), parse_mode="HTML")
+            chat_id=callback.message.chat.id, message_id=callback.message.message_id, reply_markup=kb.as_markup(), parse_mode="HTML")
     except Exception as e:
         await safe_answer(callback.id, f"❌ Ошибка: {e}", show_alert=True)
 
