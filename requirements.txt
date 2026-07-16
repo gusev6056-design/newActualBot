@@ -1,7 +1,0 @@
-greenlet>=3.1.0
-pyTelegramBotAPI==4.34.0
-psycopg2-binary==2.9.10
-Flask==3.0.3
-Pillow==10.4.0
-requests==2.32.3
-jinja2==3.1.4
