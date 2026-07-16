@@ -17,7 +17,7 @@ services:
         shared-mime-info
         fonts-dejavu-core &&
       pip install -r requirements_aiogram.txt
-    startCommand: python bot.py
+    startCommand: python bot_aiogram.py
     healthCheckPath: /
     envVars:
       - key: BOT_TOKEN
