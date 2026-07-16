@@ -3283,11 +3283,7 @@ MENU_ICON_CUSTOM_EMOJI = {
 
 
 def _kb_button(text, callback_data, icon_key=None):
-    """InlineKeyboardButton с premium-иконкой (icon_custom_emoji_id), если
-    для этого ключа есть подходящий ID в пake."""
-    custom_emoji_id = MENU_ICON_CUSTOM_EMOJI.get(icon_key) if icon_key else None
-    if custom_emoji_id:
-        return types.InlineKeyboardButton(text=text, callback_data=callback_data, icon_custom_emoji_id=custom_emoji_id)
+    """InlineKeyboardButton — icon_key игнорируется (icon_custom_emoji_id не поддерживается InlineKeyboardButton)."""
     return types.InlineKeyboardButton(text=text, callback_data=callback_data)
 
 
