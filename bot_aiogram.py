@@ -4277,7 +4277,7 @@ async def cb_profile(callback: CallbackQuery):
             ]
             mvp_count   = p[31] if len(p) > 31 else 0
 
-            avatar_bytes = get_user_avatar(uid)
+            avatar_bytes = await get_user_avatar(uid)
             active_frame, active_banner, active_background = get_active_cosmetics(uid)
             img_buf = generate_profile_card(
                 username           = p[1]   or "Unknown",
@@ -4548,7 +4548,7 @@ async def cb_profile_quals(callback: CallbackQuery):
             ]
             quals_recent = get_player_quals_recent_matches(uid, limit=5, matches_table=_matches_table_quals)
             q_mvp_count  = p[31] if len(p) > 31 else 0
-            avatar_bytes = get_user_avatar(uid)
+            avatar_bytes = await get_user_avatar(uid)
             active_frame, active_banner, active_background = get_active_cosmetics(uid)
             img_buf = generate_profile_card(
                 username          = p[1] or "Unknown",
@@ -4648,7 +4648,7 @@ async def cb_profile_duo(callback: CallbackQuery):
                 for i, row in enumerate(all_duo_sorted[:3])
             ]
             d_mvp_count  = p[31] if len(p) > 31 else 0
-            avatar_bytes = get_user_avatar(uid)
+            avatar_bytes = await get_user_avatar(uid)
             active_frame, active_banner, active_background = get_active_cosmetics(uid)
             img_buf = generate_profile_card(
                 username          = p[1] or "Unknown",
@@ -4765,7 +4765,7 @@ async def cb_top_default(callback: CallbackQuery):
                 })
             avatars = {}
             for _p2 in players[:10]:
-                _av = get_user_avatar(_p2[0])
+                _av = await get_user_avatar(_p2[0])
                 if _av:
                     avatars[_p2[0]] = _av
             img_buf = generate_leaderboard_card(
@@ -4838,7 +4838,7 @@ async def cb_top_quals(callback: CallbackQuery):
                 })
             q_avatars = {}
             for _qrow in players[:10]:
-                _qav = get_user_avatar(_qrow[0])
+                _qav = await get_user_avatar(_qrow[0])
                 if _qav:
                     q_avatars[_qrow[0]] = _qav
             img_buf = generate_leaderboard_card(
@@ -4922,7 +4922,7 @@ async def cb_top_duo(callback: CallbackQuery):
                 })
             d_avatars = {}
             for _drow in players[:10]:
-                _dav = get_user_avatar(_drow[0])
+                _dav = await get_user_avatar(_drow[0])
                 if _dav:
                     d_avatars[_drow[0]] = _dav
             img_buf = generate_leaderboard_card(
@@ -9767,7 +9767,7 @@ async def cb_admin_panel(callback: CallbackQuery):
         )
         kb = InlineKeyboardBuilder()
 
-        async def _btn(label, cb, restrict_key=None):
+        def _btn(label, cb, restrict_key=None):
             if restrict_key and is_admin_restricted(uid, restrict_key):
                 return
             kb.button(text=label, callback_data=cb)
