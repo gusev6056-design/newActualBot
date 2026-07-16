@@ -1313,7 +1313,8 @@ async def get_user_avatar(uid):
         if photos and photos.photos and photos.photos[0]:
             file_id   = photos.photos[0][-1].file_id
             file_info = await bot.get_file(file_id)
-            return await bot.download_file(file_info.file_path)
+            data = await bot.download_file(file_info.file_path)
+            return data.read() if hasattr(data, "read") else bytes(data)
     except Exception as e:
         print(f"[get_user_avatar] uid={uid}: {e}")
     return None
