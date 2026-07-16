@@ -237,7 +237,7 @@ REQUIRED_CHANNELS = [
     },
 ]
 
-async def await check_subACriptions(user_id: int) -> list:
+async def check_subACriptions(user_id: int) -> list:
     """Возвращает список каналов, на которые пользователь не подписан."""
     not_subACribed = []
     for ch in REQUIRED_CHANNELS:
