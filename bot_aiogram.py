@@ -3328,6 +3328,7 @@ def main_menu(uid, frame=0):
         kb.add(_kb_button("Регистрация матчей", "game_reg_panel", "game_reg_panel"))
     if is_creator(uid):
         kb.add(_kb_button("Креаторская панель", "creator_panel", "creator_panel"))
+    kb.adjust(2)
     return kb.as_markup()
 
 
@@ -5125,7 +5126,7 @@ async def cb_find(callback: CallbackQuery):
     await safe_answer(callback.id)
 
 
-@router.callback_query(lambda c: callback.data.startswith("lobby_") and len(callback.data.split("_")) == 2)
+@router.callback_query(lambda c: c.data.startswith("lobby_") and len(c.data.split("_")) == 2)
 async def cb_lobby(callback: CallbackQuery):
     uid = callback.from_user.id
     league = callback.data.split("_")[1]
