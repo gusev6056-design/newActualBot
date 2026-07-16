@@ -335,7 +335,7 @@ def _build_shop_items_kb(target_id: int):
         kb.button(text=f"── {label} ──", callback_data="admin_noop")
         for row_id, name, price in items:
             kb.add(types.InlineKeyboardButton(
-                f"{name}  ({price} AC)",
+                text=f"{name}  ({price} AC)",
                 callback_data=f"adm_gi_{target_id}_{row_id}",
             ))
 
@@ -4243,17 +4243,17 @@ async def cb_profile(callback: CallbackQuery):
 
     kb = InlineKeyboardBuilder()
     kb.add(
-        types.InlineKeyboardButton("✏️ Изменить ник",     callback_data="change_nick"),
-        types.InlineKeyboardButton("🎮 Изменить Game ID", callback_data="change_game_id"),
+        types.InlineKeyboardButton(text="✏️ Изменить ник",     callback_data="change_nick"),
+        types.InlineKeyboardButton(text="🎮 Изменить Game ID", callback_data="change_game_id"),
     )
     kb.button(text="💸 Перевести монеты", callback_data="transfer_coins")
     extra_btns = []
     if has_quals_access(uid):
-        extra_btns.append(types.InlineKeyboardButton("⭐ Quals профиль", callback_data="profile_quals"))
+        extra_btns.append(types.InlineKeyboardButton(text="⭐ Quals профиль", callback_data="profile_quals"))
     _priv_table_check = get_user_table(uid)
     _duo_check = get_player_duo_stats(uid, _priv_table_check)
     if _duo_check:
-        extra_btns.append(types.InlineKeyboardButton("🤝 2vs2 профиль", callback_data="profile_duo"))
+        extra_btns.append(types.InlineKeyboardButton(text="🤝 2vs2 профиль", callback_data="profile_duo"))
     if extra_btns:
         kb.add(*extra_btns)
     kb.button(text="🔙 Назад", callback_data="back")
@@ -4532,8 +4532,8 @@ async def cb_profile_quals(callback: CallbackQuery):
 
     kb = InlineKeyboardBuilder()
     kb.add(
-        types.InlineKeyboardButton("📊 Default профиль", callback_data="profile"),
-        types.InlineKeyboardButton("🔙 Назад",           callback_data="back"),
+        types.InlineKeyboardButton(text="📊 Default профиль", callback_data="profile"),
+        types.InlineKeyboardButton(text="🔙 Назад",           callback_data="back"),
     )
 
     if CARDS_ENABLED:
@@ -4634,8 +4634,8 @@ async def cb_profile_duo(callback: CallbackQuery):
 
     kb = InlineKeyboardBuilder()
     kb.add(
-        types.InlineKeyboardButton("📊 Default профиль", callback_data="profile"),
-        types.InlineKeyboardButton("🔙 Назад",           callback_data="back"),
+        types.InlineKeyboardButton(text="📊 Default профиль", callback_data="profile"),
+        types.InlineKeyboardButton(text="🔙 Назад",           callback_data="back"),
     )
 
     if CARDS_ENABLED:
@@ -4715,10 +4715,10 @@ async def cb_top(callback: CallbackQuery):
     uid = callback.from_user.id
     kb = InlineKeyboardBuilder()
     kb.add(
-        types.InlineKeyboardButton("📊 Default - Топ по ELO",      callback_data="top_default"),
-        types.InlineKeyboardButton("⭐ Quals - Топ квалификации",  callback_data="top_quals"),
-        types.InlineKeyboardButton("🤝 2v2 - Топ Duo ELO",         callback_data="top_duo"),
-        types.InlineKeyboardButton("🏆 Топ сезона",                callback_data="top_season"),
+        types.InlineKeyboardButton(text="📊 Default - Топ по ELO",      callback_data="top_default"),
+        types.InlineKeyboardButton(text="⭐ Quals - Топ квалификации",  callback_data="top_quals"),
+        types.InlineKeyboardButton(text="🤝 2v2 - Топ Duo ELO",         callback_data="top_duo"),
+        types.InlineKeyboardButton(text="🏆 Топ сезона",                callback_data="top_season"),
     )
     kb.button(text="🔙 Назад", callback_data="back")
     try:
@@ -4742,8 +4742,8 @@ async def cb_top_default(callback: CallbackQuery):
     players = get_all_players(priv_table)
     kb = InlineKeyboardBuilder()
     kb.add(
-        types.InlineKeyboardButton("⭐ Quals топ", callback_data="top_quals"),
-        types.InlineKeyboardButton("🔙 Назад",     callback_data="back"),
+        types.InlineKeyboardButton(text="⭐ Quals топ", callback_data="top_quals"),
+        types.InlineKeyboardButton(text="🔙 Назад",     callback_data="back"),
     )
     if not players:
         await bot.edit_message_text(f"🏆 <b>ТОП {priv_display}</b>\n\nИгроков нет.", callback.message.chat.id,
@@ -4813,8 +4813,8 @@ async def cb_top_quals(callback: CallbackQuery):
     players = get_quals_players(priv_table)
     kb = InlineKeyboardBuilder()
     kb.add(
-        types.InlineKeyboardButton("📊 Default топ", callback_data="top_default"),
-        types.InlineKeyboardButton("🔙 Назад",        callback_data="back"),
+        types.InlineKeyboardButton(text="📊 Default топ", callback_data="top_default"),
+        types.InlineKeyboardButton(text="🔙 Назад",        callback_data="back"),
     )
     if not players:
         await bot.edit_message_text(
@@ -4885,9 +4885,9 @@ async def cb_top_duo(callback: CallbackQuery):
     players = get_duo_players(priv_table)
     kb = InlineKeyboardBuilder()
     kb.add(
-        types.InlineKeyboardButton("📊 Default топ", callback_data="top_default"),
-        types.InlineKeyboardButton("⭐ Quals топ",   callback_data="top_quals"),
-        types.InlineKeyboardButton("🔙 Назад",        callback_data="back"),
+        types.InlineKeyboardButton(text="📊 Default топ", callback_data="top_default"),
+        types.InlineKeyboardButton(text="⭐ Quals топ",   callback_data="top_quals"),
+        types.InlineKeyboardButton(text="🔙 Назад",        callback_data="back"),
     )
     if not players:
         try:
@@ -5115,12 +5115,12 @@ async def cb_find(callback: CallbackQuery):
         return
     kb = InlineKeyboardBuilder()
     kb.add(
-        types.InlineKeyboardButton("🎮 Default", callback_data="lobby_default"),
-        types.InlineKeyboardButton("⭐ Quals", callback_data="lobby_quals"),
+        types.InlineKeyboardButton(text="🎮 Default", callback_data="lobby_default"),
+        types.InlineKeyboardButton(text="⭐ Quals", callback_data="lobby_quals"),
     )
     kb.add(
-        types.InlineKeyboardButton("🤝 2v2 (Duo)", callback_data="lobby_duo"),
-        types.InlineKeyboardButton("🔙 Назад", callback_data="back"),
+        types.InlineKeyboardButton(text="🤝 2v2 (Duo)", callback_data="lobby_duo"),
+        types.InlineKeyboardButton(text="🔙 Назад", callback_data="back"),
     )
     await bot.edit_message_text("🎮 Выбери лигу:", callback.message.chat.id, callback.message.message_id, reply_markup=kb.as_markup())
     await safe_answer(callback.id)
@@ -5146,8 +5146,8 @@ async def cb_lobby(callback: CallbackQuery):
         m_cnt = len(active_lobbies.get(f"{private_key}_{league}_mobile_{slot}", {}).get("players", []))
         p_cnt = len(active_lobbies.get(f"{private_key}_{league}_pc_{slot}", {}).get("players", []))
         kb.add(
-            types.InlineKeyboardButton(f"M{slot}({m_cnt})", callback_data=f"join_{private_key}_{league}_mobile_{slot}"),
-            types.InlineKeyboardButton(f"P{slot}({p_cnt})", callback_data=f"join_{private_key}_{league}_pc_{slot}"),
+            types.InlineKeyboardButton(text=f"M{slot}({m_cnt})", callback_data=f"join_{private_key}_{league}_mobile_{slot}"),
+            types.InlineKeyboardButton(text=f"P{slot}({p_cnt})", callback_data=f"join_{private_key}_{league}_pc_{slot}"),
         )
     kb.button(text="🔙 Назад", callback_data="find")
     await bot.edit_message_text(text, callback.message.chat.id, callback.message.message_id, reply_markup=kb.as_markup())
@@ -6720,17 +6720,17 @@ def _build_admin_match_kb(match_key, match_code, ACreenshots_count, taken_by=Non
         p = get_player(taken_by)
         name = p[1] if p else str(taken_by)
         kb.add(
-            types.InlineKeyboardButton(f"🔒 Регистрирует: {name} - ЗАНЯТО", callback_data="match_noop"),
-            types.InlineKeyboardButton("🔓 Освободить регистрацию", callback_data=f"reg_abandon|{match_key}"),
+            types.InlineKeyboardButton(text=f"🔒 Регистрирует: {name} - ЗАНЯТО", callback_data="match_noop"),
+            types.InlineKeyboardButton(text="🔓 Освободить регистрацию", callback_data=f"reg_abandon|{match_key}"),
         )
     else:
         kb.add(types.InlineKeyboardButton(
-            f"✅ Взять регистрацию #{match_code} ({ACreenshots_count}📸)",
+            text=f"✅ Взять регистрацию #{match_code} ({ACreenshots_count}📸)",
             callback_data=f"reg_match|{match_key}",
         ))
     kb.add(
-        types.InlineKeyboardButton("❌ Отменить матч",  callback_data=f"cancel_match|{match_key}"),
-        types.InlineKeyboardButton("🔄 Перерегать",     callback_data=f"reregister_match|{match_key}"),
+        types.InlineKeyboardButton(text="❌ Отменить матч",  callback_data=f"cancel_match|{match_key}"),
+        types.InlineKeyboardButton(text="🔄 Перерегать",     callback_data=f"reregister_match|{match_key}"),
     )
     return kb
 
@@ -7082,8 +7082,8 @@ async def cb_reg_match(callback: CallbackQuery):
     }
     choice_kb = InlineKeyboardBuilder()
     choice_kb.add(
-        types.InlineKeyboardButton("🤖 По скрину (AI)", callback_data=f"reg_ai_photo|{match_key}"),
-        types.InlineKeyboardButton("📝 Вручную",         callback_data=f"reg_manual|{match_key}"),
+        types.InlineKeyboardButton(text="🤖 По скрину (AI)", callback_data=f"reg_ai_photo|{match_key}"),
+        types.InlineKeyboardButton(text="📝 Вручную",         callback_data=f"reg_manual|{match_key}"),
     )
     send_kw = {"parse_mode": "HTML", "reply_markup": choice_kb}
     if reply_thread_id:
@@ -7241,9 +7241,9 @@ async def handle_ai_reg_photo(message: Message):
         preview = _format_ai_preview(lobby, ai_result, mapped)
         kb = InlineKeyboardBuilder()
         kb.add(
-            types.InlineKeyboardButton("✅ Принять и зарегистрировать", callback_data=f"ai_reg_accept|{match_key}"),
-            types.InlineKeyboardButton("🔄 Перегнать (AI ещё раз)",     callback_data=f"ai_reg_redo|{match_key}"),
-            types.InlineKeyboardButton("📝 Зарегистрировать вручную",   callback_data=f"ai_reg_manual|{match_key}"),
+            types.InlineKeyboardButton(text="✅ Принять и зарегистрировать", callback_data=f"ai_reg_accept|{match_key}"),
+            types.InlineKeyboardButton(text="🔄 Перегнать (AI ещё раз)",     callback_data=f"ai_reg_redo|{match_key}"),
+            types.InlineKeyboardButton(text="📝 Зарегистрировать вручную",   callback_data=f"ai_reg_manual|{match_key}"),
         )
         # Отправляем превью в ветку матча (или ЛС если нет ветки)
         reply_chat_id   = pending.get("reply_chat_id", uid)
@@ -7375,9 +7375,9 @@ async def cb_ai_reg_redo(callback: CallbackQuery):
             preview = _format_ai_preview(lobby, ai_result, mapped)
             kb = InlineKeyboardBuilder()
             kb.add(
-                types.InlineKeyboardButton("✅ Принять и зарегистрировать", callback_data=f"ai_reg_accept|{match_key}"),
-                types.InlineKeyboardButton("🔄 Перегнать (AI ещё раз)",     callback_data=f"ai_reg_redo|{match_key}"),
-                types.InlineKeyboardButton("📝 Зарегистрировать вручную",   callback_data=f"ai_reg_manual|{match_key}"),
+                types.InlineKeyboardButton(text="✅ Принять и зарегистрировать", callback_data=f"ai_reg_accept|{match_key}"),
+                types.InlineKeyboardButton(text="🔄 Перегнать (AI ещё раз)",     callback_data=f"ai_reg_redo|{match_key}"),
+                types.InlineKeyboardButton(text="📝 Зарегистрировать вручную",   callback_data=f"ai_reg_manual|{match_key}"),
             )
             reply_chat_id   = pending.get("reply_chat_id", uid)
             reply_thread_id = pending.get("reply_thread_id")
@@ -7501,8 +7501,8 @@ async def cb_reg_abandon(callback: CallbackQuery):
     await safe_answer(callback.id)
     kb_confirm = InlineKeyboardBuilder()
     kb_confirm.add(
-        types.InlineKeyboardButton("✅ Да, освободить регистрацию", callback_data=f"reg_abandon_confirm|{match_key}"),
-        types.InlineKeyboardButton("❌ Нет, продолжаю регистрацию", callback_data="match_noop"),
+        types.InlineKeyboardButton(text="✅ Да, освободить регистрацию", callback_data=f"reg_abandon_confirm|{match_key}"),
+        types.InlineKeyboardButton(text="❌ Нет, продолжаю регистрацию", callback_data="match_noop"),
     )
     # Отправляем подтверждение в чат регистрации (группа/ветка), а не в личку
     data = match_registration.get(uid, {})
@@ -7612,8 +7612,8 @@ async def reg_step_ACore(message: Message):
     t_list  = "\n".join([f"  {i+1}. {pline(u, _rs_priv_table, _rs_league)}" for i, u in enumerate((lobby.get("team_t",  []) if lobby else []))])
     kb = InlineKeyboardBuilder()
     kb.add(
-        types.InlineKeyboardButton("💙 CT победила", callback_data=f"reg_winner_ct|{match_key}"),
-        types.InlineKeyboardButton("🧡 T победила",  callback_data=f"reg_winner_t|{match_key}"),
+        types.InlineKeyboardButton(text="💙 CT победила", callback_data=f"reg_winner_ct|{match_key}"),
+        types.InlineKeyboardButton(text="🧡 T победила",  callback_data=f"reg_winner_t|{match_key}"),
     )
     reply_chat_id   = match_registration[uid].get("reply_chat_id", uid)
     reply_thread_id = match_registration[uid].get("reply_thread_id")
@@ -8055,8 +8055,8 @@ async def _finalize_match(reg_uid, match_key):
             # Кнопки для админов остаются (на случай перерегистрации/отмены)
             kb_done = InlineKeyboardBuilder()
             kb_done.add(
-                types.InlineKeyboardButton("🔄 Перерегать",  callback_data=f"reregister_match|{match_key}"),
-                types.InlineKeyboardButton("❌ Отменить",    callback_data=f"cancel_match|{match_key}"),
+                types.InlineKeyboardButton(text="🔄 Перерегать",  callback_data=f"reregister_match|{match_key}"),
+                types.InlineKeyboardButton(text="❌ Отменить",    callback_data=f"cancel_match|{match_key}"),
             )
             await bot.send_message(
                 ADMIN_CHAT_ID,
@@ -8075,7 +8075,7 @@ async def _finalize_match(reg_uid, match_key):
         try:
             kb_review = InlineKeyboardBuilder()
             kb_review.add(
-                types.InlineKeyboardButton("🔄 На перерегистрацию", callback_data=f"reregister_match|{match_key}"),
+                types.InlineKeyboardButton(text="🔄 На перерегистрацию", callback_data=f"reregister_match|{match_key}"),
             )
             priv_cfg2 = PRIVATE_CONFIG.get(lobby.get("private", "fade"), PRIVATE_CONFIG["fade"])
             priv_label2 = f"{priv_cfg2['emoji']} {priv_cfg2['display']}"
@@ -8829,14 +8829,14 @@ def _slots_menu_kb(selected_bet=None):
     bet_btns = []
     for b in SLOTS_BETS:
         label = f"✅ {b} AC" if b == selected_bet else f"{b} AC"
-        bet_btns.append(types.InlineKeyboardButton(label, callback_data=f"slots_bet|{b}"))
+        bet_btns.append(types.InlineKeyboardButton(text=label, callback_data=f"slots_bet|{b}"))
     kb.add(*bet_btns)
     kb.button(text="✏️ Своя ставка", callback_data="slots_custom_bet")
     if selected_bet:
         kb.button(text=f"🎰 Крутить ({selected_bet} AC)", callback_data=f"slots_spin|{selected_bet}")
     kb.add(
-        types.InlineKeyboardButton("📊 Шансы", callback_data="slots_odds"),
-        types.InlineKeyboardButton("🔙 Назад", callback_data="back"),
+        types.InlineKeyboardButton(text="📊 Шансы", callback_data="slots_odds"),
+        types.InlineKeyboardButton(text="🔙 Назад", callback_data="back"),
     )
     return kb
 
@@ -9027,10 +9027,10 @@ async def cb_slots_spin(callback: CallbackQuery):
     )
     kb = InlineKeyboardBuilder()
     kb.add(
-        types.InlineKeyboardButton(f"🔄 Ещё раз ({bet} AC)", callback_data=f"slots_spin|{bet}"),
-        types.InlineKeyboardButton("✏️ Своя ставка", callback_data="slots_custom_bet"),
-        types.InlineKeyboardButton("💰 Сменить ставку", callback_data="slots_menu"),
-        types.InlineKeyboardButton("🔙 Главное меню", callback_data="back"),
+        types.InlineKeyboardButton(text=f"🔄 Ещё раз ({bet} AC)", callback_data=f"slots_spin|{bet}"),
+        types.InlineKeyboardButton(text="✏️ Своя ставка", callback_data="slots_custom_bet"),
+        types.InlineKeyboardButton(text="💰 Сменить ставку", callback_data="slots_menu"),
+        types.InlineKeyboardButton(text="🔙 Главное меню", callback_data="back"),
     )
     await safe_answer(callback.id)
     try:
@@ -9066,11 +9066,11 @@ def _slots_settings_text() -> str:
 def _slots_settings_kb() -> types.InlineKeyboardMarkup:
     kb = InlineKeyboardBuilder()
     kb.add(
-        types.InlineKeyboardButton("7️⃣ Изменить шанс джекпота 777 (×100)", callback_data="admin_slots_jackpot"),
-        types.InlineKeyboardButton("🍒 Изменить шанс тройки ×10",           callback_data="admin_slots_x10"),
-        types.InlineKeyboardButton("🍀 Выдать удачу игроку",                callback_data="admin_slots_luck_set"),
-        types.InlineKeyboardButton("❌ Убрать удачу игроку",                callback_data="admin_slots_luck_remove"),
-        types.InlineKeyboardButton("🔙 Назад",                              callback_data="admin_panel"),
+        types.InlineKeyboardButton(text="7️⃣ Изменить шанс джекпота 777 (×100)", callback_data="admin_slots_jackpot"),
+        types.InlineKeyboardButton(text="🍒 Изменить шанс тройки ×10",           callback_data="admin_slots_x10"),
+        types.InlineKeyboardButton(text="🍀 Выдать удачу игроку",                callback_data="admin_slots_luck_set"),
+        types.InlineKeyboardButton(text="❌ Убрать удачу игроку",                callback_data="admin_slots_luck_remove"),
+        types.InlineKeyboardButton(text="🔙 Назад",                              callback_data="admin_panel"),
     )
     return kb
 
@@ -9284,8 +9284,8 @@ async def cb_party_menu(callback: CallbackQuery):
         kb = InlineKeyboardBuilder()
         if uid == party["leader"]:
             kb.add(
-                types.InlineKeyboardButton("➕ Пригласить", callback_data="party_invite"),
-                types.InlineKeyboardButton("🗑 Распустить пати", callback_data="party_disband"),
+                types.InlineKeyboardButton(text="➕ Пригласить", callback_data="party_invite"),
+                types.InlineKeyboardButton(text="🗑 Распустить пати", callback_data="party_disband"),
             )
         else:
             kb.button(text="🚪 Покинуть пати", callback_data="party_leave")
@@ -9294,8 +9294,8 @@ async def cb_party_menu(callback: CallbackQuery):
         text = "👥 У вас нет пати.\nСоздайте пати или примите приглашение."
         kb = InlineKeyboardBuilder()
         kb.add(
-            types.InlineKeyboardButton("➕ Создать пати", callback_data="party_create"),
-            types.InlineKeyboardButton("🔙 Назад", callback_data="back"),
+            types.InlineKeyboardButton(text="➕ Создать пати", callback_data="party_create"),
+            types.InlineKeyboardButton(text="🔙 Назад", callback_data="back"),
         )
     await bot.edit_message_text(text, callback.message.chat.id, callback.message.message_id, reply_markup=kb.as_markup())
     await safe_answer(callback.id)
@@ -9365,8 +9365,8 @@ async def handle_party_invite(message: Message):
         return
     kb = InlineKeyboardBuilder()
     kb.add(
-        types.InlineKeyboardButton("✅ Принять", callback_data=f"party_accept_{party_id}_{uid}"),
-        types.InlineKeyboardButton("❌ Отклонить", callback_data="party_decline"),
+        types.InlineKeyboardButton(text="✅ Принять", callback_data=f"party_accept_{party_id}_{uid}"),
+        types.InlineKeyboardButton(text="❌ Отклонить", callback_data="party_decline"),
     )
     try:
         inviter = get_player(uid)
@@ -9831,9 +9831,9 @@ async def _send_promo_reward_type_kb(uid, data):
     existing = _promo_rewards_summary(data.get("rewards", []))
     kb = InlineKeyboardBuilder()
     kb.add(
-        types.InlineKeyboardButton("💰 Монеты",  callback_data="promo_reward_coins"),
-        types.InlineKeyboardButton("👑 Premium", callback_data="promo_reward_premium"),
-        types.InlineKeyboardButton("⭐ Quals",   callback_data="promo_reward_quals"),
+        types.InlineKeyboardButton(text="💰 Монеты",  callback_data="promo_reward_coins"),
+        types.InlineKeyboardButton(text="👑 Premium", callback_data="promo_reward_premium"),
+        types.InlineKeyboardButton(text="⭐ Quals",   callback_data="promo_reward_quals"),
     )
     text = (
         f"🎁 <b>Создание промокода</b> <code>{data.get('code','')}</code>\n\n"
@@ -9848,8 +9848,8 @@ async def _send_promo_add_more_kb(uid, data):
     existing = _promo_rewards_summary(data.get("rewards", []))
     kb = InlineKeyboardBuilder()
     kb.add(
-        types.InlineKeyboardButton("➕ Добавить ещё",  callback_data="promo_add_more"),
-        types.InlineKeyboardButton("✅ Готово",         callback_data="promo_finalize"),
+        types.InlineKeyboardButton(text="➕ Добавить ещё",  callback_data="promo_add_more"),
+        types.InlineKeyboardButton(text="✅ Готово",         callback_data="promo_finalize"),
     )
     text = (
         f"🎁 <b>Промокод</b> <code>{data.get('code','')}</code>\n\n"
@@ -9886,9 +9886,9 @@ async def cb_admin_promos(callback: CallbackQuery):
         text += "Промокодов нет."
     kb = InlineKeyboardBuilder()
     kb.add(
-        types.InlineKeyboardButton("➕ Создать промокод",        callback_data="admin_promo_create"),
-        types.InlineKeyboardButton("❌ Деактивировать промокод", callback_data="admin_promo_deactivate"),
-        types.InlineKeyboardButton("🔙 Назад",                   callback_data="admin_panel"),
+        types.InlineKeyboardButton(text="➕ Создать промокод",        callback_data="admin_promo_create"),
+        types.InlineKeyboardButton(text="❌ Деактивировать промокод", callback_data="admin_promo_deactivate"),
+        types.InlineKeyboardButton(text="🔙 Назад",                   callback_data="admin_panel"),
     )
     await bot.edit_message_text(text, callback.message.chat.id, callback.message.message_id, reply_markup=kb.as_markup())
     await safe_answer(callback.id)
@@ -10151,9 +10151,9 @@ async def cb_admin_match_manage(callback: CallbackQuery):
     )
     kb = InlineKeyboardBuilder()
     kb.add(
-        types.InlineKeyboardButton("🔄 Перерегать",  callback_data=f"reregister_match|{match_key}"),
-        types.InlineKeyboardButton("❌ Отменить",    callback_data=f"cancel_match|{match_key}"),
-        types.InlineKeyboardButton("🔙 Назад",       callback_data="admin_matches"),
+        types.InlineKeyboardButton(text="🔄 Перерегать",  callback_data=f"reregister_match|{match_key}"),
+        types.InlineKeyboardButton(text="❌ Отменить",    callback_data=f"cancel_match|{match_key}"),
+        types.InlineKeyboardButton(text="🔙 Назад",       callback_data="admin_matches"),
     )
     await bot.edit_message_text(text, callback.message.chat.id, callback.message.message_id, reply_markup=kb.as_markup())
     await safe_answer(callback.id)
@@ -10325,17 +10325,17 @@ async def handle_admin_action(message: Message):
         _verif_now = is_verified_check(target_id)
         _verif_lbl = "❎ Снять галочку" if _verif_now else "✅ Выдать галочку"
         kb.add(
-            types.InlineKeyboardButton("🚫 Бан/Разбан",    callback_data=f"admin_do_ban_{target_id}"),
-            types.InlineKeyboardButton("⚠️ Варн",           callback_data=f"admin_do_warn_{target_id}"),
-            types.InlineKeyboardButton("➖ Снять варн",     callback_data=f"admin_do_unwarn_{target_id}"),
-            types.InlineKeyboardButton("🔇 Мут",            callback_data=f"admin_do_mute_{target_id}"),
-            types.InlineKeyboardButton("🔊 Размутить",      callback_data=f"admin_do_unmute_{target_id}"),
-            types.InlineKeyboardButton("🔎 Проверка",       callback_data=f"admin_do_check_{target_id}"),
-            types.InlineKeyboardButton("✅ Снять проверку", callback_data=f"admin_do_uncheck_{target_id}"),
-            types.InlineKeyboardButton("👑 Дать/Снять адм", callback_data=f"admin_do_give_admin_{target_id}"),
-            types.InlineKeyboardButton("⭐ Quals",           callback_data=f"admin_do_quals_{target_id}"),
-            types.InlineKeyboardButton(_verif_lbl,          callback_data=f"admin_do_toggle_verified_{target_id}"),
-            types.InlineKeyboardButton("🎁 Выдать предмет", callback_data=f"admin_do_give_item_{target_id}"),
+            types.InlineKeyboardButton(text="🚫 Бан/Разбан",    callback_data=f"admin_do_ban_{target_id}"),
+            types.InlineKeyboardButton(text="⚠️ Варн",           callback_data=f"admin_do_warn_{target_id}"),
+            types.InlineKeyboardButton(text="➖ Снять варн",     callback_data=f"admin_do_unwarn_{target_id}"),
+            types.InlineKeyboardButton(text="🔇 Мут",            callback_data=f"admin_do_mute_{target_id}"),
+            types.InlineKeyboardButton(text="🔊 Размутить",      callback_data=f"admin_do_unmute_{target_id}"),
+            types.InlineKeyboardButton(text="🔎 Проверка",       callback_data=f"admin_do_check_{target_id}"),
+            types.InlineKeyboardButton(text="✅ Снять проверку", callback_data=f"admin_do_uncheck_{target_id}"),
+            types.InlineKeyboardButton(text="👑 Дать/Снять адм", callback_data=f"admin_do_give_admin_{target_id}"),
+            types.InlineKeyboardButton(text="⭐ Quals",           callback_data=f"admin_do_quals_{target_id}"),
+            types.InlineKeyboardButton(text=_verif_lbl,          callback_data=f"admin_do_toggle_verified_{target_id}"),
+            types.InlineKeyboardButton(text="🎁 Выдать предмет", callback_data=f"admin_do_give_item_{target_id}"),
         )
         p_target = get_player(target_id)
         has_q = p_target and has_quals_access(target_id)
@@ -11123,7 +11123,7 @@ async def cb_add_bots(callback: CallbackQuery):
         if lobby.get("status") == "waiting" and len(lobby["players"]) < _msz:
             slots = _msz - len(lobby["players"])
             kb.add(types.InlineKeyboardButton(
-                f"Лобби {lobby_id} ({len(lobby['players'])}/{_msz}) - добавить {slots} ботов",
+                text=f"Лобби {lobby_id} ({len(lobby['players'])}/{_msz}) - добавить {slots} ботов",
                 callback_data=f"fill_bots_{lobby_id}",
             ))
     if not kb.keyboard:
@@ -11337,8 +11337,8 @@ async def cb_admin_seasons(callback: CallbackQuery):
 
     kb = InlineKeyboardBuilder()
     kb.add(
-        types.InlineKeyboardButton("🔄 Сбросить сезон",        callback_data="admin_season_reset_confirm"),
-        types.InlineKeyboardButton("📜 История сезонов",        callback_data="admin_season_history"),
+        types.InlineKeyboardButton(text="🔄 Сбросить сезон",        callback_data="admin_season_reset_confirm"),
+        types.InlineKeyboardButton(text="📜 История сезонов",        callback_data="admin_season_history"),
     )
     if season:
         kb.button(text=f"🏅 Топ сезона #{season[1]}", callback_data=f"admin_season_top|{season[0]}")
@@ -11371,8 +11371,8 @@ async def cb_admin_season_reset_confirm(callback: CallbackQuery):
     )
     kb = InlineKeyboardBuilder()
     kb.add(
-        types.InlineKeyboardButton("✅ Да, сбросить",  callback_data="admin_season_reset_execute"),
-        types.InlineKeyboardButton("❌ Отмена",         callback_data="admin_seasons"),
+        types.InlineKeyboardButton(text="✅ Да, сбросить",  callback_data="admin_season_reset_execute"),
+        types.InlineKeyboardButton(text="❌ Отмена",         callback_data="admin_seasons"),
     )
     await bot.edit_message_text(text, callback.message.chat.id, callback.message.message_id, reply_markup=kb.as_markup(), parse_mode="HTML")
     await safe_answer(callback.id)
@@ -11398,8 +11398,8 @@ async def cb_admin_season_reset_execute(callback: CallbackQuery):
         )
         kb = InlineKeyboardBuilder()
         kb.add(
-            types.InlineKeyboardButton("🏆 К сезонам", callback_data="admin_seasons"),
-            types.InlineKeyboardButton("🔙 Админ панель", callback_data="admin_panel"),
+            types.InlineKeyboardButton(text="🏆 К сезонам", callback_data="admin_seasons"),
+            types.InlineKeyboardButton(text="🔙 Админ панель", callback_data="admin_panel"),
         )
         await bot.edit_message_text(text, callback.message.chat.id, callback.message.message_id, reply_markup=kb.as_markup(), parse_mode="HTML")
 
@@ -11566,8 +11566,8 @@ async def cb_admin_ticket_view(callback: CallbackQuery):
     kb = InlineKeyboardBuilder()
     if status == "open":
         kb.add(
-            types.InlineKeyboardButton("✅ Закрыть (решено)", callback_data=f"ticket_close|{tcode}"),
-            types.InlineKeyboardButton("❌ Отклонить",        callback_data=f"ticket_reject|{tcode}"),
+            types.InlineKeyboardButton(text="✅ Закрыть (решено)", callback_data=f"ticket_close|{tcode}"),
+            types.InlineKeyboardButton(text="❌ Отклонить",        callback_data=f"ticket_reject|{tcode}"),
         )
     kb.button(text="🔙 К тикетам", callback_data="admin_tickets")
     await safe_answer(callback.id)
@@ -11595,8 +11595,8 @@ def _ticket_back_kb():
     """Клавиатура с кнопками Назад и Отмена."""
     kb = InlineKeyboardBuilder()
     kb.add(
-        types.InlineKeyboardButton("◀️ Назад",            callback_data="ticket_back"),
-        types.InlineKeyboardButton("❌ Отменить тикет",   callback_data="ticket_cancel"),
+        types.InlineKeyboardButton(text="◀️ Назад",            callback_data="ticket_back"),
+        types.InlineKeyboardButton(text="❌ Отменить тикет",   callback_data="ticket_cancel"),
     )
     return kb
 
@@ -11809,8 +11809,8 @@ async def ticket_step_accused(message):
     # Уведомить администраторов - в ветку группы или в личку каждому
     kb_admin = InlineKeyboardBuilder()
     kb_admin.add(
-        types.InlineKeyboardButton("✅ Закрыть (решено)", callback_data=f"ticket_close|{ticket_code}"),
-        types.InlineKeyboardButton("❌ Отклонить", callback_data=f"ticket_reject|{ticket_code}"),
+        types.InlineKeyboardButton(text="✅ Закрыть (решено)", callback_data=f"ticket_close|{ticket_code}"),
+        types.InlineKeyboardButton(text="❌ Отклонить", callback_data=f"ticket_reject|{ticket_code}"),
     )
     admin_text = (
         f"🎟 <b>Новый тикет {ticket_code}</b>\n\n"
@@ -12025,39 +12025,39 @@ def _reset_everything(table="players_fade"):
 def _creator_panel_kb():
     kb = InlineKeyboardBuilder()
     kb.add(
-        types.InlineKeyboardButton("📊 Статистика бота",          callback_data="creator_botstats"),
-        types.InlineKeyboardButton("📋 Логи админов",             callback_data="creator_logs"),
+        types.InlineKeyboardButton(text="📊 Статистика бота",          callback_data="creator_botstats"),
+        types.InlineKeyboardButton(text="📋 Логи админов",             callback_data="creator_logs"),
     )
     kb.add(
-        types.InlineKeyboardButton("📢 Рассылка",                 callback_data="creator_broadcast"),
-        types.InlineKeyboardButton("🎁 Выдать Premium",           callback_data="creator_give_premium"),
+        types.InlineKeyboardButton(text="📢 Рассылка",                 callback_data="creator_broadcast"),
+        types.InlineKeyboardButton(text="🎁 Выдать Premium",           callback_data="creator_give_premium"),
     )
     kb.add(
-        types.InlineKeyboardButton("✅ Верификация игрока",       callback_data="creator_verify_player"),
-        types.InlineKeyboardButton("🛡️ Управление админами",     callback_data="creator_manage_admins"),
+        types.InlineKeyboardButton(text="✅ Верификация игрока",       callback_data="creator_verify_player"),
+        types.InlineKeyboardButton(text="🛡️ Управление админами",     callback_data="creator_manage_admins"),
     )
     kb.add(
-        types.InlineKeyboardButton("🏆 Новый сезон",              callback_data="creator_new_season"),
-        types.InlineKeyboardButton("💰 Монеты игроку",            callback_data="creator_give_coins"),
+        types.InlineKeyboardButton(text="🏆 Новый сезон",              callback_data="creator_new_season"),
+        types.InlineKeyboardButton(text="💰 Монеты игроку",            callback_data="creator_give_coins"),
     )
     kb.add(
-        types.InlineKeyboardButton("📦 Добавить пакет монет",     callback_data="creator_add_coinpack"),
+        types.InlineKeyboardButton(text="📦 Добавить пакет монет",     callback_data="creator_add_coinpack"),
     )
     kb.add(
-        types.InlineKeyboardButton("💱 Цены товаров",             callback_data="creator_shop_prices"),
+        types.InlineKeyboardButton(text="💱 Цены товаров",             callback_data="creator_shop_prices"),
     )
     kb.add(
-        types.InlineKeyboardButton("🧹 Обнулить стату всех",      callback_data="creator_reset_all"),
-        types.InlineKeyboardButton("👤 Обнулить стату игрока",    callback_data="creator_reset_player"),
+        types.InlineKeyboardButton(text="🧹 Обнулить стату всех",      callback_data="creator_reset_all"),
+        types.InlineKeyboardButton(text="👤 Обнулить стату игрока",    callback_data="creator_reset_player"),
     )
     kb.add(
-        types.InlineKeyboardButton("💣 Обнулить ВСЁ",             callback_data="creator_reset_everything"),
+        types.InlineKeyboardButton(text="💣 Обнулить ВСЁ",             callback_data="creator_reset_everything"),
     )
     kb.add(
-        types.InlineKeyboardButton("🔒 Ограничения для админов",  callback_data="creator_restrict_menu"),
+        types.InlineKeyboardButton(text="🔒 Ограничения для админов",  callback_data="creator_restrict_menu"),
     )
     kb.add(
-        types.InlineKeyboardButton("🔙 Назад",                    callback_data="back"),
+        types.InlineKeyboardButton(text="🔙 Назад",                    callback_data="back"),
     )
     return kb
 
@@ -12122,8 +12122,8 @@ async def cb_creator_reset_all(callback: CallbackQuery):
         return
     kb = InlineKeyboardBuilder()
     kb.add(
-        types.InlineKeyboardButton("✅ Да, обнулить всех", callback_data="creator_reset_all_exec"),
-        types.InlineKeyboardButton("❌ Отмена",            callback_data="creator_panel"),
+        types.InlineKeyboardButton(text="✅ Да, обнулить всех", callback_data="creator_reset_all_exec"),
+        types.InlineKeyboardButton(text="❌ Отмена",            callback_data="creator_panel"),
     )
     await bot.edit_message_text(
         "⚠️ <b>ПОДТВЕРЖДЕНИЕ</b>\n\n"
@@ -12163,8 +12163,8 @@ async def cb_creator_reset_everything(callback: CallbackQuery):
         return
     kb = InlineKeyboardBuilder()
     kb.add(
-        types.InlineKeyboardButton("💣 Да, обнулить ВСЁ", callback_data="creator_reset_everything_exec"),
-        types.InlineKeyboardButton("❌ Отмена",             callback_data="creator_panel"),
+        types.InlineKeyboardButton(text="💣 Да, обнулить ВСЁ", callback_data="creator_reset_everything_exec"),
+        types.InlineKeyboardButton(text="❌ Отмена",             callback_data="creator_panel"),
     )
     await bot.edit_message_text(
         "💣 <b>ОБНУЛЕНИЕ ВСЕГО - ПОДТВЕРЖДЕНИЕ</b>\n\n"
@@ -12424,8 +12424,8 @@ async def handle_creator_flow(message: Message):
         t_name = target_p[1] or str(t_uid)
         kb = InlineKeyboardBuilder()
         kb.add(
-            types.InlineKeyboardButton("✅ Да, обнулить", callback_data=f"creator_reset_exec_{t_uid}"),
-            types.InlineKeyboardButton("❌ Отмена",        callback_data="creator_panel"),
+            types.InlineKeyboardButton(text="✅ Да, обнулить", callback_data=f"creator_reset_exec_{t_uid}"),
+            types.InlineKeyboardButton(text="❌ Отмена",        callback_data="creator_panel"),
         )
         await bot.send_message(
             uid,
@@ -12818,10 +12818,10 @@ async def cb_creator_price_item(callback: CallbackQuery):
     )
     kb = InlineKeyboardBuilder()
     kb.add(
-        types.InlineKeyboardButton("💰 Изменить цену в Actual Coin", callback_data=f"creator_price_edit_{item_id}_coins"),
-        types.InlineKeyboardButton("💵 Изменить цену в Рублях",      callback_data=f"creator_price_edit_{item_id}_rub"),
-        types.InlineKeyboardButton("⭐ Изменить цену в Stars",       callback_data=f"creator_price_edit_{item_id}_stars"),
-        types.InlineKeyboardButton("💎 Изменить цену в Крипте",      callback_data=f"creator_price_edit_{item_id}_crypto"),
+        types.InlineKeyboardButton(text="💰 Изменить цену в Actual Coin", callback_data=f"creator_price_edit_{item_id}_coins"),
+        types.InlineKeyboardButton(text="💵 Изменить цену в Рублях",      callback_data=f"creator_price_edit_{item_id}_rub"),
+        types.InlineKeyboardButton(text="⭐ Изменить цену в Stars",       callback_data=f"creator_price_edit_{item_id}_stars"),
+        types.InlineKeyboardButton(text="💎 Изменить цену в Крипте",      callback_data=f"creator_price_edit_{item_id}_crypto"),
     )
     kb.button(text="🔙 Назад", callback_data="creator_shop_prices")
     try:
@@ -12942,10 +12942,10 @@ async def cb_creator_new_season(callback: CallbackQuery):
     kb = InlineKeyboardBuilder()
     kb.add(
         types.InlineKeyboardButton(
-            f"✅ Да, начать сезон #{current_season + 1}",
+            text=f"✅ Да, начать сезон #{current_season + 1}",
             callback_data=f"creator_new_season_exec_{current_season + 1}",
         ),
-        types.InlineKeyboardButton("❌ Отмена", callback_data="creator_panel"),
+        types.InlineKeyboardButton(text="❌ Отмена", callback_data="creator_panel"),
     )
     await bot.edit_message_text(
         f"🏆 <b>Новый сезон</b>\n\n"
@@ -13036,8 +13036,8 @@ async def _handle_creator_flow_extended(message, uid, flow, step):
         creator_flow[uid] = {"step": "broadcast_confirm", "broadcast_text": inp}
         kb = InlineKeyboardBuilder()
         kb.add(
-            types.InlineKeyboardButton("✅ Отправить", callback_data=f"creator_broadcast_confirm_ok"),
-            types.InlineKeyboardButton("❌ Отмена",    callback_data="creator_panel"),
+            types.InlineKeyboardButton(text="✅ Отправить", callback_data=f"creator_broadcast_confirm_ok"),
+            types.InlineKeyboardButton(text="❌ Отмена",    callback_data="creator_panel"),
         )
         await bot.send_message(uid,
             f"📢 <b>Предпросмотр рассылки:</b>\n\n{inp}\n\n"
@@ -13074,8 +13074,8 @@ async def _handle_creator_flow_extended(message, uid, flow, step):
         creator_flow.pop(uid, None)
         kb = InlineKeyboardBuilder()
         kb.add(
-            types.InlineKeyboardButton("✅ Выдать",  callback_data=f"creator_premium_exec_{t_uid}_{days}"),
-            types.InlineKeyboardButton("❌ Отмена",  callback_data="creator_panel"),
+            types.InlineKeyboardButton(text="✅ Выдать",  callback_data=f"creator_premium_exec_{t_uid}_{days}"),
+            types.InlineKeyboardButton(text="❌ Отмена",  callback_data="creator_panel"),
         )
         await bot.send_message(uid,
             f"🎁 Выдать <b>{days} дней</b> Premium игроку <b>{t_name}</b>?",
@@ -13094,14 +13094,14 @@ async def _handle_creator_flow_extended(message, uid, flow, step):
         kb = InlineKeyboardBuilder()
         if is_vf:
             kb.add(
-                types.InlineKeyboardButton("❌ Снять верификацию", callback_data=f"creator_verify_exec_{t_uid}_remove"),
-                types.InlineKeyboardButton("🔙 Отмена",            callback_data="creator_panel"),
+                types.InlineKeyboardButton(text="❌ Снять верификацию", callback_data=f"creator_verify_exec_{t_uid}_remove"),
+                types.InlineKeyboardButton(text="🔙 Отмена",            callback_data="creator_panel"),
             )
             status_text = "✅ уже верифицирован"
         else:
             kb.add(
-                types.InlineKeyboardButton("✅ Выдать верификацию", callback_data=f"creator_verify_exec_{t_uid}_add"),
-                types.InlineKeyboardButton("🔙 Отмена",             callback_data="creator_panel"),
+                types.InlineKeyboardButton(text="✅ Выдать верификацию", callback_data=f"creator_verify_exec_{t_uid}_add"),
+                types.InlineKeyboardButton(text="🔙 Отмена",             callback_data="creator_panel"),
             )
             status_text = "❌ не верифицирован"
         await bot.send_message(uid,
@@ -13164,8 +13164,8 @@ async def _handle_creator_flow_extended(message, uid, flow, step):
         sign = "+" if amount >= 0 else ""
         kb = InlineKeyboardBuilder()
         kb.add(
-            types.InlineKeyboardButton("✅ Подтвердить", callback_data=f"creator_coins_exec_{t_uid}_{amount}"),
-            types.InlineKeyboardButton("❌ Отмена",      callback_data="creator_panel"),
+            types.InlineKeyboardButton(text="✅ Подтвердить", callback_data=f"creator_coins_exec_{t_uid}_{amount}"),
+            types.InlineKeyboardButton(text="❌ Отмена",      callback_data="creator_panel"),
         )
         await bot.send_message(uid,
             f"💰 Игроку <b>{t_name}</b>: <b>{sign}{amount} AC</b>\nПодтвердить?",
