@@ -3287,8 +3287,8 @@ def _kb_button(text, callback_data, icon_key=None):
     для этого ключа есть подходящий ID в пake."""
     custom_emoji_id = MENU_ICON_CUSTOM_EMOJI.get(icon_key) if icon_key else None
     if custom_emoji_id:
-        return types.InlineKeyboardButton(text, callback_data=callback_data, icon_custom_emoji_id=custom_emoji_id)
-    return types.InlineKeyboardButton(text, callback_data=callback_data)
+        return types.InlineKeyboardButton(text=text, callback_data=callback_data, icon_custom_emoji_id=custom_emoji_id)
+    return types.InlineKeyboardButton(text=text, callback_data=callback_data)
 
 
 def main_menu(uid, frame=0):
@@ -3866,7 +3866,11 @@ async def cmd_start(message: Message):
         # Проверка обязательной подписки на каналы
         not_subbed = await check_subACriptions(uid)
         if not_subbed:
-            await send_subACribe_message(uid)
+            try:
+                await send_subACribe_message(uid)
+            except Exception as sub_err:
+                print(f"[cmd_start] Ошибка отправки сообщения о подписке uid={uid}: {sub_err}")
+                await bot.send_message(uid, "⚠️ <b>Для использования бота необходимо подписаться на наши каналы.</b>\n\nПожалуйста, подпишитесь на <a href='https://t.me/VisionFaceit'>Официальный канал</a> и <a href='https://t.me/+Wjzn5RXBYwQ5YmZhi'>Паблик StandFade</a>, затем напишите /start снова.", parse_mode="HTML", disable_web_page_preview=True)
             return
         # Убираем любую ReplyKeyboard
         try:
