@@ -4318,13 +4318,14 @@ async def cb_profile(callback: CallbackQuery):
             await bot.send_photo(
                 callback.message.chat.id, BufferedInputFile(img_buf.read() if hasattr(img_buf, "read") else img_buf, "profile.png"),
                 caption    = caption,
-                reply_markup = kb,
+                reply_markup = kb.as_markup(),
                 parse_mode = "HTML",
             )
             await safe_answer(callback.id)
             return
         except Exception as e:
-            send_error_log("card_profile (Default)", e)
+            print(f"[card_profile Default ERROR] {type(e).__name__}: {e}")
+            await send_error_log("card_profile (Default)", e)
 
     # fallback text profile
     text = (
@@ -4589,7 +4590,8 @@ async def cb_profile_quals(callback: CallbackQuery):
             await safe_answer(callback.id)
             return
         except Exception as e:
-            send_error_log("card_profile (Quals)", e)
+            print(f"[card_profile Quals ERROR] {type(e).__name__}: {e}")
+            await send_error_log("card_profile (Quals)", e)
 
     # fallback text
     q_games = q_wins + q_losses
@@ -4690,7 +4692,8 @@ async def cb_profile_duo(callback: CallbackQuery):
             await safe_answer(callback.id)
             return
         except Exception as e:
-            send_error_log("card_profile (Duo)", e)
+            print(f"[card_profile Duo ERROR] {type(e).__name__}: {e}")
+            await send_error_log("card_profile (Duo)", e)
 
     # fallback text
     d_games = d_wins + d_losses
