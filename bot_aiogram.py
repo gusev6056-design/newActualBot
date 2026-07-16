@@ -463,7 +463,8 @@ def elo_bar(elo: int, lvl: int) -> str:
 
 
 # ==================== ПОДКЛЮЧЕНИЕ К БД ====================
-async def _db():
+def _db():
+    import time as _time
     url = DATABASE_URL
     if url and url.startswith("postgres://"):
         url = "postgresql://" + url[len("postgres://"):]
@@ -474,7 +475,7 @@ async def _db():
         except psycopg2.OperationalError as e:
             last_err = e
             if "SSL" in str(e) or "connection" in str(e).lower():
-                await asyncio.sleep(1)  # converted from time.sleep
+                _time.sleep(1)
                 continue
             raise
     raise last_err
