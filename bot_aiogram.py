@@ -11725,9 +11725,7 @@ async def ticket_step_match_code(message: Message):
     )
 
 
-@router.message(lambda m: m.from_user.id in ticket_flow and ticket_flow[m.from_user.id].get("step") == "reason",
-    content_types=["text"],
-)
+@router.message(lambda m: m.from_user.id in ticket_flow and ticket_flow[m.from_user.id].get("step") == "reason", F.text)
 async def ticket_step_reason(message):
     uid = message.from_user.id
     reason = message.text.strip()
@@ -11744,9 +11742,7 @@ async def ticket_step_reason(message):
     )
 
 
-@router.message(lambda m: m.from_user.id in ticket_flow and ticket_flow[m.from_user.id].get("step") == "evidence",
-    content_types=["photo", "document", "text"],
-)
+@router.message(lambda m: m.from_user.id in ticket_flow and ticket_flow[m.from_user.id].get("step") == "evidence", F.content_type.in_({"photo", "document", "text"}))
 async def ticket_step_evidence(message):
     uid = message.from_user.id
     evidence_file_id = ""
@@ -11764,9 +11760,7 @@ async def ticket_step_evidence(message):
     )
 
 
-@router.message(lambda m: m.from_user.id in ticket_flow and ticket_flow[m.from_user.id].get("step") == "accused",
-    content_types=["text"],
-)
+@router.message(lambda m: m.from_user.id in ticket_flow and ticket_flow[m.from_user.id].get("step") == "accused", F.text)
 async def ticket_step_accused(message):
     uid = message.from_user.id
     accused_text = message.text.strip() if message.text else ""
