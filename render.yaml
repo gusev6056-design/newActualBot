@@ -16,7 +16,7 @@ services:
         libffi-dev
         shared-mime-info
         fonts-dejavu-core &&
-      pip install -r requirements.txt
+      pip install -r requirements_aiogram.txt
     startCommand: python bot.py
     healthCheckPath: /
     envVars:
