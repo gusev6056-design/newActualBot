@@ -335,7 +335,7 @@ def generate_profile_card(
     p(_text(36, CONT_Y + 22, "Statistic", 13, _GRAY))
 
     # ── KD Ring ────────────────────────────────────────────────────────────
-    KD_CX, KD_CY, KD_R = 80, CONT_Y + 122, 52
+    KD_CX, KD_CY, KD_R = 80, CONT_Y + 100, 52
     p(_ring(KD_CX, KD_CY, KD_R, 10, _PANEL3, kd_pct, _BLUE, _PINK, "kd"))
     p(_text(KD_CX, KD_CY - 7, f"{kd:.2f}", 22, _WHITE, "bold", anchor="middle"))
     p(_text(KD_CX, KD_CY + 13, "K/D", 10, _GRAY, anchor="middle"))
@@ -382,7 +382,7 @@ def generate_profile_card(
     N_COLS  = 3
     CARD_W  = (LW - 16 - (N_COLS - 1) * 6) // N_COLS
     CARD_H  = 60
-    ROW_Y0  = CONT_Y + STAT_H - 2 * CARD_H - 6 - 8
+    ROW_Y0  = CONT_Y + STAT_H - 2 * CARD_H - 6 - 28
 
     for i, (label, val_str, val_f, key) in enumerate(MINI_STATS):
         col = i % N_COLS
@@ -395,7 +395,7 @@ def generate_profile_card(
 
         p(_rrect(cx, cy, CARD_W, CARD_H, rx=6, fill=_PANEL2, stroke=_BORDER, sw=1))
         p(_text(cx + 10, cy + 16, label, 10, _GRAY))
-        p(_text(cx + CARD_W - 10, cy + CARD_H - 14, val_str, 26, _WHITE, "bold", anchor="end"))
+        p(_text(cx + CARD_W - 10, cy + CARD_H - 24, val_str, 26, _WHITE, "bold", anchor="end"))
         # Grade bar
         BY2 = cy + CARD_H - 20
         p(f'<rect x="{cx+8}" y="{BY2}" width="{CARD_W-16}" height="3" rx="1" fill="{_PANEL3}"/>')

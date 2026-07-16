@@ -232,8 +232,8 @@ REQUIRED_CHANNELS = [
     },
     {
         "id": os.environ.get("REQUIRED_CHANNEL_2_ID", "@VisionFaceit"),
-        "url": "https://t.me/+Wjzn5RXBYwQ5YmZhi",
-        "name": "Паблик StandFade",
+        "url": "https://t.me/+Wjzn5RXBYwQ5YmZh",
+        "name": "Паблик StandDarling",
     },
 ]
 
@@ -269,7 +269,7 @@ async def send_subACribe_message(chat_id: int, message_to_delete_id: int = None)
         chat_id,
         "⚠️ <b>Для использования бота необходимо подписаться на наши каналы:</b>\n\n"
         "1. 📢 <b>Официальный канал</b> - @VisionFaceit\n"
-        "2. 📢 <b>Паблик StandFade</b>\n\n"
+        "2. 📢 <b>Паблик StandDarling</b>\n\n"
         "Подпишитесь на оба канала, затем нажмите кнопку ниже.",
         reply_markup=kb.as_markup(),
         parse_mode="HTML",
@@ -348,7 +348,7 @@ creator_flow          = {}   # uid -> {step, ...}
 
 # ==================== КОНФИГ ПРИВАТОК ====================
 PRIVATE_CONFIG = {
-    "fade":    {"table": "players_fade", "display": "StandFade",    "emoji": "⚡", "matches_table": "fade_matches"},
+    "fade":    {"table": "players", "display": "StandDarling",    "emoji": "⚡", "matches_table": "matches"},
 }
 
 # ==================== ЛОББИ: размеры по режиму ====================
@@ -560,9 +560,9 @@ def init_db():
     ]:
         _add_column_if_missing("players", col, definition)
 
-    # ==================== ТАБЛИЦА players_fade (StandFade) ====================
+    # ==================== ТАБЛИЦА players (StandDarling) ====================
     cur.execute("""
-        CREATE TABLE IF NOT EXISTS players_fade (
+        CREATE TABLE IF NOT EXISTS players (
             user_id BIGINT PRIMARY KEY,
             username TEXT,
             game_id TEXT,
@@ -614,22 +614,22 @@ def init_db():
         ("active_background", "TEXT DEFAULT NULL"),
         ("fpl_access",        "INTEGER DEFAULT 0"),
     ]:
-        _add_column_if_missing("players_fade", col, definition)
+        _add_column_if_missing("players", col, definition)
 
-    # Боты для players_fade (те же что в players)
-    cur.execute("SELECT COUNT(*) FROM players_fade WHERE is_bot=1")
+    # Боты для players (те же что в players)
+    cur.execute("SELECT COUNT(*) FROM players WHERE is_bot=1")
     if cur.fetchone()[0] == 0:
         for i in range(1, 21):
             bot_id = 1000000000 + i
             cur.execute(
-                "INSERT INTO players_fade (user_id, username, game_id, device, registered, is_bot, elo) VALUES (%s, %s, %s, %s, 1, 1, 1000) ON CONFLICT (user_id) DO NOTHING",
+                "INSERT INTO players (user_id, username, game_id, device, registered, is_bot, elo) VALUES (%s, %s, %s, %s, 1, 1, 1000) ON CONFLICT (user_id) DO NOTHING",
                 (bot_id, f"Bot_{i}", str(500000000 + i), "PC" if i % 2 == 0 else "MOBILE"),
             )
     conn.commit()
 
-    # ==================== ТАБЛИЦА fade_matches (StandFade матчи) ====================
+    # ==================== ТАБЛИЦА matches (StandDarling матчи) ====================
     cur.execute("""
-        CREATE TABLE IF NOT EXISTS fade_matches (
+        CREATE TABLE IF NOT EXISTS matches (
             id SERIAL PRIMARY KEY,
             match_id INTEGER NOT NULL,
             match_code TEXT DEFAULT '',
@@ -648,7 +648,7 @@ def init_db():
     """)
     conn.commit()
     try:
-        cur.execute("CREATE UNIQUE INDEX IF NOT EXISTS fade_matches_match_id_uq ON fade_matches (match_id)")
+        cur.execute("CREATE UNIQUE INDEX IF NOT EXISTS matches_match_id_uq ON matches (match_id)")
         conn.commit()
     except Exception:
         conn.rollback()
@@ -664,18 +664,18 @@ def init_db():
 
     for admin_uid in ADMIN_IDS_LIST:
         cur.execute(
-            "INSERT INTO players_fade (user_id, username, registered, is_admin) VALUES (%s, 'Admin', 1, 1) ON CONFLICT (user_id) DO NOTHING",
+            "INSERT INTO players (user_id, username, registered, is_admin) VALUES (%s, 'Admin', 1, 1) ON CONFLICT (user_id) DO NOTHING",
             (admin_uid,),
         )
-        cur.execute("UPDATE players_fade SET is_admin=1 WHERE user_id=%s", (admin_uid,))
+        cur.execute("UPDATE players SET is_admin=1 WHERE user_id=%s", (admin_uid,))
     conn.commit()
 
-    cur.execute("SELECT COUNT(*) FROM players_fade WHERE is_bot=1")
+    cur.execute("SELECT COUNT(*) FROM players WHERE is_bot=1")
     if cur.fetchone()[0] == 0:
         for i in range(1, 21):
             bot_id = 1000000000 + i
             cur.execute(
-                "INSERT INTO players_fade (user_id, username, game_id, device, registered, is_bot, elo) VALUES (%s, %s, %s, %s, 1, 1, 1000) ON CONFLICT (user_id) DO NOTHING",
+                "INSERT INTO players (user_id, username, game_id, device, registered, is_bot, elo) VALUES (%s, %s, %s, %s, 1, 1, 1000) ON CONFLICT (user_id) DO NOTHING",
                 (bot_id, f"Bot_{i}", str(500000000 + i), "PC" if i % 2 == 0 else "MOBILE"),
             )
     conn.commit()
@@ -752,7 +752,7 @@ def init_db():
             purchased_at BIGINT DEFAULT EXTRACT(EPOCH FROM NOW())::BIGINT,
             is_activated INTEGER DEFAULT 0,
             activated_at BIGINT DEFAULT NULL,
-            FOREIGN KEY (user_id) REFERENCES players_fade(user_id),
+            FOREIGN KEY (user_id) REFERENCES players(user_id),
             FOREIGN KEY (item_id) REFERENCES shop_items(id)
         )
     """)
@@ -929,7 +929,7 @@ def init_db():
     except Exception:
         conn.rollback()
 
-    # Per-private match tables: fade_matches
+    # Per-private match tables: matches
     for _priv_key, _priv_cfg in PRIVATE_CONFIG.items():
         _mt = _priv_cfg["matches_table"]
         cur.execute(f"""
@@ -1218,7 +1218,7 @@ def get_user_private_display(uid):
 
 
 def get_player(user_id):
-    """Получает игрока из таблицы players (StandFade) - используется в admin и общих проверках."""
+    """Получает игрока из таблицы players (StandDarling) - используется в admin и общих проверках."""
     try:
         conn = _db()
         cur = conn.cursor()
@@ -1343,7 +1343,7 @@ def is_muted_check(uid):
             return True
         conn = _db()
         cur = conn.cursor()
-        cur.execute("UPDATE players_fade SET is_muted=0, mute_until=0 WHERE user_id=%s", (uid,))
+        cur.execute("UPDATE players SET is_muted=0, mute_until=0 WHERE user_id=%s", (uid,))
         conn.commit()
         conn.close()
     return False
@@ -1368,7 +1368,7 @@ def is_verified_check(uid):
     try:
         conn = _db()
         cur = conn.cursor()
-        cur.execute("SELECT is_verified FROM players_fade WHERE user_id=%s", (uid,))
+        cur.execute("SELECT is_verified FROM players WHERE user_id=%s", (uid,))
         row = cur.fetchone()
         conn.close()
         return bool(row and row[0])
@@ -1406,7 +1406,7 @@ def has_active_premium(uid):
     Premium глобальный - всегда читается из таблицы players."""
     conn = _db()
     cur = conn.cursor()
-    cur.execute("SELECT premium_until FROM players_fade WHERE user_id=%s", (uid,))
+    cur.execute("SELECT premium_until FROM players WHERE user_id=%s", (uid,))
     row = cur.fetchone()
     conn.close()
     return bool(row and row[0] and row[0] > int(time.time()))
@@ -1438,14 +1438,14 @@ def update_tg_username(uid, tg_username):
     try:
         conn = _db()
         cur = conn.cursor()
-        cur.execute("UPDATE players_fade SET tg_username=%s WHERE user_id=%s", (tg_username or "", uid))
+        cur.execute("UPDATE players SET tg_username=%s WHERE user_id=%s", (tg_username or "", uid))
         conn.commit()
         conn.close()
     except Exception as e:
         print(f"[update_tg_username] Ошибка: {e}")
 
 def nick_taken(nick, uid=None, exclude_uid=None):
-    table = get_user_table(uid) if uid else "players_fade"
+    table = get_user_table(uid) if uid else "players"
     conn = _db()
     cur = conn.cursor()
     if exclude_uid:
@@ -1457,7 +1457,7 @@ def nick_taken(nick, uid=None, exclude_uid=None):
     return count > 0
 
 def game_id_taken(game_id, uid=None, exclude_uid=None):
-    table = get_user_table(uid) if uid else "players_fade"
+    table = get_user_table(uid) if uid else "players"
     conn = _db()
     cur = conn.cursor()
     if exclude_uid:
@@ -1471,12 +1471,12 @@ def game_id_taken(game_id, uid=None, exclude_uid=None):
 def get_bots():
     conn = _db()
     cur = conn.cursor()
-    cur.execute("SELECT user_id, username FROM players_fade WHERE is_bot=1")
+    cur.execute("SELECT user_id, username FROM players WHERE is_bot=1")
     bots = cur.fetchall()
     conn.close()
     return bots
 
-def get_all_players(table="players_fade"):
+def get_all_players(table="players"):
     try:
         conn = _db()
         cur = conn.cursor()
@@ -1491,7 +1491,7 @@ def get_all_players(table="players_fade"):
         print(f"[get_all_players] Ошибка: {e}")
         return []
 
-def get_quals_players(table="players_fade"):
+def get_quals_players(table="players"):
     try:
         conn = _db()
         cur = conn.cursor()
@@ -1507,7 +1507,7 @@ def get_quals_players(table="players_fade"):
         print(f"[get_quals_players] Ошибка: {e}")
         return []
 
-def get_duo_players(table="players_fade"):
+def get_duo_players(table="players"):
     try:
         conn = _db()
         cur = conn.cursor()
@@ -1524,7 +1524,7 @@ def get_duo_players(table="players_fade"):
         return []
 
 
-def get_player_duo_stats(uid, table="players_fade"):
+def get_player_duo_stats(uid, table="players"):
     conn = _db()
     cur = conn.cursor()
     try:
@@ -1545,7 +1545,7 @@ def get_player_duo_stats(uid, table="players_fade"):
     return {"elo": deo or 1000, "wins": dw or 0, "losses": dl or 0,
             "kills": dk or 0, "deaths": dd or 0, "assists": da or 0}
 
-def get_player_quals_stats(uid, table="players_fade"):
+def get_player_quals_stats(uid, table="players"):
     conn = _db()
     cur = conn.cursor()
     try:
@@ -1571,7 +1571,7 @@ def get_player_quals_stats(uid, table="players_fade"):
 def get_player_by_game_id(game_id):
     conn = _db()
     cur = conn.cursor()
-    cur.execute("SELECT * FROM players_fade WHERE game_id=%s AND is_bot=0", (game_id,))
+    cur.execute("SELECT * FROM players WHERE game_id=%s AND is_bot=0", (game_id,))
     row = cur.fetchone()
     conn.close()
     return row
@@ -1757,7 +1757,7 @@ async def _crypto_pay_poll_loop():
                     continue
                 inv = items[0]
                 if inv.get("status") == "paid":
-                    add_coins_to_player(uid, coins_amount, table="players_fade")
+                    add_coins_to_player(uid, coins_amount, table="players")
                     conn2 = _db()
                     cur2 = conn2.cursor()
                     cur2.execute(
@@ -1848,7 +1848,7 @@ def apply_mute(uid, hours=2):
     until = int(time.time()) + hours * 3600
     conn = _db()
     cur = conn.cursor()
-    cur.execute("UPDATE players_fade SET is_muted=1, mute_until=%s WHERE user_id=%s", (until, uid))
+    cur.execute("UPDATE players SET is_muted=1, mute_until=%s WHERE user_id=%s", (until, uid))
     conn.commit()
     conn.close()
     return until
@@ -1856,8 +1856,8 @@ def apply_mute(uid, hours=2):
 def add_warn_to_player(uid):
     conn = _db()
     cur = conn.cursor()
-    cur.execute("UPDATE players_fade SET warns=warns+1 WHERE user_id=%s", (uid,))
-    cur.execute("SELECT warns FROM players_fade WHERE user_id=%s", (uid,))
+    cur.execute("UPDATE players SET warns=warns+1 WHERE user_id=%s", (uid,))
+    cur.execute("SELECT warns FROM players WHERE user_id=%s", (uid,))
     row = cur.fetchone()
     conn.commit()
     conn.close()
@@ -1945,7 +1945,7 @@ def get_season_top_with_ids(season_id, limit=10):
     return rows
 
 
-def get_current_season_top(priv_table="players_fade", limit=10):
+def get_current_season_top(priv_table="players", limit=10):
     """Топ текущего активного сезона - берёт живые данные из таблицы игроков."""
     conn = _db()
     cur = conn.cursor()
@@ -1991,7 +1991,7 @@ def reset_season(admin_uid):
                       COALESCE(quals_kills,0), COALESCE(quals_deaths,0),
                       COALESCE(quals_assists,0), COALESCE(quals_elo,1000),
                       COALESCE(mvp_count,0)
-               FROM players_fade WHERE is_bot=0"""
+               FROM players WHERE is_bot=0"""
         )
         players = cur.fetchall()
 
@@ -2022,7 +2022,7 @@ def reset_season(admin_uid):
         )
 
         cur.execute(
-            """UPDATE players_fade SET
+            """UPDATE players SET
                elo=1000, wins=0, losses=0, kills=0, deaths=0, assists=0,
                quals_wins=0, quals_losses=0, quals_kills=0, quals_deaths=0,
                quals_assists=0, quals_elo=1000, mvp_count=0
@@ -2141,7 +2141,7 @@ def rollback_match_stats(lobby):
     all_stats = lobby.get("all_stats")
     if not all_stats:
         return
-    priv_table = lobby.get("priv_table", "players_fade")
+    priv_table = lobby.get("priv_table", "players")
     league     = lobby.get("league", "default")
     is_quals   = (league == "quals")
     is_duo     = (league == "duo")
@@ -2248,7 +2248,7 @@ def save_match_to_history(lobby, data, all_stats):
 
     # ── 1. Обновляем главную таблицу matches (отдельная транзакция) ──────────
     # Важно: коммитим ДО работы с приваточной таблицей, иначе ошибка в
-    # fade_matches откатит и этот UPDATE, оставив статус 'active' в БД.
+    # matches откатит и этот UPDATE, оставив статус 'active' в БД.
     conn = None
     try:
         conn = _db()
@@ -2657,20 +2657,20 @@ def _apply_single_reward(cur, table, uid, reward: dict, now: int) -> str:
     elif t == "premium":
         # Premium глобальный - всегда players
         days = reward.get("days", 30)
-        cur.execute("SELECT premium_until FROM players_fade WHERE user_id=%s", (uid,))
+        cur.execute("SELECT premium_until FROM players WHERE user_id=%s", (uid,))
         prow = cur.fetchone()
         base = max((prow[0] or 0), now) if prow else now
         new_until = base + days * 24 * 3600
-        cur.execute("UPDATE players_fade SET premium_until=%s WHERE user_id=%s", (new_until, uid))
+        cur.execute("UPDATE players SET premium_until=%s WHERE user_id=%s", (new_until, uid))
         return f"👑 <b>Premium {days} дн.</b> (до {fmt_dt(new_until)})"
     elif t == "quals":
         # Quals глобальный - всегда players
         days = reward.get("days", 30)
-        cur.execute("SELECT quals_until FROM players_fade WHERE user_id=%s", (uid,))
+        cur.execute("SELECT quals_until FROM players WHERE user_id=%s", (uid,))
         qrow = cur.fetchone()
         base = max((qrow[0] or 0), now) if qrow else now
         new_until = base + days * 24 * 3600
-        cur.execute("UPDATE players_fade SET quals_until=%s, quals_access=1 WHERE user_id=%s", (new_until, uid))
+        cur.execute("UPDATE players SET quals_until=%s, quals_access=1 WHERE user_id=%s", (new_until, uid))
         return f"⭐ <b>Quals {days} дн.</b> (до {fmt_dt(new_until)})"
     return ""
 
@@ -2811,20 +2811,20 @@ def grant_shop_item(uid, item_id):
             now = int(time.time())
             days30 = 30 * 24 * 3600
             if item_type == "premium":
-                cur.execute("SELECT premium_until FROM players_fade WHERE user_id=%s", (uid,))
+                cur.execute("SELECT premium_until FROM players WHERE user_id=%s", (uid,))
                 row = cur.fetchone()
                 base = max(row[0] or 0, now)
                 new_until = base + days30
-                cur.execute("UPDATE players_fade SET premium_until=%s WHERE user_id=%s", (new_until, uid))
+                cur.execute("UPDATE players SET premium_until=%s WHERE user_id=%s", (new_until, uid))
                 dt = fmt_dt(new_until)
                 conn.commit(); conn.close()
                 return True, f"👑 <b>Premium активирован на 30 дней!</b>\nДействует до: {dt}"
             else:
-                cur.execute("SELECT quals_until FROM players_fade WHERE user_id=%s", (uid,))
+                cur.execute("SELECT quals_until FROM players WHERE user_id=%s", (uid,))
                 row = cur.fetchone()
                 base = max(row[0] or 0, now)
                 new_until = base + days30
-                cur.execute("UPDATE players_fade SET quals_until=%s, quals_access=1 WHERE user_id=%s", (new_until, uid))
+                cur.execute("UPDATE players SET quals_until=%s, quals_access=1 WHERE user_id=%s", (new_until, uid))
                 dt = fmt_dt(new_until)
                 conn.commit(); conn.close()
                 return True, f"⭐ <b>Quals доступ выдан на 30 дней!</b>\nДействует до: {dt}"
@@ -2876,7 +2876,7 @@ def get_active_cosmetics(uid):
         conn = _db()
         cur = conn.cursor()
         cur.execute(
-            "SELECT active_frame, active_banner, active_background FROM players_fade WHERE user_id=%s",
+            "SELECT active_frame, active_banner, active_background FROM players WHERE user_id=%s",
             (uid,),
         )
         row = cur.fetchone()
@@ -2915,7 +2915,7 @@ def buy_item(uid, item_id):
     cur = conn.cursor()
     try:
         cur.execute(
-            "UPDATE players_fade SET coins=coins-%s WHERE user_id=%s AND coins>=%s",
+            "UPDATE players SET coins=coins-%s WHERE user_id=%s AND coins>=%s",
             (price, uid, price),
         )
         if cur.rowcount == 0:
@@ -2925,26 +2925,26 @@ def buy_item(uid, item_id):
             return False, f"❌ Недостаточно Actual Coin!\nНужно: {price} AC\nУ вас: {bal} AC"
 
         # premium и quals обрабатываются напрямую (без инвентаря)
-        # Монеты всегда списываются из players_fade (глобальные), premium/quals тоже глобальные
+        # Монеты всегда списываются из players (глобальные), premium/quals тоже глобальные
         if item_type in ("premium", "quals"):
             now = int(time.time())
             days30 = 30 * 24 * 3600
             if item_type == "premium":
                 # Продлеваем от текущего остатка если премиум ещё активен
-                cur.execute("SELECT premium_until FROM players_fade WHERE user_id=%s", (uid,))
+                cur.execute("SELECT premium_until FROM players WHERE user_id=%s", (uid,))
                 row = cur.fetchone()
                 base = max(row[0] or 0, now)
                 new_until = base + days30
-                cur.execute("UPDATE players_fade SET premium_until=%s WHERE user_id=%s", (new_until, uid))
+                cur.execute("UPDATE players SET premium_until=%s WHERE user_id=%s", (new_until, uid))
                 dt = fmt_dt(new_until)
                 conn.commit(); conn.close()
                 return True, f"👑 <b>Premium активирован на 30 дней!</b>\nДействует до: {dt}"
             else:  # quals
-                cur.execute("SELECT quals_until FROM players_fade WHERE user_id=%s", (uid,))
+                cur.execute("SELECT quals_until FROM players WHERE user_id=%s", (uid,))
                 row = cur.fetchone()
                 base = max(row[0] or 0, now)
                 new_until = base + days30
-                cur.execute("UPDATE players_fade SET quals_until=%s, quals_access=1 WHERE user_id=%s", (new_until, uid))
+                cur.execute("UPDATE players SET quals_until=%s, quals_access=1 WHERE user_id=%s", (new_until, uid))
                 dt = fmt_dt(new_until)
                 conn.commit(); conn.close()
                 return True, f"⭐ <b>Quals доступ выдан на 30 дней!</b>\nДействует до: {dt}"
@@ -2978,10 +2978,10 @@ def activate_inventory_item(inv_id, uid, item_type, item_name):
     conn = _db()
     cur = conn.cursor()
     if item_type == "unwarn":
-        cur.execute("SELECT warns FROM players_fade WHERE user_id=%s", (uid,))
+        cur.execute("SELECT warns FROM players WHERE user_id=%s", (uid,))
         row = cur.fetchone()
         if row and row[0] > 0:
-            cur.execute("UPDATE players_fade SET warns=warns-1 WHERE user_id=%s", (uid,))
+            cur.execute("UPDATE players SET warns=warns-1 WHERE user_id=%s", (uid,))
         else:
             conn.close()
             return False, "❌ У вас нет варнов для снятия"
@@ -2991,19 +2991,19 @@ def activate_inventory_item(inv_id, uid, item_type, item_name):
     elif item_type == "premium":
         # Premium глобальный - всегда players
         now = int(time.time())
-        cur.execute("SELECT premium_until FROM players_fade WHERE user_id=%s", (uid,))
+        cur.execute("SELECT premium_until FROM players WHERE user_id=%s", (uid,))
         row = cur.fetchone()
         base = max(row[0] or 0, now)
         new_until = base + 30 * 24 * 3600
-        cur.execute("UPDATE players_fade SET premium_until=%s WHERE user_id=%s", (new_until, uid))
+        cur.execute("UPDATE players SET premium_until=%s WHERE user_id=%s", (new_until, uid))
     elif item_type == "quals":
         # Quals глобальный - всегда players
         now = int(time.time())
-        cur.execute("SELECT quals_until FROM players_fade WHERE user_id=%s", (uid,))
+        cur.execute("SELECT quals_until FROM players WHERE user_id=%s", (uid,))
         row = cur.fetchone()
         base = max(row[0] or 0, now)
         new_until = base + 30 * 24 * 3600
-        cur.execute("UPDATE players_fade SET quals_until=%s, quals_access=1 WHERE user_id=%s", (new_until, uid))
+        cur.execute("UPDATE players SET quals_until=%s, quals_access=1 WHERE user_id=%s", (new_until, uid))
     elif item_type == "frame":
         cur.execute(
             """UPDATE inventory SET is_activated=0
@@ -3014,7 +3014,7 @@ def activate_inventory_item(inv_id, uid, item_type, item_name):
                )""",
             (uid, uid),
         )
-        cur.execute("UPDATE players_fade SET active_frame=%s WHERE user_id=%s", (item_name, uid))
+        cur.execute("UPDATE players SET active_frame=%s WHERE user_id=%s", (item_name, uid))
     elif item_type == "banner":
         cur.execute(
             """UPDATE inventory SET is_activated=0
@@ -3025,7 +3025,7 @@ def activate_inventory_item(inv_id, uid, item_type, item_name):
                )""",
             (uid, uid),
         )
-        cur.execute("UPDATE players_fade SET active_banner=%s WHERE user_id=%s", (item_name, uid))
+        cur.execute("UPDATE players SET active_banner=%s WHERE user_id=%s", (item_name, uid))
     elif item_type == "background":
         cur.execute(
             """UPDATE inventory SET is_activated=0
@@ -3036,7 +3036,7 @@ def activate_inventory_item(inv_id, uid, item_type, item_name):
                )""",
             (uid, uid),
         )
-        cur.execute("UPDATE players_fade SET active_background=%s WHERE user_id=%s", (item_name, uid))
+        cur.execute("UPDATE players SET active_background=%s WHERE user_id=%s", (item_name, uid))
     cur.execute(
         "UPDATE inventory SET is_activated=1, activated_at=%s WHERE id=%s",
         (int(time.time()), inv_id),
@@ -3057,11 +3057,11 @@ def deactivate_inventory_item(inv_id, uid, item_type):
         (inv_id, uid),
     )
     if item_type == "frame":
-        cur.execute("UPDATE players_fade SET active_frame=NULL WHERE user_id=%s", (uid,))
+        cur.execute("UPDATE players SET active_frame=NULL WHERE user_id=%s", (uid,))
     elif item_type == "banner":
-        cur.execute("UPDATE players_fade SET active_banner=NULL WHERE user_id=%s", (uid,))
+        cur.execute("UPDATE players SET active_banner=NULL WHERE user_id=%s", (uid,))
     elif item_type == "background":
-        cur.execute("UPDATE players_fade SET active_background=NULL WHERE user_id=%s", (uid,))
+        cur.execute("UPDATE players SET active_background=NULL WHERE user_id=%s", (uid,))
     conn.commit()
     conn.close()
     return True, "✅ Предмет снят. Теперь используется авто-оформление по уровню."
@@ -3868,7 +3868,7 @@ async def cmd_start(message: Message):
                 await send_subACribe_message(uid)
             except Exception as sub_err:
                 print(f"[cmd_start] Ошибка отправки сообщения о подписке uid={uid}: {sub_err}")
-                await bot.send_message(uid, "⚠️ <b>Для использования бота необходимо подписаться на наши каналы.</b>\n\nПожалуйста, подпишитесь на <a href='https://t.me/VisionFaceit'>Официальный канал</a> и <a href='https://t.me/+Wjzn5RXBYwQ5YmZhi'>Паблик StandFade</a>, затем напишите /start снова.", parse_mode="HTML", disable_web_page_preview=True)
+                await bot.send_message(uid, "⚠️ <b>Для использования бота необходимо подписаться на наши каналы.</b>\n\nПожалуйста, подпишитесь на <a href='https://t.me/VisionFaceit'>Официальный канал</a> и <a href='https://t.me/+Wjzn5RXBYwQ5YmZh'>Паблик StandDarling</a>, затем напишите /start снова.", parse_mode="HTML", disable_web_page_preview=True)
             return
         # Убираем любую ReplyKeyboard
         try:
@@ -4185,7 +4185,7 @@ async def handle_change_flow(message: Message):
             await bot.send_message(uid, f"❌ Никнейм <b>{text}</b> уже занят!")
             return
         c2 = _db(); c2cur = c2.cursor()
-        c2cur.execute("UPDATE players_fade SET username=%s WHERE user_id=%s", (text, target_id))
+        c2cur.execute("UPDATE players SET username=%s WHERE user_id=%s", (text, target_id))
         c2.commit(); c2.close()
         await bot.send_message(uid, f"✅ Никнейм игрока изменён на <b>{text}</b>!")
         try:
@@ -4204,7 +4204,7 @@ async def handle_change_flow(message: Message):
             await bot.send_message(uid, f"❌ Game ID <code>{text}</code> уже занят!")
             return
         c2 = _db(); c2cur = c2.cursor()
-        c2cur.execute("UPDATE players_fade SET game_id=%s WHERE user_id=%s", (text, target_id))
+        c2cur.execute("UPDATE players SET game_id=%s WHERE user_id=%s", (text, target_id))
         c2.commit(); c2.close()
         await bot.send_message(uid, f"✅ Game ID игрока изменён на <code>{text}</code>!")
         try:
@@ -4392,7 +4392,7 @@ async def _transfer_step_target(message):
     else:
         try:
             conn2 = _db(); cur2 = conn2.cursor()
-            cur2.execute("SELECT * FROM players_fade WHERE username=%s AND is_bot=0", (text,))
+            cur2.execute("SELECT * FROM players WHERE username=%s AND is_bot=0", (text,))
             target = cur2.fetchone(); conn2.close()
         except Exception:
             pass
@@ -4470,9 +4470,9 @@ async def _transfer_step_amount(message):
     try:
         conn = _db(); cur = conn.cursor()
         # Списываем с отправителя (сумма + комиссия)
-        cur.execute("UPDATE players_fade SET coins=GREATEST(0, coins-%s) WHERE user_id=%s", (total_cost, uid))
+        cur.execute("UPDATE players SET coins=GREATEST(0, coins-%s) WHERE user_id=%s", (total_cost, uid))
         # Зачисляем получателю
-        cur.execute("UPDATE players_fade SET coins=coins+%s WHERE user_id=%s", (amount, target_uid))
+        cur.execute("UPDATE players SET coins=coins+%s WHERE user_id=%s", (amount, target_uid))
         conn.commit(); conn.close()
     except Exception as _te:
         print(f"[transfer_coins] {_te}")
@@ -5022,7 +5022,7 @@ async def cb_back(callback: CallbackQuery):
 
 
 # ==================== ЛОББИ ====================
-def get_duo_elo_for_player(uid, table="players_fade"):
+def get_duo_elo_for_player(uid, table="players"):
     """Явно запрашивает duo_elo по имени колонки, без привязки к индексу SELECT *."""
     try:
         conn = _db()
@@ -5034,7 +5034,7 @@ def get_duo_elo_for_player(uid, table="players_fade"):
     except Exception:
         return 1000
 
-def get_quals_elo_for_player(uid, table="players_fade"):
+def get_quals_elo_for_player(uid, table="players"):
     """Явно запрашивает quals_elo по имени колонки, без привязки к индексу SELECT *."""
     try:
         conn = _db()
@@ -5381,7 +5381,7 @@ async def start_accept_phase(lobby_id):
                     dt = fmt_dt(until)
                     # Сбрасываем счётчик варнов после авто-мута
                     conn_r = _db(); cur_r = conn_r.cursor()
-                    cur_r.execute("UPDATE players_fade SET warns=0 WHERE user_id=%s", (uid,))
+                    cur_r.execute("UPDATE players SET warns=0 WHERE user_id=%s", (uid,))
                     conn_r.commit(); conn_r.close()
                     prow = get_player(uid)
                     pname = prow[1] if prow else str(uid)
@@ -6371,9 +6371,9 @@ def _resolve_display_elo(uid, p, priv_table, league):
     if p and p[13]:  # бот - всегда p[4]
         return p[4]
     if league == "quals":
-        return get_quals_elo_for_player(uid, priv_table or "players_fade")
+        return get_quals_elo_for_player(uid, priv_table or "players")
     if league == "duo":
-        return get_duo_elo_for_player(uid, priv_table or "players_fade")
+        return get_duo_elo_for_player(uid, priv_table or "players")
     return p[4] if p else 1000
 
 def pline(uid, priv_table=None, league=None):
@@ -7873,7 +7873,7 @@ async def _finalize_match(reg_uid, match_key):
                     elo_change = -15 if kills >= 12 else -23
                     coins_reward = 4
             # Ensure player row exists in priv_table (defensive upsert for cross-private users)
-            if priv_table != "players_fade":
+            if priv_table != "players":
                 _src = get_player(_uid)
                 if _src:
                     try:
@@ -8670,7 +8670,7 @@ async def handle_rename(message: Message):
         return
     conn = _db()
     cur = conn.cursor()
-    cur.execute("UPDATE players_fade SET username=%s WHERE user_id=%s", (new_nick, uid))
+    cur.execute("UPDATE players SET username=%s WHERE user_id=%s", (new_nick, uid))
     cur.execute(
         "UPDATE inventory SET is_activated=1, activated_at=%s WHERE id=%s",
         (int(time.time()), inv_id),
@@ -8992,7 +8992,7 @@ async def cb_slots_spin(callback: CallbackQuery):
     # Списываем ставку
     try:
         conn = _db(); cur = conn.cursor()
-        cur.execute("UPDATE players_fade SET coins=GREATEST(0, coins-%s) WHERE user_id=%s", (bet, uid))
+        cur.execute("UPDATE players SET coins=GREATEST(0, coins-%s) WHERE user_id=%s", (bet, uid))
         conn.commit(); conn.close()
     except Exception as _se:
         print(f"[slots debit] {_se}")
@@ -9003,7 +9003,7 @@ async def cb_slots_spin(callback: CallbackQuery):
     if win > 0:
         try:
             conn2 = _db(); cur2 = conn2.cursor()
-            cur2.execute("UPDATE players_fade SET coins=coins+%s WHERE user_id=%s", (win, uid))
+            cur2.execute("UPDATE players SET coins=coins+%s WHERE user_id=%s", (win, uid))
             conn2.commit(); conn2.close()
         except Exception as _se2:
             print(f"[slots credit] {_se2}")
@@ -9150,7 +9150,7 @@ async def handle_slots_luck_flow(message: Message):
         if inp.isdigit():
             return get_player(int(inp))
         conn2 = _db(); cur2 = conn2.cursor()
-        cur2.execute("SELECT * FROM players_fade WHERE username=%s AND is_bot=0", (inp,))
+        cur2.execute("SELECT * FROM players WHERE username=%s AND is_bot=0", (inp,))
         row = cur2.fetchone(); conn2.close()
         return row
 
@@ -9335,7 +9335,7 @@ async def handle_party_invite(message: Message):
     else:
         conn = _db()
         cur = conn.cursor()
-        cur.execute("SELECT * FROM players_fade WHERE username=%s AND is_bot=0", (text,))
+        cur.execute("SELECT * FROM players WHERE username=%s AND is_bot=0", (text,))
         target = cur.fetchone()
         conn.close()
     if not target:
@@ -9726,7 +9726,7 @@ async def handle_editstat_flow(message: Message):
     db_field, label = all_fields.get(field, (field, field))
     conn = _db()
     cur = conn.cursor()
-    cur.execute(f"UPDATE players_fade SET {db_field}=%s WHERE user_id=%s AND registered=1", (value, target_id))
+    cur.execute(f"UPDATE players SET {db_field}=%s WHERE user_id=%s AND registered=1", (value, target_id))
     affected = cur.rowcount
     conn.commit()
     conn.close()
@@ -10287,7 +10287,7 @@ async def handle_admin_action(message: Message):
             return get_player(int(inp))
         conn2 = _db()
         cur2 = conn2.cursor()
-        cur2.execute("SELECT * FROM players_fade WHERE username=%s AND is_bot=0", (inp,))
+        cur2.execute("SELECT * FROM players WHERE username=%s AND is_bot=0", (inp,))
         row = cur2.fetchone()
         conn2.close()
         return row
@@ -10361,7 +10361,7 @@ async def handle_admin_action(message: Message):
             return
         target_id, new_elo = int(parts[0]), int(parts[1])
         conn = _db(); cur = conn.cursor()
-        cur.execute("UPDATE players_fade SET elo=%s WHERE user_id=%s AND registered=1", (new_elo, target_id))
+        cur.execute("UPDATE players SET elo=%s WHERE user_id=%s AND registered=1", (new_elo, target_id))
         affected = cur.rowcount
         conn.commit(); conn.close()
         if affected == 0:
@@ -10402,7 +10402,7 @@ async def handle_admin_action(message: Message):
         cur_warns = p[15] if len(p) > 15 else 0
         new_warns = max(0, cur_warns - 1)
         conn = _db(); cur = conn.cursor()
-        cur.execute("UPDATE players_fade SET warns=%s WHERE user_id=%s", (new_warns, p[0]))
+        cur.execute("UPDATE players SET warns=%s WHERE user_id=%s", (new_warns, p[0]))
         conn.commit(); conn.close()
         await bot.send_message(uid, f"➖ Варн снят с игрока <b>{p[1]}</b>. Итого: {new_warns}/3", parse_mode="HTML")
         try:
@@ -10437,7 +10437,7 @@ async def handle_admin_action(message: Message):
             return
         new_val = 0 if p[11] else 1
         conn = _db(); cur = conn.cursor()
-        cur.execute("UPDATE players_fade SET is_admin=%s WHERE user_id=%s", (new_val, p[0]))
+        cur.execute("UPDATE players SET is_admin=%s WHERE user_id=%s", (new_val, p[0]))
         conn.commit(); conn.close()
         status = "выдана" if new_val else "снята"
         await bot.send_message(uid, f"✅ Админка {status} игроку <b>{p[1]}</b>", parse_mode="HTML")
@@ -10450,7 +10450,7 @@ async def handle_admin_action(message: Message):
         cur_val = p[16] if len(p) > 16 else 0
         new_val = 0 if cur_val else 1
         conn = _db(); cur = conn.cursor()
-        cur.execute("UPDATE players_fade SET quals_access=%s WHERE user_id=%s", (new_val, p[0]))
+        cur.execute("UPDATE players SET quals_access=%s WHERE user_id=%s", (new_val, p[0]))
         conn.commit(); conn.close()
         status = "выдан" if new_val else "снят"
         await bot.send_message(uid, f"✅ Quals доступ {status} игроку <b>{p[1]}</b>", parse_mode="HTML")
@@ -10467,7 +10467,7 @@ async def handle_admin_action(message: Message):
         cur_val = p[17] if len(p) > 17 else 0
         new_val = 0 if cur_val else 1
         conn = _db(); cur = conn.cursor()
-        cur.execute("UPDATE players_fade SET is_game_reg=%s WHERE user_id=%s", (new_val, p[0]))
+        cur.execute("UPDATE players SET is_game_reg=%s WHERE user_id=%s", (new_val, p[0]))
         conn.commit(); conn.close()
         status = "выдана" if new_val else "снята"
         await bot.send_message(uid, f"✅ Роль Гейм Рег {status} игроку <b>{p[1]}</b>", parse_mode="HTML")
@@ -10492,7 +10492,7 @@ async def handle_admin_action(message: Message):
             await bot.send_message(uid, "❌ Игрок не найден")
             return
         conn = _db(); cur = conn.cursor()
-        cur.execute("UPDATE players_fade SET is_muted=0, mute_until=0 WHERE user_id=%s", (p[0],))
+        cur.execute("UPDATE players SET is_muted=0, mute_until=0 WHERE user_id=%s", (p[0],))
         conn.commit(); conn.close()
         await bot.send_message(uid, f"🔊 Мут снят с игрока <b>{p[1]}</b>", parse_mode="HTML")
         try:
@@ -10513,7 +10513,7 @@ async def handle_admin_action(message: Message):
             await bot.send_message(uid, "❌ Игрок не найден")
             return
         conn = _db(); cur = conn.cursor()
-        cur.execute("UPDATE players_fade SET is_on_check=1, check_admin_id=%s WHERE user_id=%s", (uid, p[0]))
+        cur.execute("UPDATE players SET is_on_check=1, check_admin_id=%s WHERE user_id=%s", (uid, p[0]))
         conn.commit(); conn.close()
         await bot.send_message(uid, f"🔎 Игрок <b>{p[1]}</b> вызван на проверку", parse_mode="HTML")
         admin_p = get_player(uid)
@@ -10539,7 +10539,7 @@ async def handle_admin_action(message: Message):
             await bot.send_message(uid, "❌ Игрок не найден")
             return
         conn = _db(); cur = conn.cursor()
-        cur.execute("UPDATE players_fade SET is_on_check=0, check_admin_id=0 WHERE user_id=%s", (p[0],))
+        cur.execute("UPDATE players SET is_on_check=0, check_admin_id=0 WHERE user_id=%s", (p[0],))
         conn.commit(); conn.close()
         await bot.send_message(uid, f"✅ Проверка снята с игрока <b>{p[1]}</b>", parse_mode="HTML")
         try:
@@ -10576,7 +10576,7 @@ async def handle_admin_action(message: Message):
         cur_val = is_verified_check(target_id)
         new_val = 0 if cur_val else 1
         conn_v = _db(); cur_v = conn_v.cursor()
-        cur_v.execute("UPDATE players_fade SET is_verified=%s WHERE user_id=%s", (new_val, target_id))
+        cur_v.execute("UPDATE players SET is_verified=%s WHERE user_id=%s", (new_val, target_id))
         conn_v.commit(); conn_v.close()
         status_txt = "✅ Синяя галочка выдана" if new_val else "❎ Синяя галочка снята"
         await bot.send_message(uid, f"{status_txt}: <b>{p[1]}</b>", parse_mode="HTML")
@@ -10594,7 +10594,7 @@ async def handle_admin_action(message: Message):
             if inp.isdigit():
                 return get_player(int(inp))
             c3 = _db(); cr3 = c3.cursor()
-            cr3.execute("SELECT * FROM players_fade WHERE username=%s AND is_bot=0", (inp,))
+            cr3.execute("SELECT * FROM players WHERE username=%s AND is_bot=0", (inp,))
             row3 = cr3.fetchone(); c3.close()
             return row3
         target_p = _find_p(text)
@@ -10694,7 +10694,7 @@ async def handle_ban_flow(message: Message):
             return get_player(int(inp))
         conn2 = _db()
         cur2 = conn2.cursor()
-        cur2.execute("SELECT * FROM players_fade WHERE username=%s AND is_bot=0", (inp,))
+        cur2.execute("SELECT * FROM players WHERE username=%s AND is_bot=0", (inp,))
         row = cur2.fetchone()
         conn2.close()
         return row
@@ -10711,7 +10711,7 @@ async def handle_ban_flow(message: Message):
         if p[14]:
             # Уже забанен - разбаниваем
             conn = _db(); cur = conn.cursor()
-            cur.execute("UPDATE players_fade SET is_banned=0, ban_reason='', ban_until=0 WHERE user_id=%s", (p[0],))
+            cur.execute("UPDATE players SET is_banned=0, ban_reason='', ban_until=0 WHERE user_id=%s", (p[0],))
             conn.commit(); conn.close()
             ban_flow.pop(uid, None)
             await bot.send_message(uid, f"✅ Игрок <b>{p[1]}</b> разблокирован.", parse_mode="HTML")
@@ -10761,7 +10761,7 @@ async def handle_ban_flow(message: Message):
 
         conn = _db(); cur = conn.cursor()
         cur.execute(
-            "UPDATE players_fade SET is_banned=1, ban_reason=%s, ban_until=%s WHERE user_id=%s",
+            "UPDATE players SET is_banned=1, ban_reason=%s, ban_until=%s WHERE user_id=%s",
             (reason, until, target_id),
         )
         conn.commit(); conn.close()
@@ -10819,7 +10819,7 @@ async def handle_warn_flow(message: Message):
         until = apply_mute(target_id, hours=2)
         dt = fmt_dt(until)
         conn_r = _db(); cur_r = conn_r.cursor()
-        cur_r.execute("UPDATE players_fade SET warns=0 WHERE user_id=%s", (target_id,))
+        cur_r.execute("UPDATE players SET warns=0 WHERE user_id=%s", (target_id,))
         conn_r.commit(); conn_r.close()
         await bot.send_message(uid,
             f"⚠️ Варн <b>{target_name}</b> - {warns}/3\n"
@@ -10951,7 +10951,7 @@ async def cb_admin_do_action(callback: CallbackQuery):
             # Разбаниваем
             ban_flow.pop(uid, None)
             c2 = _db(); c2cur = c2.cursor()
-            c2cur.execute("UPDATE players_fade SET is_banned=0, ban_reason='', ban_until=0 WHERE user_id=%s", (target_id,))
+            c2cur.execute("UPDATE players SET is_banned=0, ban_reason='', ban_until=0 WHERE user_id=%s", (target_id,))
             c2.commit(); c2.close()
             await safe_answer(callback.id, f"✅ Разблокирован: {p[1]}", show_alert=True)
             try:
@@ -10983,7 +10983,7 @@ async def cb_admin_do_action(callback: CallbackQuery):
     elif action == "unwarn":
         cur_warns = p[15] if len(p) > 15 else 0
         new_warns = max(0, cur_warns - 1)
-        cur.execute("UPDATE players_fade SET warns=%s WHERE user_id=%s", (new_warns, target_id))
+        cur.execute("UPDATE players SET warns=%s WHERE user_id=%s", (new_warns, target_id))
         conn.commit(); conn.close()
         await safe_answer(callback.id, f"➖ Варн снят: {p[1]} ({new_warns}/3)", show_alert=True)
         try:
@@ -11011,7 +11011,7 @@ async def cb_admin_do_action(callback: CallbackQuery):
         )
         return
     elif action == "unmute":
-        cur.execute("UPDATE players_fade SET is_muted=0, mute_until=0 WHERE user_id=%s", (target_id,))
+        cur.execute("UPDATE players SET is_muted=0, mute_until=0 WHERE user_id=%s", (target_id,))
         conn.commit(); conn.close()
         await safe_answer(callback.id, f"🔊 Мут снят: {p[1]}", show_alert=True)
         try:
@@ -11027,7 +11027,7 @@ async def cb_admin_do_action(callback: CallbackQuery):
         )
         return
     elif action == "check":
-        cur.execute("UPDATE players_fade SET is_on_check=1, check_admin_id=%s WHERE user_id=%s", (uid, target_id))
+        cur.execute("UPDATE players SET is_on_check=1, check_admin_id=%s WHERE user_id=%s", (uid, target_id))
         conn.commit(); conn.close()
         await safe_answer(callback.id, f"🔎 На проверке: {p[1]}", show_alert=True)
         try:
@@ -11043,7 +11043,7 @@ async def cb_admin_do_action(callback: CallbackQuery):
         )
         return
     elif action == "uncheck":
-        cur.execute("UPDATE players_fade SET is_on_check=0, check_admin_id=0 WHERE user_id=%s", (target_id,))
+        cur.execute("UPDATE players SET is_on_check=0, check_admin_id=0 WHERE user_id=%s", (target_id,))
         conn.commit(); conn.close()
         await safe_answer(callback.id, f"✅ Проверка снята: {p[1]}", show_alert=True)
         try:
@@ -11060,12 +11060,12 @@ async def cb_admin_do_action(callback: CallbackQuery):
         return
     elif action == "give_admin":
         new_val = 0 if p[11] else 1
-        cur.execute("UPDATE players_fade SET is_admin=%s WHERE user_id=%s", (new_val, target_id))
+        cur.execute("UPDATE players SET is_admin=%s WHERE user_id=%s", (new_val, target_id))
         msg_text = f"{'👑 Админка выдана' if new_val else '❌ Админка снята'}: {p[1]}"
     elif action == "quals":
         cur_val = p[16] if len(p) > 16 else 0
         new_val = 0 if cur_val else 1
-        cur.execute("UPDATE players_fade SET quals_access=%s WHERE user_id=%s", (new_val, target_id))
+        cur.execute("UPDATE players SET quals_access=%s WHERE user_id=%s", (new_val, target_id))
         msg_text = f"{'⭐ Quals выдан' if new_val else '❌ Quals снят'}: {p[1]}"
     elif action == "give_item":
         conn.close()
@@ -11081,7 +11081,7 @@ async def cb_admin_do_action(callback: CallbackQuery):
     elif action == "toggle_verified":
         cur_val = is_verified_check(target_id)
         new_val = 0 if cur_val else 1
-        cur.execute("UPDATE players_fade SET is_verified=%s WHERE user_id=%s", (new_val, target_id))
+        cur.execute("UPDATE players SET is_verified=%s WHERE user_id=%s", (new_val, target_id))
         msg_text = f"{'✅ Галочка выдана' if new_val else '❎ Галочка снята'}: {p[1]}"
         try:
             if new_val:
@@ -11188,13 +11188,13 @@ async def auto_unban_loop():
 
             # --- Авто-разбан (временный бан) ---
             cur.execute(
-                "SELECT user_id, username FROM players_fade WHERE is_banned=1 AND ban_until > 0 AND ban_until <= %s",
+                "SELECT user_id, username FROM players WHERE is_banned=1 AND ban_until > 0 AND ban_until <= %s",
                 (now,)
             )
             expired_bans = cur.fetchall()
             for (uid, uname) in expired_bans:
                 cur.execute(
-                    "UPDATE players_fade SET is_banned=0, ban_until=0, ban_reason='' WHERE user_id=%s",
+                    "UPDATE players SET is_banned=0, ban_until=0, ban_reason='' WHERE user_id=%s",
                     (uid,)
                 )
                 conn.commit()
@@ -11216,13 +11216,13 @@ async def auto_unban_loop():
 
             # --- Авто-размут ---
             cur.execute(
-                "SELECT user_id, username FROM players_fade WHERE is_muted=1 AND mute_until > 0 AND mute_until <= %s",
+                "SELECT user_id, username FROM players WHERE is_muted=1 AND mute_until > 0 AND mute_until <= %s",
                 (now,)
             )
             expired_mutes = cur.fetchall()
             for (uid, uname) in expired_mutes:
                 cur.execute(
-                    "UPDATE players_fade SET is_muted=0, mute_until=0 WHERE user_id=%s",
+                    "UPDATE players SET is_muted=0, mute_until=0 WHERE user_id=%s",
                     (uid,)
                 )
                 conn.commit()
@@ -11247,12 +11247,12 @@ async def auto_unban_loop():
             try:
                 # Premium
                 cur.execute(
-                    "SELECT user_id, username FROM players_fade WHERE premium_until > 0 AND premium_until <= %s",
+                    "SELECT user_id, username FROM players WHERE premium_until > 0 AND premium_until <= %s",
                     (now,)
                 )
                 expired_premiums = cur.fetchall()
                 for (puid, puname) in expired_premiums:
-                    cur.execute("UPDATE players_fade SET premium_until=0 WHERE user_id=%s", (puid,))
+                    cur.execute("UPDATE players SET premium_until=0 WHERE user_id=%s", (puid,))
                     conn.commit()
                     total_expired_premiums += 1
                     try:
@@ -11266,12 +11266,12 @@ async def auto_unban_loop():
 
                 # Quals
                 cur.execute(
-                    "SELECT user_id, username FROM players_fade WHERE quals_until > 0 AND quals_until <= %s AND quals_access=1",
+                    "SELECT user_id, username FROM players WHERE quals_until > 0 AND quals_until <= %s AND quals_access=1",
                     (now,)
                 )
                 expired_quals = cur.fetchall()
                 for (puid, puname) in expired_quals:
-                    cur.execute("UPDATE players_fade SET quals_until=0, quals_access=0 WHERE user_id=%s", (puid,))
+                    cur.execute("UPDATE players SET quals_until=0, quals_access=0 WHERE user_id=%s", (puid,))
                     conn.commit()
                     total_expired_quals += 1
                     try:
@@ -11767,7 +11767,7 @@ async def ticket_step_accused(message):
     if accused_name.startswith("@"):
         conn = _db()
         cur = conn.cursor()
-        cur.execute("SELECT user_id FROM players_fade WHERE tg_username=%s", (accused_name.lstrip("@"),))
+        cur.execute("SELECT user_id FROM players WHERE tg_username=%s", (accused_name.lstrip("@"),))
         row = cur.fetchone()
         conn.close()
         if row:
@@ -11931,7 +11931,7 @@ def _get_admin_list():
         conn = _db()
         cur  = conn.cursor()
         cur.execute(
-            "SELECT user_id, username FROM players_fade WHERE is_admin=1 AND is_bot=0 ORDER BY username"
+            "SELECT user_id, username FROM players WHERE is_admin=1 AND is_bot=0 ORDER BY username"
         )
         rows = cur.fetchall()
         conn.close()
@@ -11954,7 +11954,7 @@ def _get_admin_restrictions_set(admin_id):
         return set()
 
 
-def _reset_player_stats(target_uid, table="players_fade"):
+def _reset_player_stats(target_uid, table="players"):
     conn = _db()
     cur  = conn.cursor()
     cur.execute(
@@ -11971,7 +11971,7 @@ def _reset_player_stats(target_uid, table="players_fade"):
     conn.close()
 
 
-def _reset_all_stats(table="players_fade"):
+def _reset_all_stats(table="players"):
     conn = _db()
     cur  = conn.cursor()
     cur.execute(
@@ -11987,7 +11987,7 @@ def _reset_all_stats(table="players_fade"):
     conn.close()
 
 
-def _reset_everything(table="players_fade"):
+def _reset_everything(table="players"):
     """Обнуляет ВСЁ: ELO, статы, монеты, премку, варны, баны, мут."""
     conn = _db()
     cur  = conn.cursor()
@@ -12130,7 +12130,7 @@ async def cb_creator_reset_all_exec(callback: CallbackQuery):
         await safe_answer(callback.id, "❌ Нет доступа")
         return
     try:
-        _reset_all_stats("players_fade")
+        _reset_all_stats("players")
         log_admin_action(uid, "reset_all_stats", details="Обнуление статы всех игроков")
         await safe_answer(callback.id, "✅ Статистика всех игроков обнулена!", show_alert=True)
         await callback.message.edit_text(
@@ -12177,7 +12177,7 @@ async def cb_creator_reset_everything_exec(callback: CallbackQuery):
         await safe_answer(callback.id, "❌ Нет доступа")
         return
     try:
-        _reset_everything("players_fade")
+        _reset_everything("players")
         log_admin_action(uid, "reset_everything", details="Полное обнуление всех игроков (ELO, монеты, премка, варны, баны, мут)")
         await safe_answer(callback.id, "💣 Всё обнулено!", show_alert=True)
         await bot.edit_message_text(
@@ -12346,7 +12346,7 @@ async def cb_creator_reset_exec(callback: CallbackQuery):
     target_p = get_player(t_uid)
     t_name   = target_p[1] if target_p else str(t_uid)
     try:
-        _reset_player_stats(t_uid, "players_fade")
+        _reset_player_stats(t_uid, "players")
         log_admin_action(uid, "reset_player_stats", target_id=t_uid, details=t_name)
         await safe_answer(callback.id, f"✅ Стата {t_name} обнулена!", show_alert=True)
         await callback.message.edit_text(
@@ -12394,7 +12394,7 @@ async def handle_creator_flow(message: Message):
                 conn2 = _db()
                 cur2  = conn2.cursor()
                 cur2.execute(
-                    "SELECT * FROM players_fade WHERE LOWER(username)=LOWER(%s) AND is_bot=0", (inp,)
+                    "SELECT * FROM players WHERE LOWER(username)=LOWER(%s) AND is_bot=0", (inp,)
                 )
                 target_p = cur2.fetchone()
                 conn2.close()
@@ -12428,25 +12428,25 @@ async def cb_creator_botstats(callback: CallbackQuery):
     try:
         conn = _db()
         cur  = conn.cursor()
-        cur.execute("SELECT COUNT(*) FROM players_fade WHERE is_bot=0")
+        cur.execute("SELECT COUNT(*) FROM players WHERE is_bot=0")
         total_players = cur.fetchone()[0]
-        cur.execute("SELECT COUNT(*) FROM players_fade WHERE is_bot=0 AND registered=1")
+        cur.execute("SELECT COUNT(*) FROM players WHERE is_bot=0 AND registered=1")
         reg_players = cur.fetchone()[0]
-        cur.execute("SELECT COUNT(*) FROM players_fade WHERE premium_until > %s AND is_bot=0", (int(time.time()),))
+        cur.execute("SELECT COUNT(*) FROM players WHERE premium_until > %s AND is_bot=0", (int(time.time()),))
         premium_count = cur.fetchone()[0]
-        cur.execute("SELECT COUNT(*) FROM players_fade WHERE is_banned=1 AND is_bot=0")
+        cur.execute("SELECT COUNT(*) FROM players WHERE is_banned=1 AND is_bot=0")
         banned_count = cur.fetchone()[0]
-        cur.execute("SELECT COUNT(*) FROM players_fade WHERE is_admin=1 AND is_bot=0")
+        cur.execute("SELECT COUNT(*) FROM players WHERE is_admin=1 AND is_bot=0")
         admin_count = cur.fetchone()[0]
-        cur.execute("SELECT COUNT(*) FROM players_fade WHERE is_verified=1 AND is_bot=0")
+        cur.execute("SELECT COUNT(*) FROM players WHERE is_verified=1 AND is_bot=0")
         verified_count = cur.fetchone()[0]
-        cur.execute("SELECT COUNT(*) FROM players_fade WHERE quals_access=1 AND is_bot=0")
+        cur.execute("SELECT COUNT(*) FROM players WHERE quals_access=1 AND is_bot=0")
         quals_count = cur.fetchone()[0]
         cur.execute("SELECT COUNT(*) FROM matches")
         total_matches = cur.fetchone()[0]
         cur.execute("SELECT COUNT(*) FROM promo_codes WHERE is_active=1")
         promos = cur.fetchone()[0]
-        cur.execute("SELECT SUM(coins) FROM players_fade WHERE is_bot=0")
+        cur.execute("SELECT SUM(coins) FROM players WHERE is_bot=0")
         total_coins = cur.fetchone()[0] or 0
         cur.execute("SELECT season_number FROM seasons WHERE is_active=1 ORDER BY id DESC LIMIT 1")
         row_s = cur.fetchone()
@@ -12513,7 +12513,7 @@ async def cb_creator_broadcast_confirm(callback: CallbackQuery):
     try:
         conn = _db()
         cur  = conn.cursor()
-        cur.execute("SELECT user_id FROM players_fade WHERE is_bot=0 AND registered=1")
+        cur.execute("SELECT user_id FROM players WHERE is_bot=0 AND registered=1")
         player_ids = [row[0] for row in cur.fetchall()]
         conn.close()
     except Exception as e:
@@ -12573,12 +12573,12 @@ async def cb_creator_premium_exec(callback: CallbackQuery):
     try:
         conn = _db()
         cur  = conn.cursor()
-        cur.execute("SELECT premium_until FROM players_fade WHERE user_id=%s", (t_uid,))
+        cur.execute("SELECT premium_until FROM players WHERE user_id=%s", (t_uid,))
         row = cur.fetchone()
         now = int(time.time())
         current_until = row[0] if (row and row[0] and row[0] > now) else now
         new_until = current_until + days * 86400
-        cur.execute("UPDATE players_fade SET premium_until=%s WHERE user_id=%s", (new_until, t_uid))
+        cur.execute("UPDATE players SET premium_until=%s WHERE user_id=%s", (new_until, t_uid))
         conn.commit()
         conn.close()
         log_admin_action(uid, "give_premium", target_id=t_uid,
@@ -12637,7 +12637,7 @@ async def cb_creator_verify_exec(callback: CallbackQuery):
     try:
         conn = _db()
         cur  = conn.cursor()
-        cur.execute("UPDATE players_fade SET is_verified=%s WHERE user_id=%s", (new_val, t_uid))
+        cur.execute("UPDATE players SET is_verified=%s WHERE user_id=%s", (new_val, t_uid))
         conn.commit()
         conn.close()
         label = "выдана ✅" if new_val else "снята ❌"
@@ -12721,7 +12721,7 @@ async def cb_creator_demote(callback: CallbackQuery):
     try:
         conn = _db()
         cur  = conn.cursor()
-        cur.execute("UPDATE players_fade SET is_admin=0 WHERE user_id=%s", (t_uid,))
+        cur.execute("UPDATE players SET is_admin=0 WHERE user_id=%s", (t_uid,))
         conn.commit()
         conn.close()
         if t_uid in ADMIN_IDS_LIST:
@@ -12877,8 +12877,8 @@ async def cb_creator_coins_exec(callback: CallbackQuery):
     try:
         conn = _db()
         cur  = conn.cursor()
-        cur.execute("UPDATE players_fade SET coins = GREATEST(0, coins + %s) WHERE user_id=%s", (amount, t_uid))
-        cur.execute("SELECT coins FROM players_fade WHERE user_id=%s", (t_uid,))
+        cur.execute("UPDATE players SET coins = GREATEST(0, coins + %s) WHERE user_id=%s", (amount, t_uid))
+        cur.execute("SELECT coins FROM players WHERE user_id=%s", (t_uid,))
         new_bal = cur.fetchone()[0]
         conn.commit()
         conn.close()
@@ -12961,7 +12961,7 @@ async def cb_creator_new_season_exec(callback: CallbackQuery):
             season_id = row[0]
             cur.execute("SELECT user_id, username, elo, wins, losses, kills, deaths, assists, "
                         "quals_wins, quals_losses, quals_kills, quals_deaths, quals_assists, "
-                        "quals_elo, mvp_count FROM players_fade WHERE is_bot=0")
+                        "quals_elo, mvp_count FROM players WHERE is_bot=0")
             players_snap = cur.fetchall()
             for ps in players_snap:
                 cur.execute("""
@@ -12977,7 +12977,7 @@ async def cb_creator_new_season_exec(callback: CallbackQuery):
             "INSERT INTO seasons (season_number, name, is_active) VALUES (%s, %s, 1)",
             (new_season_num, f"Сезон {new_season_num}"),
         )
-        _reset_all_stats("players_fade")
+        _reset_all_stats("players")
         conn.commit()
         conn.close()
         log_admin_action(uid, "new_season", details=f"Сезон #{new_season_num} начат")
@@ -13005,7 +13005,7 @@ async def _handle_creator_flow_extended(message, uid, flow, step):
         try:
             conn2 = _db()
             cur2  = conn2.cursor()
-            cur2.execute("SELECT * FROM players_fade WHERE LOWER(username)=LOWER(%s) AND is_bot=0", (inp,))
+            cur2.execute("SELECT * FROM players WHERE LOWER(username)=LOWER(%s) AND is_bot=0", (inp,))
             p = cur2.fetchone()
             conn2.close()
             return p
@@ -13100,7 +13100,7 @@ async def _handle_creator_flow_extended(message, uid, flow, step):
         try:
             conn = _db()
             cur  = conn.cursor()
-            cur.execute("UPDATE players_fade SET is_admin=1 WHERE user_id=%s", (t_uid,))
+            cur.execute("UPDATE players SET is_admin=1 WHERE user_id=%s", (t_uid,))
             conn.commit()
             conn.close()
             if t_uid not in ADMIN_IDS_LIST:

@@ -1442,7 +1442,7 @@ def generate_leaderboard_card(players: list, title: str = "TOP ИГРОКОВ П
     draw.rectangle([(0, 0), (W, HEAD_H - 1)], fill=(10, 10, 10))
     draw.line([(0, HEAD_H - 1), (W, HEAD_H - 1)], fill=_SEP, width=2)
     draw.ellipse([(18, 19), (30, 31)], fill=(180, 180, 180))
-    draw.text((38, 17), "ACTUAL FACEIT", font=_font(13, bold=True), fill=_TEXT)
+    draw.text((38, 17), "VISION FACEIT", font=_font(13, bold=True), fill=_TEXT)
 
     badge_x = W - 12
     for badge_text, badge_col in [
@@ -1662,7 +1662,7 @@ def generate_match_result_card(
 
     fy = H - FOOT_H
     draw.rectangle([(0, fy), (W, H)], fill=(10, 10, 16))
-    draw.text((16, fy + 8), "ACTUAL FACEIT", font=_font(12, bold=True), fill=GOLD_DIM)
+    draw.text((16, fy + 8), "VISION FACEIT", font=_font(12, bold=True), fill=GOLD_DIM)
     _text_r(draw, W - 16, fy + 8, f"#{match_code} | {map_name}", _font(11), GRAY)
 
     buf = io.BytesIO()
@@ -1699,7 +1699,7 @@ def generate_duo_leaderboard_card(players: list, title: str = "TOP 2v2 ПО ELO"
     draw.rectangle([(0, 0), (W, HEAD_H - 1)], fill=(10, 10, 10))
     draw.line([(0, HEAD_H - 1), (W, HEAD_H - 1)], fill=_SEP, width=1)
     draw.ellipse([(18, 19), (30, 31)], fill=(180, 180, 180))
-    draw.text((38, 17), "ACTUAL FACEIT", font=_font(13, bold=True), fill=_WH)
+    draw.text((38, 17), "VISION FACEIT", font=_font(13, bold=True), fill=_WH)
 
     bw = _tw(draw, "2V2", _font(11, bold=True)) + 16
     bx = W - 12 - bw
