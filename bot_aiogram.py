@@ -5360,7 +5360,7 @@ async def start_accept_phase(lobby_id):
         except Exception:
             pass
 
-    def check_accept():
+    async def check_accept():
         await asyncio.sleep(ACCEPT_TIMEOUT)  # converted from time.sleep
         lobby2 = active_lobbies.get(lobby_id)
         if not lobby2 or lobby2["status"] != "accepting":
@@ -5684,7 +5684,7 @@ async def _do_ban_turn(lobby_id):
 
     # Если капитан не определён - авто-баним через 1 сек
     if captain_uid is None:
-        def _auto_ban_null():
+        async def _auto_ban_null():
             await asyncio.sleep(1)  # converted from time.sleep
             lobby2 = active_lobbies.get(lobby_id)
             if not lobby2 or lobby2["status"] != "mapban" or not lobby2.get("maps_remaining"):
@@ -5694,8 +5694,8 @@ async def _do_ban_turn(lobby_id):
         return
 
     if is_bot_player(captain_uid):
-        def bot_auto_ban():
-            await asyncio.sleep(random.uniform(3, 5)  # converted from time.sleep)
+        async def bot_auto_ban():
+            await asyncio.sleep(random.uniform(3, 5))  # converted from time.sleep
             lobby2 = active_lobbies.get(lobby_id)
             if not lobby2 or lobby2["status"] != "mapban" or not lobby2.get("maps_remaining"):
                 return
@@ -5707,7 +5707,7 @@ async def _do_ban_turn(lobby_id):
     else:
         _send_ban_keyboard(lobby_id, captain_uid)
         # AFK-таймер: сравниваем ban_count, а не ban_turn - иначе 2-й ход того же капитана ложно срабатывает
-        def captain_afk_timeout():
+        async def captain_afk_timeout():
             await asyncio.sleep(BAN_TURN_TIMEOUT)  # converted from time.sleep
             lobby2 = active_lobbies.get(lobby_id)
             if not lobby2 or lobby2["status"] != "mapban":
@@ -6105,8 +6105,8 @@ async def _do_draft_turn(lobby_id):
 
     # --- Bot captain: auto-pick best unit by avg ELO ---
     if captain_uid and is_bot_player(captain_uid):
-        def _bot_pick():
-            await asyncio.sleep(random.uniform(2, 4)  # converted from time.sleep)
+        async def _bot_pick():
+            await asyncio.sleep(random.uniform(2, 4))  # converted from time.sleep
             l2 = active_lobbies.get(lobby_id)
             if not l2 or l2.get("status") != "draft":
                 return
@@ -7188,7 +7188,7 @@ async def handle_ai_reg_photo(message):
     await bot.send_message(uid, "⏳ Анализирую скрин через нейросеть...", parse_mode="HTML")
 
     # Вызываем GPT-4o Vision в отдельном потоке чтобы не блокировать поллинг
-    def _analyze():
+    async def _analyze():
         try:
             ai_result = _call_openai_vision(image_bytes)
         except Exception as _e:
