@@ -226,13 +226,13 @@ dp.include_router(router)
 # ==================== ОБЯЗАТЕЛЬНЫЕ КАНАЛЫ ====================
 REQUIRED_CHANNELS = [
     {
-        "id": "@actualfaceitnews",
-        "url": "https://t.me/actualfaceitnews",
+        "id": "@VisionFaceit",
+        "url": "https://t.me/VisionFaceit",
         "name": "Официальный канал",
     },
     {
-        "id": os.environ.get("REQUIRED_CHANNEL_2_ID", "@actualfaceitnews"),
-        "url": "https://t.me/+Iftd5uhl3EJiZGRi",
+        "id": os.environ.get("REQUIRED_CHANNEL_2_ID", "@VisionFaceit"),
+        "url": "https://t.me/+Wjzn5RXBYwQ5YmZhi",
         "name": "Паблик StandFade",
     },
 ]
@@ -268,7 +268,7 @@ async def send_subACribe_message(chat_id: int, message_to_delete_id: int = None)
     await bot.send_message(
         chat_id,
         "⚠️ <b>Для использования бота необходимо подписаться на наши каналы:</b>\n\n"
-        "1. 📢 <b>Официальный канал</b> - @actualfaceitnews\n"
+        "1. 📢 <b>Официальный канал</b> - @VisionFaceit\n"
         "2. 📢 <b>Паблик StandFade</b>\n\n"
         "Подпишитесь на оба канала, затем нажмите кнопку ниже.",
         reply_markup=kb.as_markup(),
