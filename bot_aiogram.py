@@ -13312,6 +13312,24 @@ async def cb_creator_coinpack_target_all(callback: CallbackQuery):
 
 
 # ==================== ЗАПУСК ====================
+async def run_web():
+    """Health-check HTTP сервер на aiohttp (заменяет Flask)."""
+    import os
+    port = int(os.environ.get("PORT", 8099))
+
+    async def health(request):
+        return _aio_web.Response(text="OK")
+
+    app = _aio_web.Application()
+    app.router.add_get("/", health)
+    app.router.add_get("/health", health)
+
+    runner = _aio_web.AppRunner(app)
+    await runner.setup()
+    site = _aio_web.TCPSite(runner, "0.0.0.0", port)
+    await site.start()
+    print(f"🌐 Health-check сервер запущен на порту {port}")
+
 async def main():
     await run_web()
     print("🚀 Инициализация БД...")
