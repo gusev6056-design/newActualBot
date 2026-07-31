@@ -1,13336 +1,6696 @@
-# -*- coding: utf-8 -*-
-# AUTO-CONVERTED: telebot → aiogram 3.x  by convert_to_aiogram.js
-# Manual review recommended for:
-#   - Complex keyboard builders (adjust() calls)
-#   - BytesIO → BufferedInputFile wrapping
-#   - Any remaining 'def' that should be 'async def'
-
-import os
-import sys
-import functools
-print = functools.partial(print, flush=True)
-try:
-    sys.stdout.reconfigure(line_buffering=True)
-    sys.stderr.reconfigure(line_buffering=True)
-except Exception:
-    pass
-import re
-# telebot replaced by aiogram
-# from telebot import types → replaced
-# CancelUpdate removed (aiogram uses middleware)
-import psycopg2
-import psycopg2.extras
-# Flask replaced by aiohttp
-import threading
-import random
-import time
-import datetime
-import json
-
 import asyncio
-from aiogram import Bot, Dispatcher, Router, F
-from aiogram import types as types
-from aiogram.filters import Command, CommandStart
-from aiogram.fsm.storage.memory import MemoryStorage
-from aiogram.types import (
-    Message, CallbackQuery,
-    InlineKeyboardMarkup, InlineKeyboardButton,
-    ReplyKeyboardMarkup, KeyboardButton, ReplyKeyboardRemove,
-    BufferedInputFile, InputMediaPhoto,
+import sqlite3
+import os
+import io
+import datetime
+import random
+import logging
+import re as _re_ocr
+import difflib as _difflib
+from typing import Optional
+
+logging.basicConfig(
+    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+    level=logging.INFO,
 )
-from aiogram.utils.keyboard import InlineKeyboardBuilder, ReplyKeyboardBuilder
-from aiogram.client.default import DefaultBotProperties
-from aiogram.enums import ParseMode
-from aiohttp import web as _aio_web
-import base64
-import urllib.request
-import urllib.error
+logger = logging.getLogger(__name__)
 
-CRYPTO_PAY_API_TOKEN = os.environ.get("CRYPTO_PAY_API_TOKEN", "").strip().strip('"').strip("'")
-CRYPTO_PAY_API_URL = "https://pay.crypt.bot/api/"
-CRYPTO_PAY_ASSET = "USDT"
-
-
-PAYMENT_PROVIDER_TOKEN = os.environ.get("PAYMENT_PROVIDER_TOKEN", "").strip().strip('"').strip("'")
-
-
-SHOP_BANNER_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "shop_banner.jpg")
-
-
-SHOP_PANEL_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "shop_panel.png")
-
-
-MSK = datetime.timezone(datetime.timedelta(hours=3))
-
-def fmt_dt(ts: int) -> str:
-    """."""
-    return datetime.datetime.fromtimestamp(ts, tz=MSK).strftime("%H:%M %d.%m")
-
-async def safe_answer(callback_id, text="", show_alert=False, **kwargs):
-    """answer_callback_query без краша если query устарела (>15 сек) или уже отвечена."""
-    try:
-        await bot.answer_callback_query(callback_id, text, show_alert=show_alert, **kwargs)
-    except Exception:
-        pass
-
-# Очередь сообщений для авто-удаления: список (chat_id, msg_id, delete_at)
-_delete_queue: list = []
-_delete_lock = threading.Lock()
-
-def AChedule_delete(chat_id, msg_id, min_minutes=5, max_minutes=20):
-    """Запланировать удаление сообщения через случайный интервал 5-20 минут."""
-    if not msg_id:
-        return
-    delay = random.randint(min_minutes * 60, max_minutes * 60)
-    delete_at = int(time.time()) + delay
-    with _delete_lock:
-        _delete_queue.append((chat_id, msg_id, delete_at))
-
-async def _auto_delete_loop():
-    """Фоновый поток: удаляет устаревшие сообщения бота."""
-    while True:
-        try:
-            now = int(time.time())
-            to_delete = []
-            with _delete_lock:
-                remaining = []
-                for entry in _delete_queue:
-                    if entry[2] <= now:
-                        to_delete.append(entry)
-                    else:
-                        remaining.append(entry)
-                _delete_queue[:] = remaining
-            for chat_id, msg_id, _ in to_delete:
-                try:
-                    await bot.delete_message(chat_id, msg_id)
-                except Exception:
-                    pass
-        except Exception as e:
-            print(f"[auto_delete] Ошибка: {e}")
-        await asyncio.sleep(30)  # converted from time.sleep
-
+from telegram import (
+    Update, InlineKeyboardButton, InlineKeyboardMarkup,
+    ReplyKeyboardMarkup, KeyboardButton, MessageEntity, WebAppInfo,
+)
+from telegram.ext import (
+    Application, CommandHandler, CallbackQueryHandler,
+    MessageHandler, ContextTypes, filters, ApplicationHandlerStop,
+)
 try:
-    from card_generator_svg import generate_profile_card   # cairosvg renderer
-    from card_generator import (                           # остальные карточки остаются на Pillow
-        generate_leaderboard_card,
-        generate_match_result_card,
-        generate_duo_leaderboard_card,
-        generate_shop_image,
+    from card_renderer import (
+        generate_profile_card, generate_tasks_card,
+        generate_shop_card, generate_leaderboard_card,
     )
     CARDS_ENABLED = True
-    print("✅ card_generator_svg (cairosvg) + card_generator загружены")
-except Exception as _card_err:
-    try:
-        from card_generator import (
-            generate_profile_card, generate_leaderboard_card,
-            generate_match_result_card, generate_duo_leaderboard_card,
-            generate_shop_image,
-        )
-        CARDS_ENABLED = True
-        print("✅ card_generator (Pillow) загружен как fallback")
-    except Exception as _card_err2:
-        CARDS_ENABLED = False
-        print(f"⚠️ card_generator НЕ загружен: {_card_err2}")
+except Exception as _card_import_err:
+    # Playwright/card_renderer недоступны на этом хосте — работаем без картинок,
+    # все карточки будут отправляться текстом (см. фоллбэки в обработчиках).
+    print(f"[card_renderer] Рендер карточек отключён: {_card_import_err}")
+    CARDS_ENABLED = False
 
-def format_league(league) -> str:
-    league = (league or "default").lower().strip()
-    return {"quals": "Quals", "default": "Default", "duo": "2v2"}.get(league, league.capitalize())
+    async def generate_profile_card(*args, **kwargs):
+        raise RuntimeError("card_renderer недоступен (Playwright не установлен)")
 
-# ==================== FLASK ====================
+    async def generate_tasks_card(*args, **kwargs):
+        raise RuntimeError("card_renderer недоступен (Playwright не установлен)")
+
+    async def generate_shop_card(*args, **kwargs):
+        raise RuntimeError("card_renderer недоступен (Playwright не установлен)")
+
+    async def generate_leaderboard_card(*args, **kwargs):
+        raise RuntimeError("card_renderer недоступен (Playwright не установлен)")
 
 
+import re as _re_html
+
+def _parse_msg(html: str):
+    """Parse HTML with <tg-emoji> / <b> / <code> / <i> into (plain_text, entities)."""
+    from telegram import MessageEntity
+    TAGS = {'b':'bold','strong':'bold','i':'italic','em':'italic',
+            'code':'code','pre':'pre','s':'strikethrough','u':'underline'}
+    tag_pat = '|'.join(TAGS)
+    tok = _re_html.compile(
+        r'<tg-emoji emoji-id=["\'](\d+)["\']>(.*?)</tg-emoji>'
+        r'|<(/)?(' + tag_pat + r')(?:\s[^>]*)?>',
+        _re_html.DOTALL)
+    entities, stack, plain = [], [], []
+    pos = last = 0
+    for m in tok.finditer(html):
+        before = html[last:m.start()].replace('&lt;','<').replace('&gt;','>').replace('&amp;','&').replace('&quot;','"')
+        plain.append(before); pos += len(before.encode('utf-16-le'))//2; last = m.end()
+        if m.group(1) is not None:
+            eid, ec = m.group(1), m.group(2)
+            el = len(ec.encode('utf-16-le'))//2
+            entities.append(MessageEntity(type='custom_emoji', offset=pos, length=el, custom_emoji_id=eid))
+            plain.append(ec); pos += el
+        else:
+            closing = m.group(3)=='/'
+            et = TAGS.get((m.group(4) or '').lower())
+            if et:
+                if not closing: stack.append((et, pos))
+                else:
+                    for j in range(len(stack)-1,-1,-1):
+                        if stack[j][0]==et:
+                            _, s=stack.pop(j)
+                            if pos>s: entities.append(MessageEntity(type=et,offset=s,length=pos-s))
+                            break
+    after = html[last:].replace('&lt;','<').replace('&gt;','>').replace('&amp;','&').replace('&quot;','"')
+    plain.append(after)
+    return ''.join(plain), entities or None
 
 
-# ==================== КОНФИГ ====================
-TOKEN = os.environ.get("BOT_TOKEN")
-ADMIN_CHAT_ID_RAW = os.environ.get("ADMIN_CHAT_ID", "0")
-try:
-    ADMIN_CHAT_ID = int(ADMIN_CHAT_ID_RAW)
-except Exception:
-    ADMIN_CHAT_ID = 0
+def _esc(text: str) -> str:
+    """Экранирует пользовательский ввод для вставки в HTML-шаблоны (_parse_msg).
+    Заменяет символы, которые _parse_msg мог бы интерпретировать как разметку."""
+    return (str(text)
+            .replace('&', '&amp;')
+            .replace('<', '&lt;')
+            .replace('>', '&gt;'))
 
-# Канал/группа для логов наказаний и результатов матчей
-LOG_CHAT_ID_RAW = os.environ.get("LOG_CHAT_ID", "0")
-try:
-    LOG_CHAT_ID = int(LOG_CHAT_ID_RAW)
-except Exception:
-    LOG_CHAT_ID = 0
 
-OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY", "")
+async def _reply_html(obj, html, **kw):
+    t, e = _parse_msg(html); return await obj.reply_text(t, entities=e, **kw)
 
-# Отдельный чат для проверки зарегистрированных матчей (перерег / подтверждение)
-MATCH_REVIEW_CHAT_ID_RAW = os.environ.get("MATCH_REVIEW_CHAT_ID", "0")
-try:
-    MATCH_REVIEW_CHAT_ID = int(MATCH_REVIEW_CHAT_ID_RAW)
-except Exception:
-    MATCH_REVIEW_CHAT_ID = 0
+async def _send_html(bot, chat_id, html, **kw):
+    t, e = _parse_msg(html); return await bot.send_message(chat_id=chat_id, text=t, entities=e, **kw)
 
-# Чат и ветка (тред) для тикетов - если не задано, шлём админам в личку
-TICKET_CHAT_ID_RAW = os.environ.get("TICKET_CHAT_ID", "0")
-try:
-    TICKET_CHAT_ID = int(TICKET_CHAT_ID_RAW)
-except Exception:
-    TICKET_CHAT_ID = 0
+import re as _re_tge
+def _strip_tg_emoji(html: str) -> str:
+    """Убирает <tg-emoji> теги, оставляя только fallback-символ. Нужно для сообщений где бот не может слать custom emoji."""
+    return _re_tge.sub(r'<tg-emoji[^>]*>(.*?)</tg-emoji>', r'\1', html)
 
-TICKET_THREAD_ID_RAW = os.environ.get("TICKET_THREAD_ID", "0")
-try:
-    TICKET_THREAD_ID = int(TICKET_THREAD_ID_RAW) if TICKET_THREAD_ID_RAW and TICKET_THREAD_ID_RAW != "0" else None
-except Exception:
-    TICKET_THREAD_ID = None
+async def _edit_html(query, html, **kw):
+    t, e = _parse_msg(html); return await query.edit_message_text(t, entities=e, **kw)
 
-# Начальные значения из env - могут быть переопределены через /setlogtopic и /setresulttopic
-LOG_THREAD_ID_RAW = os.environ.get("LOG_THREAD_ID", "0")
-try:
-    LOG_THREAD_ID = int(LOG_THREAD_ID_RAW) if LOG_THREAD_ID_RAW and LOG_THREAD_ID_RAW != "0" else None
-except Exception:
-    LOG_THREAD_ID = None
 
-RESULTS_THREAD_ID_RAW = os.environ.get("RESULTS_THREAD_ID", "0")
-try:
-    RESULTS_THREAD_ID = int(RESULTS_THREAD_ID_RAW) if RESULTS_THREAD_ID_RAW and RESULTS_THREAD_ID_RAW != "0" else None
-except Exception:
-    RESULTS_THREAD_ID = None
+# ══════════════════════════════════════════════════════════════════════════════
+#  РЕЖИМЫ
+# ══════════════════════════════════════════════════════════════════════════════
 
-# Динамические значения (перезаписываются из БД при старте и через команды)
-_dynamic_log_thread_id      = LOG_THREAD_ID
-_dynamic_results_thread_id  = RESULTS_THREAD_ID
-_dynamic_match_reg_chat_id  = MATCH_REVIEW_CHAT_ID   # чат для рег/отмены матчей
-_dynamic_match_reg_thread_id = None                   # ветка внутри этого чата
-_dynamic_ticket_chat_id     = TICKET_CHAT_ID          # чат для тикетов
-_dynamic_ticket_thread_id   = TICKET_THREAD_ID        # ветка для тикетов
-
-DATABASE_URL = os.environ.get("DATABASE_URL") or os.environ.get("SUPABASE_URL", "")
-
-ACCEPT_TIMEOUT = 60
-MAPS = ["Zone 9", "Rust", "Province", "Sandstone", "Sakura"]
-
-def _get_lobby_maps(lobby: dict) -> list:
-    """Возвращает пул карт для лобби."""
-    return list(MAPS)
-
-_raw_ids = os.environ.get("ADMIN_IDS", "")
-ADMIN_IDS_LIST: list = [int(x.strip()) for x in _raw_ids.split(",") if x.strip().isdigit()]
-ADMIN_ID = ADMIN_IDS_LIST[0] if ADMIN_IDS_LIST else 0
-
-CREATOR_ID_RAW = os.environ.get("CREATOR_ID", "0")
-try:
-    CREATOR_ID = int(CREATOR_ID_RAW)
-except Exception:
-    CREATOR_ID = 0
-
-bot = Bot(token=TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
-router = Router()
-dp = Dispatcher(storage=MemoryStorage())
-dp.include_router(router)
-
-# ==================== ОБЯЗАТЕЛЬНЫЕ КАНАЛЫ ====================
-REQUIRED_CHANNELS = [
-    {
-        "id": "@VisionFaceit",
-        "url": "https://t.me/VisionFaceit",
-        "name": "Официальный канал",
+MODES: dict[str, dict] = {
+    '5v5': {
+        'team_size':    5,
+        'match_size':   10,
+        'votes_to_win': 6,
+        'pick_order':   [1, 2, 2, 1, 1, 2, 2, 1],
+        'calib_games':  10,
     },
-    {
-        "id": os.environ.get("REQUIRED_CHANNEL_2_ID", "@VisionFaceit"),
-        "url": "https://t.me/+Wjzn5RXBYwQ5YmZh",
-        "name": "Паблик StandDarling",
+    '3v3': {
+        'team_size':    3,
+        'match_size':   6,
+        'votes_to_win': 4,
+        'pick_order':   [1, 2, 1, 2],
+        'calib_games':  5,
     },
-]
+    '2v2': {
+        'team_size':    2,
+        'match_size':   4,
+        'votes_to_win': 3,
+        'pick_order':   [1, 2],
+        'calib_games':  5,
+    },
+}
+# 'label' и 'emoji' задаются ниже, после блока premium-эмодзи (E_SWORD/E_SHIELD/E_HANDSHAKE) —
+# сюда статичные ⚔️/🛡/🤝 больше не кладём, чтобы не дублировать уже стоящие premium-иконки.
 
-async def check_subACriptions(user_id: int) -> list:
-    """Возвращает список каналов, на которые пользователь не подписан."""
-    not_subACribed = []
-    for ch in REQUIRED_CHANNELS:
-        ch_id = ch["id"]
-        if not ch_id:
-            continue
-        try:
-            member = await bot.get_chat_member(ch_id, user_id)
-            if member.status in ("left", "kicked", "banned"):
-                not_subACribed.append(ch)
-        except Exception as e:
-            print(f"[check_sub] Не удалось проверить {ch_id}: {e} - считаем не подписанным")
-            # Если бот не может проверить канал - считаем пользователя неподписанным
-            not_subACribed.append(ch)
-    return not_subACribed
+# ══════════════════════════════════════════════════════════════════════════════
+#  СОСТОЯНИЕ
+# ══════════════════════════════════════════════════════════════════════════════
 
-async def send_subACribe_message(chat_id: int, message_to_delete_id: int = None):
-    """Отправляет сообщение с требованием подписаться на каналы."""
-    if message_to_delete_id:
-        try:
-            await bot.delete_message(chat_id, message_to_delete_id)
-        except Exception:
-            pass
-    kb = InlineKeyboardBuilder()
-    for ch in REQUIRED_CHANNELS:
-        kb.button(text=f"📢 {ch['name']}", url=ch["url"])
-    kb.button(text="✅ Я подписался - проверить", callback_data="check_sub")
-    await bot.send_message(
-        chat_id,
-        "⚠️ <b>Для использования бота необходимо подписаться на наши каналы:</b>\n\n"
-        "1. 📢 <b>Официальный канал</b> - @VisionFaceit\n"
-        "2. 📢 <b>Паблик StandDarling</b>\n\n"
-        "Подпишитесь на оба канала, затем нажмите кнопку ниже.",
-        reply_markup=kb.as_markup(),
-        parse_mode="HTML",
-    )
-
-# ==================== ГЛОБАЛЬНЫЕ СОСТОЯНИЯ ====================
-
-active_lobbies        = {}
-running_matches       = {}
-user_lobby            = {}
-lobby_player_messages = {}
-ban_status_messages   = {}
-ban_turn_messages     = {}
-accept_status_messages= {}
-match_found_messages  = {}
-user_flow             = {}
-awaiting_ACreenshot   = {}
-rename_flow           = {}
-parties               = {}
-user_party            = {}
-admin_action          = {}
-match_registration    = {}
-awaiting_party_invite = {}
-change_flow           = {}
-editstat_flow         = {}
-promo_flow            = {}
-promo_admin_flow      = {}
-ban_flow              = {}   # uid -> {step, target_id, duration_days}
-mute_flow             = {}   # uid -> {step, target_id, target_name, hours}
-warn_flow             = {}   # uid -> {step, target_id, target_name}
-give_item_flow        = {}   # uid -> {target_id, target_name}
-
-def _build_shop_items_kb(target_id: int):
-    """Inline keyboard with all shop items grouped by type for admin give-item."""
-    kb = InlineKeyboardBuilder()
-    conn2 = _db(); cur2 = conn2.cursor()
-    cur2.execute(
-        "SELECT id, name, item_type, price FROM shop_items ORDER BY item_type, price",
-    )
-    rows = cur2.fetchall()
-    conn2.close()
-
-    TYPE_LABELS = {
-        "frame":      "🖼 Рамки",
-        "banner":     "🎨 Баннеры",
-        "background": "🌄 Фоны",
-        "sticker":    "🎭 Стикеры",
-        "animation":  "✨ Анимации",
-        "premium":    "👑 Premium",
-        "x2coins":    "💰 x2 монеты",
-        "unwarn":     "🛡 Снятие варна",
-        "rename":     "✏️ Смена ника",
-        "quals":      "⭐ Quals доступ",
-    }
-
-    from collections import OrderedDict
-    by_type: dict = OrderedDict()
-    for row_id, name, item_type, price in rows:
-        by_type.setdefault(item_type, []).append((row_id, name, price))
-
-    for item_type, items in by_type.items():
-        label = TYPE_LABELS.get(item_type, item_type.title())
-        kb.button(text=f"── {label} ──", callback_data="admin_noop")
-        for row_id, name, price in items:
-            kb.add(types.InlineKeyboardButton(
-                text=f"{name}  ({price} AC)",
-                callback_data=f"adm_gi_{target_id}_{row_id}",
-            ))
-
-    kb.button(text="❌ Отмена", callback_data="admin_noop")
-    return kb
-
-cancel_flow           = {}   # uid -> {match_key, chat_id, thread_id, msg_id}
-ticket_flow           = {}   # uid -> {step, match_code, reason, evidence_file_id, accused_id}
-creator_flow          = {}   # uid -> {step, ...}
-
-# ==================== КОНФИГ ПРИВАТОК ====================
-PRIVATE_CONFIG = {
-    "fade":    {"table": "players", "display": "StandDarling",    "emoji": "⚡", "matches_table": "matches"},
+# mode → lobby_id → [uid, ...]
+lobby_queues: dict[str, dict[int, list[int]]] = {
+    m: {i: [] for i in range(1, 6)} for m in MODES
 }
 
-# ==================== ЛОББИ: размеры по режиму ====================
-def _lobby_max_size(league: str) -> int:
-    """Максимальное количество игроков в лобби для данной лиги."""
-    if league == "duo":
-        return 4
-    return 10
+draft_state:    dict[int, dict] = {}
+map_vote_state: dict[int, dict] = {}
+pending_kd:     dict[int, set]  = {}
+confirm_state:  dict[int, dict] = {}
 
-def _lobby_team_size(league: str) -> int:
-    """Размер одной команды."""
-    if league == "duo":
-        return 2
-    return 5
+# Пати: creator_uid → [member_uid, ...]
+_parties: dict[int, list[int]] = {}
 
-user_private = {}  # uid -> "fade"
+def _get_party_of(uid: int) -> tuple[int, list[int]] | None:
+    """Возвращает (creator_uid, members) если uid состоит в пати, иначе None."""
+    if uid in _parties:
+        return uid, _parties[uid]
+    for creator, members in _parties.items():
+        if uid in members:
+            return creator, members
+    return None
 
-# ==================== ТОВАРЫ МАГАЗИНА ====================
-SHOP_ITEMS_DEFAULT = [
-    ("Рамка Gold",             "Золотая рамка профиля",      "decor", 300,  "frame"),
-    ("Рамка Diamond",          "Алмазная рамка профиля",     "decor", 600,  "frame"),
-    ("Рамка Elite",            "Элитная рамка профиля",      "decor", 150,  "frame"),
-    ("Рамка Blue Lock",        "Квадратная рамка в стиле Blue Lock с аниме-глазами", "decor", 800, "frame"),
-    # Рамки по уровням (1–10) — выдаются только через админ-панель
-    ("Рамка Уровень 1",  "Рамка уровня 1 (Iron)",   "decor", 0, "frame"),
-    ("Рамка Уровень 2",  "Рамка уровня 2 (Bronze)",  "decor", 0, "frame"),
-    ("Рамка Уровень 3",  "Рамка уровня 3 (Silver)",  "decor", 0, "frame"),
-    ("Рамка Уровень 4",  "Рамка уровня 4 (Steel)",   "decor", 0, "frame"),
-    ("Рамка Уровень 5",  "Рамка уровня 5 (Forest)",  "decor", 0, "frame"),
-    ("Рамка Уровень 6",  "Рамка уровня 6 (Void)",    "decor", 0, "frame"),
-    ("Рамка Уровень 7",  "Рамка уровня 7 (Gold)",    "decor", 0, "frame"),
-    ("Рамка Уровень 8",  "Рамка уровня 8 (Fire)",    "decor", 0, "frame"),
-    ("Рамка Уровень 9",  "Рамка уровня 9 (Ice)",     "decor", 0, "frame"),
-    ("Рамка Уровень 10", "Рамка уровня 10 (Prism)",  "decor", 0, "frame"),
-    ("Стикер 🔥",              "Огненный стикер",            "decor", 50,   "sticker"),
-    ("Стикер 💀",              "Стикер черепа",              "decor", 50,   "sticker"),
-    ("Стикер ⚡",              "Стикер молнии",              "decor", 50,   "sticker"),
-    ("Анимация Победа",        "Анимация при победе",        "decor", 400,  "animation"),
-    ("Анимация Убийство",      "Анимация при убийстве",      "decor", 400,  "animation"),
-    ("Баннер Gold",            "Золотой баннер профиля",     "decor", 400,  "banner"),
-    ("Баннер Diamond",         "Алмазный баннер профиля",    "decor", 700,  "banner"),
-    ("Баннер Elite",           "Элитный баннер профиля",     "decor", 250,  "banner"),
-    ("Баннер Blue Lock",       "Баннер Blue Lock: белый хедер с аниме-глазами и слэшем", "decor", 900, "banner"),
-    ("Фон Blue Lock",          "Геометрический фон карточки в стиле Blue Lock", "decor", 600, "background"),
-    ("Premium статус",         "30 дней Premium: x1.5 монет, значок 👑", "goods", 1000, "premium"),
-    ("x2 монеты",              "Удвоение монет за 7 дней",   "goods", 300,  "x2coins"),
-    ("Снятие варна",           "Снять 1 предупреждение",     "goods", 150,  "unwarn"),
-    ("Смена ника",             "Изменить ник в боте",        "goods", 10,   "rename"),
-    ("Quals доступ",           "Постоянный доступ к QUALS",  "goods", 1500, "quals"),
+# Локи для защиты от гонок при одновременном ручном пике и авто-пике по таймауту
+_draft_locks: dict[int, asyncio.Lock] = {}
+
+def _get_draft_lock(match_id: int) -> asyncio.Lock:
+    if match_id not in _draft_locks:
+        _draft_locks[match_id] = asyncio.Lock()
+    return _draft_locks[match_id]
+
+def _release_draft_lock(match_id: int):
+    """Убираем лок матча после завершения драфта."""
+    _draft_locks.pop(match_id, None)
+# session_id → {uid → (chat_id, msg_id)}
+_confirm_msg_info: dict[int, dict[int, tuple[int, int]]] = {}
+_confirm_counter: int = 0
+_bot_counter:     int = 0
+
+# uid → (chat_id, msg_id, lobby_id, mode)
+_lobby_msg_info:    dict[int, tuple[int, int, int, str]] = {}
+# uid → (chat_id, msg_id)
+_lobby_selector_msg: dict[int, tuple[int, int]]          = {}
+# uid → время входа в очередь
+_queue_join_time:   dict[int, datetime.datetime]         = {}
+
+AFK_TIMEOUT_MIN     = 30
+CONFIRM_TIMEOUT_SEC = 60
+PICK_TIMEOUT_SEC    = 30
+
+MAPS      = ["Sandstone", "Rust", "Province", "Zone 9"]
+MAPS_EMOJI = {
+    "Sandstone": "5258314450309500181",
+    "Province":  "5260231534731871969",
+    "Rust":      "5260245609339700014",
+    "Zone 9":    "5258180533229207771",
+}
+RULES_URL = "https://telegra.ph/Pravila-Enhanced-Faceit-5v5-05-30"
+
+# Канал, подписка на который обязательна перед регистрацией в /start
+SUB_CHANNEL_USERNAME = "@MoonFaceitNew"
+SUB_CHANNEL_URL      = "https://t.me/MoonFaceitNew"
+
+# Публичный https-адрес собранного Mini App (см. telegram-miniapp/ в архиве).
+# Пока переменная окружения не задана, кнопка Mini App в меню просто не
+# показывается — бот продолжает работать как обычно.
+MINI_APP_URL = os.environ.get('MINI_APP_URL', '').strip()
+
+
+def is_bot(uid: int) -> bool:
+    return uid < 0
+
+
+async def _is_channel_subscribed(bot, user_id: int) -> bool:
+    """Проверяет подписку пользователя на SUB_CHANNEL_USERNAME.
+    Подписка обязательна, поэтому при сбое проверки (бот не админ канала,
+    канал не найден, таймаут Telegram и т.п.) считаем, что пользователь
+    НЕ подписан — иначе достаточно было бы один раз словить ошибку API,
+    чтобы обойти требование подписки. Ошибка при этом громко логируется,
+    чтобы админ бота заметил и починил права бота в канале."""
+    try:
+        member = await bot.get_chat_member(SUB_CHANNEL_USERNAME, user_id)
+        return member.status not in ("left", "kicked")
+    except Exception as e:
+        print(f"[sub_check] Не удалось проверить подписку uid={user_id}, считаем неподписанным: {e}")
+        return False
+
+
+def _sub_gate_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("📢 Перейти в канал", url=SUB_CHANNEL_URL)],
+        [InlineKeyboardButton("✅ Я подписался", callback_data="check_sub")],
+    ])
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  ПРЕМИУМ ЭМОДЗИ — текстовые константы
+# ══════════════════════════════════════════════════════════════════════════════
+
+LEVEL_ICONS = {
+    0:  '<tg-emoji emoji-id="5298928159276704110">🔒</tg-emoji>',
+    1:  '<tg-emoji emoji-id="5299013852464193665">1️⃣</tg-emoji>',
+    2:  '<tg-emoji emoji-id="5298657872689798239">2️⃣</tg-emoji>',
+    3:  '<tg-emoji emoji-id="5298564770683722095">3️⃣</tg-emoji>',
+    4:  '<tg-emoji emoji-id="5298699284764467308">4️⃣</tg-emoji>',
+    5:  '<tg-emoji emoji-id="5299005296889337460">5️⃣</tg-emoji>',
+    6:  '<tg-emoji emoji-id="5298920149162698598">6️⃣</tg-emoji>',
+    7:  '<tg-emoji emoji-id="5298649682187171763">7️⃣</tg-emoji>',
+    8:  '<tg-emoji emoji-id="5298892446623636712">8️⃣</tg-emoji>',
+    9:  '<tg-emoji emoji-id="5298888203195950440">9️⃣</tg-emoji>',
+    10: '<tg-emoji emoji-id="5298813225951865599">🔟</tg-emoji>',
+}
+
+E_CHECK  = '<tg-emoji emoji-id="5208897394120364245">✅</tg-emoji>'
+E_ADMIN  = '<tg-emoji emoji-id="5298946533146797274">✅</tg-emoji>'
+E_FIRE   = '<tg-emoji emoji-id="5208585145702978799">🔥</tg-emoji>'
+E_CROWN    = '<tg-emoji emoji-id="5217822164362739968">👑</tg-emoji>'
+E_CIRCLE_M = '<tg-emoji emoji-id="5314508432315817301">Ⓜ️</tg-emoji>'
+E_TROPHY = '<tg-emoji emoji-id="5280769763398671636">🏆</tg-emoji>'
+E_ZAP        = '<tg-emoji emoji-id="5224607267797606837">☄️</tg-emoji>'
+E_AIM        = '<tg-emoji emoji-id="5314345172018961818">🎯</tg-emoji>'
+E_SWORD      = '<tg-emoji emoji-id="5408935401442267103">⚔️</tg-emoji>'
+E_SHIELD     = '<tg-emoji emoji-id="5465154440287757794">🛡</tg-emoji>'
+E_HANDSHAKE  = '<tg-emoji emoji-id="5352795355635276043">🤝</tg-emoji>'
+
+E_SEARCH = '<tg-emoji emoji-id="5231012545799666522">🔍</tg-emoji>'
+E_DOOR   = '<tg-emoji emoji-id="6035130900075777681">🚪</tg-emoji>'
+E_PEOPLE = '<tg-emoji emoji-id="5958460691550572213">👥</tg-emoji>'
+E_CROSS  = '<tg-emoji emoji-id="5210952531676504517">❌</tg-emoji>'
+E_BAN    = '<tg-emoji emoji-id="5240241223632954241">🚫</tg-emoji>'
+E_RELOAD = '<tg-emoji emoji-id="5346321684574003384">🔄</tg-emoji>'
+E_SPARK  = '<tg-emoji emoji-id="5325547803936572038">✨</tg-emoji>'
+E_TEAM    = '<tg-emoji emoji-id="5956527135928617699">👥</tg-emoji>'
+E_RIGHT   = '<tg-emoji emoji-id="5215695279377884733">➡️</tg-emoji>'
+E_OFF1    = '<tg-emoji emoji-id="5314334546269872179">✅</tg-emoji>'
+E_OFF2    = '<tg-emoji emoji-id="5314666276658912691">✅</tg-emoji>'
+E_OFF3    = '<tg-emoji emoji-id="5314302200871164289">✅</tg-emoji>'
+E_MOON    = '<tg-emoji emoji-id="5314345172018961818">🌒</tg-emoji>'
+E_CONFIRM = '<tg-emoji emoji-id="5206607081334906820">✔️</tg-emoji>'
+E_WAITING = '<tg-emoji emoji-id="5451646226975955576">⌛️</tg-emoji>'
+
+
+EP_USER  = '<tg-emoji emoji-id="5879770735999717115">👤</tg-emoji>'
+EP_TIMER = '<tg-emoji emoji-id="5382194935057372936">⏱</tg-emoji>'
+EP_GAME  = '<tg-emoji emoji-id="5319247469165433798">🎮</tg-emoji>'
+EP_WIN   = '<tg-emoji emoji-id="5413566144986503832">🏆</tg-emoji>'
+EP_LOSS  = '<tg-emoji emoji-id="5229007809684724433">🌟</tg-emoji>'
+EP_WR    = '<tg-emoji emoji-id="5440539497383087970">🥇</tg-emoji>'
+EP_KD    = '<tg-emoji emoji-id="5224607267797606837">☄️</tg-emoji>'
+EP_WARN  = '<tg-emoji emoji-id="5447644880824181073">⚠️</tg-emoji>'
+E_INFO   = '<tg-emoji emoji-id="5334544901428229844">ℹ️</tg-emoji>'
+E_RULES  = '<tg-emoji emoji-id="5956561916573782596">📄</tg-emoji>'
+E_GREEN  = '<tg-emoji emoji-id="5416081784641168838">🟢</tg-emoji>'
+E_ORANGE = '<tg-emoji emoji-id="5339390195768774311">🟠</tg-emoji>'
+E_SHOP   = '<tg-emoji emoji-id="5226656353744862682">🛒</tg-emoji>'
+E_PRICE  = '<tg-emoji emoji-id="5377631390571472449">🪙</tg-emoji>'
+
+# Иконки, используемые только в карточке профиля (/profile)
+EPV_USER    = '<tg-emoji emoji-id="5391112412445288650">🥸</tg-emoji>'
+EPV_MATCHES = '<tg-emoji emoji-id="5377634281084463888">Ⓜ️</tg-emoji>'
+EPV_WL      = '<tg-emoji emoji-id="5438496463044752972">⭐️</tg-emoji>'
+
+MODES['5v5']['emoji'] = E_SWORD
+MODES['5v5']['label'] = f'{E_SWORD} 5v5'
+MODES['3v3']['emoji'] = E_SHIELD
+MODES['3v3']['label'] = f'{E_SHIELD} 3v3'
+MODES['2v2']['emoji'] = E_HANDSHAKE
+MODES['2v2']['label'] = f'{E_HANDSHAKE} 2v2'
+
+E_DIAMOND = '<tg-emoji emoji-id="5427168083074628963">💎</tg-emoji>'
+E_CAL     = '<tg-emoji emoji-id="5377612479830453771">🗓</tg-emoji>'
+
+# ── Milestone-задания (одноразовые) ──────────────────────────────────────────
+TASKS_MILESTONE = [
+    {
+        'id': 'task_m_1',
+        'title': '<tg-emoji emoji-id="5319247469165433798">🎮</tg-emoji> Первый шаг',
+        'desc': 'Сыграй 1 матч',
+        'reward': 5,
+        'check':    lambda s: s['matches'] >= 1,
+        'progress': lambda s: (min(s['matches'], 1), 1),
+    },
+    {
+        'id': 'task_m_10',
+        'title': f'{E_SWORD} Ветеран арены',
+        'desc': 'Сыграй 10 матчей',
+        'reward': 10,
+        'check':    lambda s: s['matches'] >= 10,
+        'progress': lambda s: (min(s['matches'], 10), 10),
+    },
+    {
+        'id': 'task_m_25',
+        'title': f'{E_SHIELD} Закалённый боец',
+        'desc': 'Сыграй 25 матчей',
+        'reward': 25,
+        'check':    lambda s: s['matches'] >= 25,
+        'progress': lambda s: (min(s['matches'], 25), 25),
+    },
+    {
+        'id': 'task_m_50',
+        'title': '<tg-emoji emoji-id="5208585145702978799">🔥</tg-emoji> Профессионал',
+        'desc': 'Сыграй 50 матчей',
+        'reward': 50,
+        'check':    lambda s: s['matches'] >= 50,
+        'progress': lambda s: (min(s['matches'], 50), 50),
+    },
+    {
+        'id': 'task_m_100',
+        'title': '<tg-emoji emoji-id="5217822164362739968">👑</tg-emoji> Легенда Moon',
+        'desc': 'Сыграй 100 матчей',
+        'reward': 100,
+        'check':    lambda s: s['matches'] >= 100,
+        'progress': lambda s: (min(s['matches'], 100), 100),
+    },
+    {
+        'id': 'task_w_1',
+        'title': '<tg-emoji emoji-id="5280769763398671636">🏆</tg-emoji> Первая победа',
+        'desc': 'Одержи 1 победу',
+        'reward': 5,
+        'check':    lambda s: s['wins'] >= 1,
+        'progress': lambda s: (min(s['wins'], 1), 1),
+    },
+    {
+        'id': 'task_w_10',
+        'title': '<tg-emoji emoji-id="5314345172018961818">🎯</tg-emoji> Победная серия',
+        'desc': 'Одержи 10 побед',
+        'reward': 15,
+        'check':    lambda s: s['wins'] >= 10,
+        'progress': lambda s: (min(s['wins'], 10), 10),
+    },
+    {
+        'id': 'task_w_50',
+        'title': '<tg-emoji emoji-id="5229007809684724433">🌟</tg-emoji> Доминатор',
+        'desc': 'Одержи 50 побед',
+        'reward': 75,
+        'check':    lambda s: s['wins'] >= 50,
+        'progress': lambda s: (min(s['wins'], 50), 50),
+    },
+    {
+        'id': 'task_mode_5v5',
+        'title': f'{E_SWORD} Дуэлянт',
+        'desc': 'Сыграй матч в режиме 5v5',
+        'reward': 5,
+        'check':    lambda s: s['matches_5v5'] >= 1,
+        'progress': lambda s: (min(s['matches_5v5'], 1), 1),
+    },
+    {
+        'id': 'task_mode_3v3',
+        'title': f'{E_SHIELD} Командный игрок',
+        'desc': 'Сыграй матч в режиме 3v3',
+        'reward': 5,
+        'check':    lambda s: s['matches_3v3'] >= 1,
+        'progress': lambda s: (min(s['matches_3v3'], 1), 1),
+    },
+    {
+        'id': 'task_mode_2v2',
+        'title': f'{E_HANDSHAKE} Напарник',
+        'desc': 'Сыграй матч в режиме 2v2',
+        'reward': 5,
+        'check':    lambda s: s['matches_2v2'] >= 1,
+        'progress': lambda s: (min(s['matches_2v2'], 1), 1),
+    },
+    {
+        'id': 'task_lvl_3',
+        'title': '<tg-emoji emoji-id="5231200819986047254">📊</tg-emoji> Ранговый игрок',
+        'desc': 'Достигни уровня 3 в любом режиме',
+        'reward': 20,
+        'check':    lambda s: max(s['lvl_5v5'], s['lvl_3v3'], s['lvl_2v2']) >= 3,
+        'progress': lambda s: (min(max(s['lvl_5v5'], s['lvl_3v3'], s['lvl_2v2']), 3), 3),
+    },
+    {
+        'id': 'task_lvl_5',
+        'title': '<tg-emoji emoji-id="5438496463044752972">⭐️</tg-emoji> Элита',
+        'desc': 'Достигни уровня 5 в любом режиме',
+        'reward': 50,
+        'check':    lambda s: max(s['lvl_5v5'], s['lvl_3v3'], s['lvl_2v2']) >= 5,
+        'progress': lambda s: (min(max(s['lvl_5v5'], s['lvl_3v3'], s['lvl_2v2']), 5), 5),
+    },
+    {
+        'id': 'task_lvl_8',
+        'title': '<tg-emoji emoji-id="5361837567463399422">🔮</tg-emoji> Мастер',
+        'desc': 'Достигни уровня 8 в любом режиме',
+        'reward': 100,
+        'check':    lambda s: max(s['lvl_5v5'], s['lvl_3v3'], s['lvl_2v2']) >= 8,
+        'progress': lambda s: (min(max(s['lvl_5v5'], s['lvl_3v3'], s['lvl_2v2']), 8), 8),
+    },
 ]
 
-CATEGORY_NAMES = {"decor": "🖼 Декор", "goods": "📦 Товары"}
-CATEGORY_ICONS = {"decor": "🖼", "goods": "📦"}
-
-STARS_TO_USD = 0.015  # ориентировочный курс Telegram Stars -> USD для крипто-оплаты
-STARS_EMOJI_ID = "5064709487953183440"
-CRYPTO_EMOJI_ID = "5382164415019768638"
-PREMIUM_CROWN_EMOJI_ID = "5217822164362739968"  # 👑 из пака NewsEmoji (тот же, что у Walker)
-
-
-def _prem_crown_tag():
-    return f'<tg-emoji emoji-id="{PREMIUM_CROWN_EMOJI_ID}">👑</tg-emoji>'
-
-
-PREMIUM_GOLD_EMOJI_ID = "5440539497383087970"    # 🥇 из пака NewsEmoji
-PREMIUM_SILVER_EMOJI_ID = "5447203607294265305"  # 🥈 из пака NewsEmoji
-PREMIUM_BRONZE_EMOJI_ID = "5453902265922376865"  # 🥉 из пака NewsEmoji
-
-
-def _prem_tag(emoji_id, glyph):
-    return f'<tg-emoji emoji-id="{emoji_id}">{glyph}</tg-emoji>'
-
-COIN_PACKAGES = [
-    ("Стартовый",   200,   15,  "15 ⭐"),
-    ("Оптимальный", 600,   60,  "60 ⭐"),
-    ("Выгодный",    2000,  100, "100 ⭐"),
-    ("Мега",        5000,  200, "200 ⭐"),
-    ("Элита",       70000, 500, "500 ⭐"),
+# ── Ежедневные задания (сбрасываются раз в сутки UTC) ────────────────────────
+TASKS_DAILY = [
+    {
+        'id': 'daily_play_1',
+        'title': '<tg-emoji emoji-id="5319247469165433798">🎮</tg-emoji> На разминку',
+        'desc': 'Сыграй 1 матч сегодня',
+        'reward': 5,
+        'target': 1,
+        'type': 'matches',
+    },
+    {
+        'id': 'daily_play_3',
+        'title': '<tg-emoji emoji-id="5208585145702978799">🔥</tg-emoji> В ударе',
+        'desc': 'Сыграй 3 матча сегодня',
+        'reward': 15,
+        'target': 3,
+        'type': 'matches',
+    },
+    {
+        'id': 'daily_win_1',
+        'title': '<tg-emoji emoji-id="5280769763398671636">🏆</tg-emoji> Вкус победы',
+        'desc': 'Одержи 1 победу сегодня',
+        'reward': 8,
+        'target': 1,
+        'type': 'wins',
+    },
+    {
+        'id': 'daily_win_3',
+        'title': '<tg-emoji emoji-id="5217822164362739968">👑</tg-emoji> Непобедимый',
+        'desc': 'Одержи 10 побед сегодня',
+        'reward': 25,
+        'target': 10,
+        'type': 'wins',
+    },
 ]
 
-NUMBER_EMOJI = ["①","②","③","④","⑤","⑥","⑦","⑧","⑨","⑩"]
+# ══════════════════════════════════════════════════════════════════════════════
+#  ПРЕМИУМ ЭМОДЗИ В КНОПКАХ
+# ══════════════════════════════════════════════════════════════════════════════
 
-ELO_THRESHOLDS = [0, 200, 400, 600, 900, 1100, 1400, 1600, 1800, 2000]
-ELO_RANGES_TEXT = [
-    "[0 - 199]",
-    "[200 - 399]",
-    "[400 - 599]",
-    "[600 - 899]",
-    "[900 - 1099]",
-    "[1100 - 1399]",
-    "[1400 - 1599]",
-    "[1600 - 1799]",
-    "[1800 - 1999]",
-    "[2000+]",
+def _ebtn(label: str, emoji_id: str, emoji_len: int, callback_data: str) -> InlineKeyboardButton:
+    """icon_custom_emoji_id — официальное поле InlineKeyboardButton (PTB 20.8+).
+    Требует Telegram Premium у владельца бота. Передаётся как нативный параметр PTB,
+    а не через api_kwargs — иначе PTB не сериализует поле в JSON кнопки и Telegram
+    молча игнорирует всю клавиатуру (кнопка пропадает)."""
+    try:
+        # PTB 20.8+ — нативный параметр, правильно сериализуется в JSON кнопки
+        return InlineKeyboardButton(label, callback_data=callback_data,
+                                     icon_custom_emoji_id=emoji_id)
+    except TypeError:
+        # Старая версия PTB (<20.8) — fallback через api_kwargs
+        return InlineKeyboardButton(label, callback_data=callback_data,
+                                     api_kwargs={'icon_custom_emoji_id': emoji_id})
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  КЛАВИАТУРЫ
+# ══════════════════════════════════════════════════════════════════════════════
+
+def main_keyboard() -> ReplyKeyboardMarkup:
+    return ReplyKeyboardMarkup([[KeyboardButton("Меню")]], resize_keyboard=True)
+
+
+def inline_main_menu_keyboard() -> InlineKeyboardMarkup:
+    rows = []
+    if MINI_APP_URL:
+        # Mini App-кнопка открывает наше веб-приложение прямо внутри Telegram.
+        # Требует https-адрес — регистрируется через переменную окружения
+        # MINI_APP_URL (см. main()/README в архиве экспорта).
+        rows.append([InlineKeyboardButton("🎮 Moon Faceit Mini App", web_app=WebAppInfo(url=MINI_APP_URL))])
+    rows += [
+        [_ebtn("Найти матч",        "5231012545799666522", 2, "menu_find")],
+        [
+            _ebtn("Профиль",         "5879770735999717115", 2, "menu_profile"),
+            _ebtn("Таблица лидеров", "5280769763398671636", 2, "menu_leaderboard"),
+        ],
+        [
+            _ebtn("История",          "5282843764451195532", 2, "menu_history"),
+            _ebtn("Правила",          "5956561916573782596", 2, "menu_rules"),
+        ],
+        [
+            _ebtn("О сезоне",        "5377612479830453771", 2, "menu_season"),
+            _ebtn("Поддержка",        "5854841392899036819", 2, "menu_support"),
+        ],
+        [
+            _ebtn("Магазин",  "5226656353744862682", 2, "menu_shop"),
+            _ebtn("Донат",    "5409048419211682843", 2, "menu_donate"),
+        ],
+        [
+            _ebtn("Задания",         "5427168083074628963", 2, "menu_tasks"),
+            _ebtn("Пати",            "5461117441612462242", 2, "menu_party"),
+        ],
+        [_ebtn("Промокод",           "5224607267797606837", 2, "menu_promo")],
+        [_ebtn("Репорт на игрока",   "5395695537687123235", 2, "menu_report")],
+    ]
+    return InlineKeyboardMarkup(rows)
+
+
+def mode_select_keyboard() -> InlineKeyboardMarkup:
+    """Выбор режима: 5v5 / 3v3 / 2v2."""
+    return InlineKeyboardMarkup([[
+        _ebtn("5v5", "5411474818035909166", 2, "mode_5v5"),
+        _ebtn("3v3", "5465154440287757794", 2, "mode_3v3"),
+        _ebtn("2v2", "5352795355635276043", 2, "mode_2v2"),
+    ]])
+
+
+_MODE_EMOJI_IDS = {
+    '5v5': '5411474818035909166',
+    '3v3': '5465154440287757794',
+    '2v2': '5352795355635276043',
+}
+_MODE_LABELS = {'5v5': '5v5', '3v3': '3v3', '2v2': '2v2'}
+
+
+def lobby_list_keyboard(mode: str, uid_in_lobby: bool = False) -> InlineKeyboardMarkup:
+    """5 лобби для выбранного режима + кнопки переключения режима."""
+    cfg   = MODES[mode]
+    match = cfg['match_size']
+    q_set = lobby_queues[mode]
+    rows  = [
+        [_ebtn(
+            f"Лобби {i}  ({len(q_set[i])}/{match})",
+            "5319247469165433798", 2,
+            f"lobby_join_{mode}_{i}"
+        )]
+        for i in range(1, 6)
+    ]
+    other_modes = [m for m in MODES if m != mode]
+    rows.append([
+        _ebtn(_MODE_LABELS[m], _MODE_EMOJI_IDS[m], 2, f"mode_{m}")
+        for m in other_modes
+    ])
+    if uid_in_lobby:
+        rows.append([_ebtn("Выйти из очереди", "6035130900075777681", 2, "lobby_leave")])
+    return InlineKeyboardMarkup(rows)
+
+
+def _leaderboard_keyboard(season: str = 'curr', mode: str = '5v5') -> InlineKeyboardMarkup:
+    """
+    Строит клавиатуру лидерборда.
+    Строка 1: Нынешний / Прошлый сезон (выделен нынешний/прошлый)
+    Строка 2: ⚔️ 5v5 / 🛡 3v3 / 🤝 2v2 с premium-эмодзи
+    """
+    _TROPHY_EMOJI_ID = "5280769763398671636"
+
+    def _s(label, s_val):
+        mark = "▸ " if season == s_val else ""
+        return _ebtn(f"{mark}{label}", _TROPHY_EMOJI_ID, 2, f"lb_{s_val}_{mode}")
+
+    def _m(label, eid, m_val):
+        mark = "▸ " if mode == m_val else ""
+        return _ebtn(f"{mark}{label}", eid, 2, f"lb_{season}_{m_val}")
+
+    return InlineKeyboardMarkup([
+        [_s("Нынешний сезон", "curr"), _s("Прошлый сезон", "past")],
+        [
+            _m("5v5", "5411474818035909166", "5v5"),
+            _m("3v3", "5465154440287757794", "3v3"),
+            _m("2v2", "5352795355635276043", "2v2"),
+        ],
+    ])
+
+
+def profile_actions_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([
+        [
+            _ebtn("Сменить ID",  "5319247469165433798", 2, "profile_change_id"),
+            _ebtn("Сменить ник", "5319247469165433798", 2, "profile_change_nick"),
+        ],
+        [_ebtn("Найти игрока", "5231012545799666522", 2, "menu_search")],
+    ])
+
+
+def shop_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([
+        [
+            _ebtn("Ножи",      "5062267305124168856", 2, "shop_cat_knives"),
+            _ebtn("Скины",     "5409048419211682843", 2, "shop_cat_skins"),
+        ],
+        [
+            _ebtn("Наклейки",  "5393619629669097759", 2, "shop_cat_stickers"),
+            _ebtn("Назад",     "5255703720078879038", 2, "shop_back"),
+        ],
+    ])
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+#  ДАННЫЕ МАГАЗИНА
+# ──────────────────────────────────────────────────────────────────────────────
+
+_SHOP_SKINS_ORDER = ['akr', 'awm']
+_SHOP_SKINS: dict[str, tuple[str, list]] = {
+    'akr': ('AKR', [
+        ('AKR «Treasure Hunter»',           450),
+        ('AKR «Necromancer»',               100),
+        ('AKR «Treasure Hunter» StatTrack', 500),
+        ('AKR «Necromancer» StatTrack',     125),
+    ]),
+    'awm': ('AWM', [
+        ('AWM «Sport»',                     500),
+        ('AWM «Winter Sport»',              700),
+        ('AWM «Winter Sport» StatTrack',    750),
+    ]),
+}
+
+_SHOP_KNIVES_ORDER = ['m9', 'kerambit', 'butterfly', 'kunai']
+_SHOP_KNIVES: dict[str, tuple[str, list]] = {
+    'm9': ('M9', [
+        ('M9 «Scratch»',      175),
+        ('M9 «Universe»',     160),
+        ('M9 «Blue Blood»',   250),
+        ('M9 «Ancient»',      100),
+        ('M9 «Dragon Glass»', 150),
+    ]),
+    'kerambit': ('Kerambit', [
+        ('Kerambit «Claw»',         200),
+        ('Kerambit «Dragon Glass»', 125),
+        ('Kerambit «Universe»',     150),
+        ('Kerambit «Gold»',         400),
+        ('Kerambit «Scratch»',      175),
+    ]),
+    'butterfly': ('Butterfly', [
+        ('Butterfly «Dragon Glass»', 150),
+        ('Butterfly «Black Widow»',  175),
+        ('Butterfly «Fire Storm»',   300),
+        ('Butterfly «Legacy»',       250),
+    ]),
+    'kunai': ('Kunai', [
+        ('Kunai «Poison»',    125),
+        ('Kunai «Luxury»',    150),
+        ('Kunai «Bone»',      150),
+        ('Kunai «Radiation»', 250),
+        ('Kunai «Reaper»',    200),
+    ]),
+}
+
+_SHOP_STICKERS = [
+    ('Sticker «Dragon»',        50),
+    ('Sticker «Samurai»',       60),
+    ('Sticker «Metal Rat»',    200),
+    ('Sticker «Gold Skull»',   500),
+    ('Sticker «Phoenix Blazon»', 250),
 ]
 
-def get_faceit_level(elo: int) -> int:
-    for lvl, threshold in enumerate(ELO_THRESHOLDS[1:], start=1):
+
+def _shop_tab_keyboard(cat: str, active: str, order: list, labels: dict,
+                        items: list | None = None) -> InlineKeyboardMarkup:
+    rows: list[list] = []
+    if items:
+        for name, price in items:
+            rows.append([_ebtn(
+                f"{price}  —  {name}",
+                "5377631390571472449",
+                2,
+                f"shop_buy_{cat}_{active}"
+            )])
+    row: list = []
+    for t in order:
+        marker = "› " if t == active else ""
+        row.append(InlineKeyboardButton(f"{marker}{labels[t]}", callback_data=f"shop_nav_{cat}_{t}"))
+        if len(row) == 2:
+            rows.append(row)
+            row = []
+    if row:
+        rows.append(row)
+    rows.append([_ebtn("Назад", "5255703720078879038", 2, "shop_back")])
+    return InlineKeyboardMarkup(rows)
+
+
+def _shop_page_text(header_emoji: str, title: str, items: list | None = None) -> str:
+    return f"{header_emoji} <b>{title}</b>\n\n{E_RIGHT} Выбери товар:"
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  БАЗА ДАННЫХ
+# ══════════════════════════════════════════════════════════════════════════════
+
+def mode_cols(mode: str):
+    """Возвращает (elo_col, matches_col, wins_col, level_col) для заданного режима."""
+    s = mode  # '5v5', '3v3', '2v2'
+    return f'elo_{s}', f'matches_{s}', f'wins_{s}', f'level_{s}'
+
+
+def init_db():
+    conn = sqlite3.connect('faceit_bot.db')
+    c = conn.cursor()
+    c.execute('''CREATE TABLE IF NOT EXISTS users (
+        user_id        INTEGER PRIMARY KEY,
+        username       TEXT,
+        elo            INTEGER DEFAULT 0,
+        level          INTEGER DEFAULT 1,
+        matches_played INTEGER DEFAULT 0,
+        wins           INTEGER DEFAULT 0
+    )''')
+    c.execute('''CREATE TABLE IF NOT EXISTS team_matches (
+        match_id  INTEGER PRIMARY KEY AUTOINCREMENT,
+        status    TEXT DEFAULT 'active',
+        winner    INTEGER,
+        timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
+        mode      TEXT DEFAULT '5v5'
+    )''')
+    c.execute('''CREATE TABLE IF NOT EXISTS match_players (
+        id         INTEGER PRIMARY KEY AUTOINCREMENT,
+        match_id   INTEGER,
+        user_id    INTEGER,
+        team       INTEGER,
+        elo_before INTEGER,
+        elo_change INTEGER DEFAULT 0
+    )''')
+    c.execute('''CREATE TABLE IF NOT EXISTS match_votes (
+        id         INTEGER PRIMARY KEY AUTOINCREMENT,
+        match_id   INTEGER,
+        user_id    INTEGER,
+        voted_team INTEGER,
+        UNIQUE(match_id, user_id)
+    )''')
+    c.execute('''CREATE TABLE IF NOT EXISTS match_screenshots (
+        id         INTEGER PRIMARY KEY AUTOINCREMENT,
+        match_id   INTEGER,
+        user_id    INTEGER,
+        file_id    TEXT,
+        timestamp  DATETIME DEFAULT CURRENT_TIMESTAMP
+    )''')
+    c.execute('''CREATE TABLE IF NOT EXISTS reports (
+        id         INTEGER PRIMARY KEY AUTOINCREMENT,
+        from_id    INTEGER,
+        target_id  INTEGER,
+        reason     TEXT,
+        timestamp  DATETIME DEFAULT CURRENT_TIMESTAMP
+    )''')
+    c.execute('''CREATE TABLE IF NOT EXISTS season_archive (
+        id         INTEGER PRIMARY KEY AUTOINCREMENT,
+        season_num INTEGER,
+        user_id    INTEGER,
+        username   TEXT,
+        elo        INTEGER,
+        wins       INTEGER,
+        matches    INTEGER,
+        timestamp  DATETIME DEFAULT CURRENT_TIMESTAMP
+    )''')
+    c.execute('''CREATE TABLE IF NOT EXISTS user_tasks (
+        user_id  INTEGER,
+        task_id  TEXT,
+        claimed  INTEGER DEFAULT 0,
+        PRIMARY KEY (user_id, task_id)
+    )''')
+    c.execute('''CREATE TABLE IF NOT EXISTS user_daily_tasks (
+        user_id   INTEGER,
+        task_id   TEXT,
+        task_date TEXT,
+        claimed   INTEGER DEFAULT 0,
+        PRIMARY KEY (user_id, task_id, task_date)
+    )''')
+    c.execute('''CREATE TABLE IF NOT EXISTS bot_settings (
+        key   TEXT PRIMARY KEY,
+        value TEXT
+    )''')
+    c.execute('''CREATE TABLE IF NOT EXISTS promo_codes (
+        code             TEXT PRIMARY KEY,
+        reward           INTEGER NOT NULL,
+        activations_left INTEGER NOT NULL,
+        created_at       DATETIME DEFAULT CURRENT_TIMESTAMP
+    )''')
+    c.execute('''CREATE TABLE IF NOT EXISTS promo_redemptions (
+        id        INTEGER PRIMARY KEY AUTOINCREMENT,
+        code      TEXT,
+        user_id   INTEGER,
+        reward    INTEGER,
+        timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
+    )''')
+    for col_sql in [
+        'ALTER TABLE team_matches  ADD COLUMN screenshot_submitted INTEGER DEFAULT 0',
+        'ALTER TABLE users ADD COLUMN is_admin    INTEGER DEFAULT 0',
+        'ALTER TABLE users ADD COLUMN first_name  TEXT',
+        'ALTER TABLE users ADD COLUMN is_banned   INTEGER DEFAULT 0',
+        'ALTER TABLE users ADD COLUMN ban_reason  TEXT',
+        'ALTER TABLE users ADD COLUMN is_creator  INTEGER DEFAULT 0',
+        'ALTER TABLE users ADD COLUMN warns       INTEGER DEFAULT 0',
+        'ALTER TABLE users ADD COLUMN ban_until   TEXT',
+        'ALTER TABLE users ADD COLUMN kills       INTEGER DEFAULT 0',
+        'ALTER TABLE users ADD COLUMN deaths      INTEGER DEFAULT 0',
+        'ALTER TABLE users ADD COLUMN game_id          TEXT',
+        'ALTER TABLE users ADD COLUMN last_match_at    TEXT',
+        'ALTER TABLE users ADD COLUMN last_nick_change TEXT',
+        'ALTER TABLE users ADD COLUMN last_id_change   TEXT',
+        'ALTER TABLE team_matches ADD COLUMN mode TEXT DEFAULT "5v5"',
+        'ALTER TABLE users ADD COLUMN moon_coins INTEGER DEFAULT 0',
+        'ALTER TABLE match_players ADD COLUMN kills  INTEGER DEFAULT 0',
+        'ALTER TABLE match_players ADD COLUMN deaths INTEGER DEFAULT 0',
+        'ALTER TABLE users ADD COLUMN official_badge INTEGER DEFAULT 0',
+        'ALTER TABLE team_matches ADD COLUMN ct_team INTEGER DEFAULT 1',
+        'ALTER TABLE team_matches ADD COLUMN base_gain INTEGER DEFAULT 0',
+        'ALTER TABLE match_players ADD COLUMN elo_applied INTEGER DEFAULT 0',
+        'ALTER TABLE match_players ADD COLUMN kd_entered  INTEGER DEFAULT 0',
+        'ALTER TABLE users ADD COLUMN admin_badge_id INTEGER DEFAULT 1',
+        # Per-mode ELO / calibration
+        'ALTER TABLE users ADD COLUMN elo_5v5     INTEGER DEFAULT 0',
+        'ALTER TABLE users ADD COLUMN matches_5v5 INTEGER DEFAULT 0',
+        'ALTER TABLE users ADD COLUMN wins_5v5    INTEGER DEFAULT 0',
+        'ALTER TABLE users ADD COLUMN level_5v5   INTEGER DEFAULT 1',
+        'ALTER TABLE users ADD COLUMN elo_3v3     INTEGER DEFAULT 0',
+        'ALTER TABLE users ADD COLUMN matches_3v3 INTEGER DEFAULT 0',
+        'ALTER TABLE users ADD COLUMN wins_3v3    INTEGER DEFAULT 0',
+        'ALTER TABLE users ADD COLUMN level_3v3   INTEGER DEFAULT 1',
+        'ALTER TABLE users ADD COLUMN elo_2v2     INTEGER DEFAULT 0',
+        'ALTER TABLE users ADD COLUMN matches_2v2 INTEGER DEFAULT 0',
+        'ALTER TABLE users ADD COLUMN wins_2v2    INTEGER DEFAULT 0',
+        'ALTER TABLE users ADD COLUMN level_2v2   INTEGER DEFAULT 1',
+        # Персистентный шаг первичной регистрации (переживает перезапуск бота,
+        # в отличие от context.user_data): 'awaiting_nickname' / 'awaiting_game_id' / NULL.
+        'ALTER TABLE users ADD COLUMN pending_reg_step    TEXT',
+        'ALTER TABLE users ADD COLUMN pending_reg_step_at TEXT',
+        # Per-mode архив сезонов
+        'ALTER TABLE season_archive ADD COLUMN elo_5v5     INTEGER DEFAULT 0',
+        'ALTER TABLE season_archive ADD COLUMN matches_5v5 INTEGER DEFAULT 0',
+        'ALTER TABLE season_archive ADD COLUMN wins_5v5    INTEGER DEFAULT 0',
+        'ALTER TABLE season_archive ADD COLUMN elo_3v3     INTEGER DEFAULT 0',
+        'ALTER TABLE season_archive ADD COLUMN matches_3v3 INTEGER DEFAULT 0',
+        'ALTER TABLE season_archive ADD COLUMN wins_3v3    INTEGER DEFAULT 0',
+        'ALTER TABLE season_archive ADD COLUMN elo_2v2     INTEGER DEFAULT 0',
+        'ALTER TABLE season_archive ADD COLUMN matches_2v2 INTEGER DEFAULT 0',
+        'ALTER TABLE season_archive ADD COLUMN wins_2v2    INTEGER DEFAULT 0',
+        # MVP матча — больше всех килов в победившей команде
+        'ALTER TABLE team_matches ADD COLUMN mvp_uid     INTEGER',
+        'ALTER TABLE team_matches ADD COLUMN mvp_awarded INTEGER DEFAULT 0',
+        'ALTER TABLE users ADD COLUMN mvp_count INTEGER DEFAULT 0',
+        # Победитель, определённый автоматически OCR по слову "ПОБЕДА" на скриншоте
+        # (1/2 — номер команды, NULL — не удалось распознать).
+        'ALTER TABLE team_matches ADD COLUMN ocr_winner_team INTEGER',
+        # Модератор — облегчённая роль: может только выдавать/снимать варны и баны,
+        # без доступа к остальным админ-командам.
+        'ALTER TABLE users ADD COLUMN is_moderator INTEGER DEFAULT 0',
+    ]:
+        try:
+            c.execute(col_sql)
+        except Exception:
+            pass
+    conn.commit()
+    conn.close()
+
+
+def get_setting(key: str, default: str = None) -> str:
+    conn = sqlite3.connect('faceit_bot.db')
+    c = conn.cursor()
+    c.execute('SELECT value FROM bot_settings WHERE key=?', (key,))
+    row = c.fetchone()
+    conn.close()
+    return row[0] if row else default
+
+
+def set_setting(key: str, value: str):
+    conn = sqlite3.connect('faceit_bot.db')
+    c = conn.cursor()
+    c.execute(
+        'INSERT INTO bot_settings (key, value) VALUES (?, ?) '
+        'ON CONFLICT(key) DO UPDATE SET value=excluded.value',
+        (key, value)
+    )
+    conn.commit()
+    conn.close()
+
+
+def _add_months(date_str: str, months: int) -> str:
+    """Прибавляет months к дате в формате DD.MM.YYYY, возвращает тот же формат."""
+    d = datetime.datetime.strptime(date_str, '%d.%m.%Y')
+    total_month = d.month - 1 + months
+    year = d.year + total_month // 12
+    month = total_month % 12 + 1
+    import calendar
+    day = min(d.day, calendar.monthrange(year, month)[1])
+    return datetime.date(year, month, day).strftime('%d.%m.%Y')
+
+
+def get_creator_ids() -> set:
+    conn = sqlite3.connect('faceit_bot.db')
+    c = conn.cursor()
+    c.execute('SELECT user_id FROM users WHERE is_creator = 1')
+    ids = {r[0] for r in c.fetchall()}
+    conn.close()
+    return ids
+
+
+def get_admin_ids() -> set:
+    conn = sqlite3.connect('faceit_bot.db')
+    c = conn.cursor()
+    c.execute('SELECT user_id FROM users WHERE is_admin = 1')
+    ids = {r[0] for r in c.fetchall()}
+    conn.close()
+    return ids
+
+
+def creator_badge(uid: int, creator_ids: set) -> str:
+    return f" {E_CHECK}" if uid in creator_ids else ""
+
+
+def official_badge_str(uid: int) -> str:
+    conn = sqlite3.connect('faceit_bot.db')
+    c = conn.cursor()
+    c.execute('SELECT official_badge FROM users WHERE user_id=?', (uid,))
+    row = c.fetchone()
+    conn.close()
+    val = row[0] if row else 0
+    if val == 1:
+        return f" {E_OFF1}"
+    if val == 2:
+        return f" {E_OFF2}"
+    if val == 3:
+        return f" {E_OFF3}"
+    return ""
+
+
+def admin_badge(uid: int, admin_ids: set) -> str:
+    if uid not in admin_ids:
+        return ""
+    conn = sqlite3.connect('faceit_bot.db')
+    c = conn.cursor()
+    c.execute('SELECT admin_badge_id FROM users WHERE user_id=?', (uid,))
+    row = c.fetchone()
+    conn.close()
+    badge_id = (row[0] or 1) if row else 1
+    if badge_id == 2:
+        return f" {E_OFF2}"
+    if badge_id == 3:
+        return f" {E_OFF3}"
+    return f" {E_OFF1}"
+
+
+def get_user(user_id: int):
+    conn = sqlite3.connect('faceit_bot.db')
+    c = conn.cursor()
+    c.execute('''SELECT user_id, COALESCE(first_name, username) as display_name,
+                        elo, level, matches_played, wins, is_admin
+                 FROM users WHERE user_id = ?''', (user_id,))
+    row = c.fetchone()
+    conn.close()
+    return row
+
+
+def get_admins() -> list[int]:
+    conn = sqlite3.connect('faceit_bot.db')
+    c = conn.cursor()
+    c.execute('SELECT user_id FROM users WHERE is_admin = 1')
+    admins = [r[0] for r in c.fetchall()]
+    conn.close()
+    return admins
+
+
+def find_user_by_name(name: str):
+    conn = sqlite3.connect('faceit_bot.db')
+    c = conn.cursor()
+    c.execute('''SELECT user_id, COALESCE(first_name, username)
+                 FROM users
+                 WHERE LOWER(COALESCE(first_name, username)) = LOWER(?)
+                    OR LOWER(username) = LOWER(?)
+                 LIMIT 1''', (name, name.lstrip('@')))
+    row = c.fetchone()
+    conn.close()
+    return row
+
+
+def elo_to_level(elo: int) -> int:
+    for lvl, threshold in enumerate([801,951,1101,1251,1401,1551,1701,1851,2001], 1):
         if elo < threshold:
             return lvl
     return 10
 
-def elo_bar(elo: int, lvl: int) -> str:
-    thresholds = ELO_THRESHOLDS + [3000]
-    lo = thresholds[max(0, lvl - 1)]
-    hi = thresholds[min(lvl, len(thresholds) - 1)]
-    pct = (elo - lo) / (hi - lo) if hi > lo else 1.0
-    pct = max(0.0, min(1.0, pct))
-    filled = round(pct * 12)
-    bar = "█" * filled + "░" * (12 - filled)
-    return f"[{bar}] {round(pct * 100)}%"
+
+def calculate_calibration_elo(wins: int, total: int, kills: int = 0, deaths: int = 0) -> int:
+    ratio = wins / total if total > 0 else 0
+    if ratio >= 0.9:  base = 1700
+    elif ratio >= 0.8: base = 1500
+    elif ratio >= 0.7: base = 1300
+    elif ratio >= 0.6: base = 1100
+    elif ratio >= 0.5: base = 900
+    elif ratio >= 0.4: base = 750
+    elif ratio >= 0.3: base = 650
+    elif ratio >= 0.2: base = 550
+    elif ratio >= 0.1: base = 450
+    else: base = 400
+    kd = kills / deaths if deaths > 0 else (float(kills) if kills > 0 else 1.0)
+    if kd >= 2.0:    kd_bonus = 100
+    elif kd >= 1.5:  kd_bonus = 50
+    elif kd >= 1.2:  kd_bonus = 25
+    elif kd >= 0.8:  kd_bonus = 0
+    elif kd >= 0.5:  kd_bonus = -25
+    else:            kd_bonus = -50
+    return max(400, base + kd_bonus)
 
 
-# ==================== ПОДКЛЮЧЕНИЕ К БД ====================
-def _db():
-    import time as _time
-    url = DATABASE_URL
-    if url and url.startswith("postgres://"):
-        url = "postgresql://" + url[len("postgres://"):]
-    last_err = None
-    for _attempt in range(3):
-        try:
-            return psycopg2.connect(url, connect_timeout=15)
-        except psycopg2.OperationalError as e:
-            last_err = e
-            if "SSL" in str(e) or "connection" in str(e).lower():
-                _time.sleep(1)
-                continue
-            raise
-    raise last_err
+def calculate_elo_change(avg_winner: float, avg_loser: float, K: int = 32) -> int:
+    expected = 1 / (1 + 10 ** ((avg_loser - avg_winner) / 400))
+    return max(1, int(K * (1 - expected)))
 
 
-def _add_column_if_missing(table, col, definition):
-    conn = _db()
-    cur = conn.cursor()
-    try:
-        cur.execute(f"ALTER TABLE {table} ADD COLUMN {col} {definition}")
-        conn.commit()
-    except psycopg2.errors.DuplicateColumn:
-        conn.rollback()
-    except Exception as e:
-        conn.rollback()
-        print(f"[_add_column_if_missing] {table}.{col}: {e}")
-    finally:
-        conn.close()
-
-
-def init_db():
-    conn = _db()
-    cur = conn.cursor()
-
-    cur.execute("""
-        CREATE TABLE IF NOT EXISTS players (
-            user_id BIGINT PRIMARY KEY,
-            username TEXT,
-            game_id TEXT,
-            device TEXT,
-            elo INTEGER DEFAULT 1000,
-            coins INTEGER DEFAULT 100,
-            wins INTEGER DEFAULT 0,
-            losses INTEGER DEFAULT 0,
-            kills INTEGER DEFAULT 0,
-            deaths INTEGER DEFAULT 0,
-            assists INTEGER DEFAULT 0,
-            is_admin INTEGER DEFAULT 0,
-            registered INTEGER DEFAULT 0,
-            is_bot INTEGER DEFAULT 0,
-            is_banned INTEGER DEFAULT 0,
-            warns INTEGER DEFAULT 0,
-            quals_access INTEGER DEFAULT 0,
-            is_game_reg INTEGER DEFAULT 0,
-            is_muted INTEGER DEFAULT 0,
-            mute_until BIGINT DEFAULT 0,
-            is_on_check INTEGER DEFAULT 0,
-            check_admin_id BIGINT DEFAULT 0,
-            tg_username TEXT DEFAULT ''
-        )
-    """)
-    conn.commit()
-
-    for col, definition in [
-        ("is_banned",      "INTEGER DEFAULT 0"),
-        ("warns",          "INTEGER DEFAULT 0"),
-        ("quals_access",   "INTEGER DEFAULT 0"),
-        ("is_game_reg",    "INTEGER DEFAULT 0"),
-        ("is_muted",       "INTEGER DEFAULT 0"),
-        ("mute_until",     "BIGINT DEFAULT 0"),
-        ("is_on_check",    "INTEGER DEFAULT 0"),
-        ("check_admin_id", "BIGINT DEFAULT 0"),
-        ("tg_username",    "TEXT DEFAULT ''"),
-        ("ban_reason",     "TEXT DEFAULT ''"),
-        ("ban_until",      "BIGINT DEFAULT 0"),
-        ("quals_wins",     "INTEGER DEFAULT 0"),
-        ("quals_losses",   "INTEGER DEFAULT 0"),
-        ("quals_kills",    "INTEGER DEFAULT 0"),
-        ("quals_deaths",   "INTEGER DEFAULT 0"),
-        ("quals_assists",  "INTEGER DEFAULT 0"),
-        ("quals_elo",      "INTEGER DEFAULT 1000"),
-        ("mvp_count",      "INTEGER DEFAULT 0"),
-        ("premium_until",  "BIGINT DEFAULT 0"),
-        ("quals_until",    "BIGINT DEFAULT 0"),
-        ("duo_elo",        "INTEGER DEFAULT 1000"),
-        ("duo_wins",       "INTEGER DEFAULT 0"),
-        ("duo_losses",     "INTEGER DEFAULT 0"),
-        ("duo_kills",      "INTEGER DEFAULT 0"),
-        ("duo_deaths",     "INTEGER DEFAULT 0"),
-        ("duo_assists",    "INTEGER DEFAULT 0"),
-        ("fpl_access",     "INTEGER DEFAULT 0"),
-    ]:
-        _add_column_if_missing("players", col, definition)
-
-    # ==================== ТАБЛИЦА players (StandDarling) ====================
-    cur.execute("""
-        CREATE TABLE IF NOT EXISTS players (
-            user_id BIGINT PRIMARY KEY,
-            username TEXT,
-            game_id TEXT,
-            device TEXT,
-            elo INTEGER DEFAULT 1000,
-            coins INTEGER DEFAULT 100,
-            wins INTEGER DEFAULT 0,
-            losses INTEGER DEFAULT 0,
-            kills INTEGER DEFAULT 0,
-            deaths INTEGER DEFAULT 0,
-            assists INTEGER DEFAULT 0,
-            is_admin INTEGER DEFAULT 0,
-            registered INTEGER DEFAULT 0,
-            is_bot INTEGER DEFAULT 0,
-            is_banned INTEGER DEFAULT 0,
-            warns INTEGER DEFAULT 0,
-            quals_access INTEGER DEFAULT 0,
-            is_game_reg INTEGER DEFAULT 0,
-            is_muted INTEGER DEFAULT 0,
-            mute_until BIGINT DEFAULT 0,
-            is_on_check INTEGER DEFAULT 0,
-            check_admin_id BIGINT DEFAULT 0,
-            tg_username TEXT DEFAULT ''
-        )
-    """)
-    conn.commit()
-
-    for col, definition in [
-        ("ban_reason",     "TEXT DEFAULT ''"),
-        ("ban_until",      "BIGINT DEFAULT 0"),
-        ("quals_wins",     "INTEGER DEFAULT 0"),
-        ("quals_losses",   "INTEGER DEFAULT 0"),
-        ("quals_kills",    "INTEGER DEFAULT 0"),
-        ("quals_deaths",   "INTEGER DEFAULT 0"),
-        ("quals_assists",  "INTEGER DEFAULT 0"),
-        ("quals_elo",      "INTEGER DEFAULT 1000"),
-        ("mvp_count",      "INTEGER DEFAULT 0"),
-        ("premium_until",  "BIGINT DEFAULT 0"),
-        ("quals_until",    "BIGINT DEFAULT 0"),
-        ("duo_elo",        "INTEGER DEFAULT 1000"),
-        ("duo_wins",       "INTEGER DEFAULT 0"),
-        ("duo_losses",     "INTEGER DEFAULT 0"),
-        ("duo_kills",      "INTEGER DEFAULT 0"),
-        ("duo_deaths",     "INTEGER DEFAULT 0"),
-        ("duo_assists",    "INTEGER DEFAULT 0"),
-        ("is_verified",    "INTEGER DEFAULT 0"),
-        ("active_frame",      "TEXT DEFAULT NULL"),
-        ("active_banner",     "TEXT DEFAULT NULL"),
-        ("active_background", "TEXT DEFAULT NULL"),
-        ("fpl_access",        "INTEGER DEFAULT 0"),
-    ]:
-        _add_column_if_missing("players", col, definition)
-
-    # Боты для players (те же что в players)
-    cur.execute("SELECT COUNT(*) FROM players WHERE is_bot=1")
-    if cur.fetchone()[0] == 0:
-        for i in range(1, 21):
-            bot_id = 1000000000 + i
-            cur.execute(
-                "INSERT INTO players (user_id, username, game_id, device, registered, is_bot, elo) VALUES (%s, %s, %s, %s, 1, 1, 1000) ON CONFLICT (user_id) DO NOTHING",
-                (bot_id, f"Bot_{i}", str(500000000 + i), "PC" if i % 2 == 0 else "MOBILE"),
-            )
-    conn.commit()
-
-    # ==================== ТАБЛИЦА matches (StandDarling матчи) ====================
-    cur.execute("""
-        CREATE TABLE IF NOT EXISTS matches (
-            id SERIAL PRIMARY KEY,
-            match_id INTEGER NOT NULL,
-            match_code TEXT DEFAULT '',
-            league TEXT DEFAULT '',
-            device TEXT DEFAULT '',
-            map_name TEXT DEFAULT '',
-            winner TEXT DEFAULT '',
-            ACore_w INTEGER DEFAULT 0,
-            ACore_l INTEGER DEFAULT 0,
-            status TEXT DEFAULT 'registered',
-            cancel_reason TEXT DEFAULT '',
-            started_at BIGINT DEFAULT 0,
-            players_json TEXT DEFAULT '[]',
-            finished_at BIGINT DEFAULT EXTRACT(EPOCH FROM NOW())::BIGINT
-        )
-    """)
-    conn.commit()
-    try:
-        cur.execute("CREATE UNIQUE INDEX IF NOT EXISTS matches_match_id_uq ON matches (match_id)")
-        conn.commit()
-    except Exception:
-        conn.rollback()
-
-    # Таблица для хранения выбранной приватки пользователя между перезапусками
-    cur.execute("""
-        CREATE TABLE IF NOT EXISTS user_private_settings (
-            user_id BIGINT PRIMARY KEY,
-            private_key TEXT DEFAULT 'fade'
-        )
-    """)
-    conn.commit()
-
-    for admin_uid in ADMIN_IDS_LIST:
-        cur.execute(
-            "INSERT INTO players (user_id, username, registered, is_admin) VALUES (%s, 'Admin', 1, 1) ON CONFLICT (user_id) DO NOTHING",
-            (admin_uid,),
-        )
-        cur.execute("UPDATE players SET is_admin=1 WHERE user_id=%s", (admin_uid,))
-    conn.commit()
-
-    cur.execute("SELECT COUNT(*) FROM players WHERE is_bot=1")
-    if cur.fetchone()[0] == 0:
-        for i in range(1, 21):
-            bot_id = 1000000000 + i
-            cur.execute(
-                "INSERT INTO players (user_id, username, game_id, device, registered, is_bot, elo) VALUES (%s, %s, %s, %s, 1, 1, 1000) ON CONFLICT (user_id) DO NOTHING",
-                (bot_id, f"Bot_{i}", str(500000000 + i), "PC" if i % 2 == 0 else "MOBILE"),
-            )
-    conn.commit()
-
-    cur.execute("""
-        CREATE TABLE IF NOT EXISTS shop_items (
-            id SERIAL PRIMARY KEY,
-            name TEXT NOT NULL,
-            deACription TEXT,
-            category TEXT NOT NULL,
-            price INTEGER NOT NULL,
-            item_type TEXT NOT NULL,
-            is_active INTEGER DEFAULT 1
-        )
-    """)
-    conn.commit()
-
-    cur.execute("SELECT COUNT(*) FROM shop_items")
-    if cur.fetchone()[0] == 0:
-        for row in SHOP_ITEMS_DEFAULT:
-            cur.execute(
-                "INSERT INTO shop_items (name, deACription, category, price, item_type) VALUES (%s, %s, %s, %s, %s)",
-                row,
-            )
+def calculate_individual_elo_change(base_gain: int, kills: int, deaths: int, won: bool) -> int:
+    """Индивидуальное изменение ELO по матчевому K/D.
+    Победители всегда получают +ELO (больше при хорошей игре).
+    Проигравшие всегда получают -ELO (меньше при хорошей игре).
+    """
+    kd = kills / deaths if deaths > 0 else (float(kills) if kills > 0 else 1.0)
+    if won:
+        if kd >= 3.0:    multiplier = 1.8
+        elif kd >= 2.5:  multiplier = 1.6
+        elif kd >= 2.0:  multiplier = 1.4
+        elif kd >= 1.5:  multiplier = 1.25
+        elif kd >= 1.2:  multiplier = 1.1
+        elif kd >= 0.8:  multiplier = 1.0
+        elif kd >= 0.5:  multiplier = 0.85
+        else:            multiplier = 0.7
+        return max(1, round(base_gain * multiplier))
     else:
-        price_updates = [
-            (1000, "premium"),
-            (300,  "x2coins"),
-            (150,  "unwarn"),
-            (10,   "rename"),
-            (1500, "quals"),
-        ]
-        for price, item_type in price_updates:
-            cur.execute("UPDATE shop_items SET price=%s WHERE item_type=%s", (price, item_type))
-    conn.commit()
+        if kd >= 3.0:    multiplier = 0.25  # героическая игра — теряет минимум
+        elif kd >= 2.5:  multiplier = 0.35
+        elif kd >= 2.0:  multiplier = 0.5
+        elif kd >= 1.5:  multiplier = 0.65
+        elif kd >= 1.2:  multiplier = 0.8
+        elif kd >= 0.8:  multiplier = 1.0
+        elif kd >= 0.5:  multiplier = 1.2
+        else:            multiplier = 1.4   # плохая игра — теряет больше
+        return -max(1, round(base_gain * multiplier))
 
-    # Мультивалютные цены товаров: Рубли / Telegram Stars / Крипта (USD).
-    for col, definition in [
-        ("price_rub",    "INTEGER DEFAULT 0"),
-        ("price_stars",  "INTEGER DEFAULT 0"),
-        ("price_crypto", "DOUBLE PRECISION DEFAULT 0"),
-    ]:
-        _add_column_if_missing("shop_items", col, definition)
 
-    cur.execute("""
-        CREATE TABLE IF NOT EXISTS shop_crypto_invoices (
-            id SERIAL PRIMARY KEY,
-            invoice_id BIGINT NOT NULL,
-            user_id BIGINT NOT NULL,
-            item_id INTEGER NOT NULL,
-            status TEXT DEFAULT 'active',
-            created_at BIGINT DEFAULT EXTRACT(EPOCH FROM NOW())::BIGINT,
-            paid_at BIGINT DEFAULT NULL
+def elo_bar(elo: int) -> str:
+    thresholds = [801, 951, 1101, 1251, 1401, 1551, 1701, 1851, 2001, 9999]
+    prev       = [0,   801, 951,  1101, 1251, 1401, 1551, 1701, 1851, 2001]
+    for i, threshold in enumerate(thresholds):
+        if elo < threshold:
+            low, high = prev[i], threshold
+            filled = round((elo - low) / (high - low) * 8)
+            return f"[{'█' * filled}{'░' * (8 - filled)}]"
+    return "[████████]"
+
+
+def queue_list_text(lobby_id: int, mode: str) -> str:
+    q = lobby_queues[mode].get(lobby_id, [])
+    if not q:
+        return ""
+    calib_games = MODES[mode]['calib_games']
+    conn = sqlite3.connect('faceit_bot.db')
+    c = conn.cursor()
+    creator_ids = get_creator_ids()
+    admin_ids   = get_admin_ids()
+    lines = []
+    _qec, _qmc, _qwc, _qlc = mode_cols(mode)
+    for i, uid in enumerate(q, 1):
+        c.execute(
+            f'SELECT COALESCE(first_name, username), {_qec}, {_qmc}, {_qlc} FROM users WHERE user_id = ?',
+            (uid,)
         )
-    """)
-    conn.commit()
+        row = c.fetchone()
+        if row:
+            name, elo, matches_played, level = row
+            badge = creator_badge(uid, creator_ids) + admin_badge(uid, admin_ids)
+            if (matches_played or 0) < calib_games:
+                icon = LEVEL_ICONS[0]
+                elo_str = f"калибровка {matches_played or 0}/{calib_games}"
+            else:
+                icon = LEVEL_ICONS.get(level or 1, LEVEL_ICONS[1])
+                elo_str = f"ELO: {elo}"
+            lines.append(f"  {i}. {icon} {name or str(uid)}{badge} ({elo_str})")
+        else:
+            lines.append(f"  {i}. id:{uid}")
+    conn.close()
+    return "\n".join(lines)
 
-    # Миграция: добавить рамки уровней если их ещё нет в БД
-    _level_frame_items = [row for row in SHOP_ITEMS_DEFAULT if row[0].startswith("Рамка Уровень")]
-    for row in _level_frame_items:
-        cur.execute("SELECT COUNT(*) FROM shop_items WHERE name=%s", (row[0],))
-        if cur.fetchone()[0] == 0:
-            cur.execute(
-                "INSERT INTO shop_items (name, deACription, category, price, item_type) VALUES (%s, %s, %s, %s, %s)",
-                row,
+
+async def _send_match_notification(bot, uid: int, match_id: int, info: dict, calib_games: int):
+    """Уведомление игроку об итогах матча — ELO начисляется автоматически."""
+    if not info or is_bot(uid):
+        return
+    try:
+        result_icon = f"{E_CHECK} Победа" if info['won'] else f"{E_CROSS} Поражение"
+        if info['is_calibrating']:
+            if info['calib_done']:
+                lvl_icon = LEVEL_ICONS.get(info['calib_lvl'], str(info['calib_lvl']))
+                text = (
+                    f"<tg-emoji emoji-id='5461151367559141950'>🎉</tg-emoji> <b>Калибровка завершена!</b>\n\n"
+                    f"{result_icon}\n"
+                    f"{E_PEOPLE} Результат: <b>{info['wins']}/{calib_games}</b> побед\n\n"
+                    f"{E_ZAP} ELO присвоен: <code>{info['calib_elo']}</code>\n"
+                    f"〔 {lvl_icon} 〕 Уровень <b>{info['calib_lvl']}</b>\n\n"
+                    f"Удачи в матчах! {E_FIRE}"
+                )
+            else:
+                remaining = calib_games - info['matches_played']
+                text = (
+                    f"<tg-emoji emoji-id='5231200819986047254'>📊</tg-emoji> <b>Матч #{match_id} засчитан</b>\n\n"
+                    f"{result_icon}\n\n"
+                    f"{E_PEOPLE} Прогресс калибровки: <b>{info['matches_played']}/{calib_games}</b>\n"
+                    f"Осталось игр: <b>{remaining}</b>\n\n"
+                    f"<i>ELO будет присвоен после завершения калибровки.</i>"
+                )
+        else:
+            sign = "+" if info['elo_change'] > 0 else ""
+            kills  = info.get('kills', 0)
+            deaths = info.get('deaths', 0)
+            kd_str = f"{kills}/{deaths}  ({kills/deaths:.2f})" if deaths > 0 else f"{kills}/0"
+            if kills or deaths:
+                kd_line = f"\n<tg-emoji emoji-id='5222486447306602688'>🔫</tg-emoji> Карьерный К/Д: <b>{kd_str}</b> <i>(влияет на множитель ELO)</i>"
+            else:
+                kd_line = f"\n<tg-emoji emoji-id='5222486447306602688'>🔫</tg-emoji> <i>К/Д не указан — ELO начислен с нейтральным множителем</i>"
+            coins = info.get('coins_earned', 0)
+            coins_line = f"\n{E_PRICE} Moon Coins: <b>+{coins}</b> <tg-emoji emoji-id='5461151367559141950'>🎉</tg-emoji>" if coins else ""
+            text = (
+                f"<tg-emoji emoji-id='5231200819986047254'>📊</tg-emoji> <b>Матч #{match_id} завершён</b>\n\n"
+                f"{result_icon}\n\n"
+                f"{E_ZAP} ELO: <b>{sign}{info['elo_change']}</b>"
+                f"{kd_line}"
+                f"{coins_line}"
             )
-    conn.commit()
-
-    cur.execute("""
-        CREATE TABLE IF NOT EXISTS inventory (
-            id SERIAL PRIMARY KEY,
-            user_id BIGINT NOT NULL,
-            item_id INTEGER NOT NULL,
-            purchased_at BIGINT DEFAULT EXTRACT(EPOCH FROM NOW())::BIGINT,
-            is_activated INTEGER DEFAULT 0,
-            activated_at BIGINT DEFAULT NULL,
-            FOREIGN KEY (user_id) REFERENCES players(user_id),
-            FOREIGN KEY (item_id) REFERENCES shop_items(id)
-        )
-    """)
-    conn.commit()
-
-    for col, definition in [
-        ("is_activated", "INTEGER DEFAULT 0"),
-        ("activated_at", "BIGINT DEFAULT NULL"),
-    ]:
-        _add_column_if_missing("inventory", col, definition)
-
-    _add_column_if_missing("players", "active_frame",      "TEXT DEFAULT NULL")
-    _add_column_if_missing("players", "active_banner",     "TEXT DEFAULT NULL")
-    _add_column_if_missing("players", "active_background", "TEXT DEFAULT NULL")
-
-    cur.execute("""
-        CREATE TABLE IF NOT EXISTS match_counter (
-            id INTEGER PRIMARY KEY,
-            value INTEGER DEFAULT 0
-        )
-    """)
-    cur.execute("INSERT INTO match_counter (id, value) VALUES (1, 0) ON CONFLICT (id) DO NOTHING")
-    conn.commit()
-
-    cur.execute("""
-        CREATE TABLE IF NOT EXISTS bot_settings (
-            key TEXT PRIMARY KEY,
-            value TEXT NOT NULL
-        )
-    """)
-    conn.commit()
-
-    cur.execute("""
-        CREATE TABLE IF NOT EXISTS matches (
-            id SERIAL PRIMARY KEY,
-            match_id INTEGER NOT NULL,
-            league TEXT,
-            device TEXT,
-            map_name TEXT,
-            winner TEXT,
-            ACore_w INTEGER,
-            ACore_l INTEGER,
-            finished_at BIGINT DEFAULT EXTRACT(EPOCH FROM NOW())::BIGINT,
-            players_json TEXT
-        )
-    """)
-    conn.commit()
-
-    cur.execute("""
-        CREATE TABLE IF NOT EXISTS promo_codes (
-            id SERIAL PRIMARY KEY,
-            code TEXT UNIQUE NOT NULL,
-            reward_type TEXT NOT NULL,
-            reward_value INTEGER DEFAULT 0,
-            max_uses INTEGER DEFAULT 1,
-            uses INTEGER DEFAULT 0,
-            is_active INTEGER DEFAULT 1,
-            created_at BIGINT DEFAULT EXTRACT(EPOCH FROM NOW())::BIGINT,
-            reward_days INTEGER DEFAULT 30,
-            rewards_json TEXT DEFAULT ''
-        )
-    """)
-    _add_column_if_missing("promo_codes", "reward_days",   "INTEGER DEFAULT 30")
-    _add_column_if_missing("promo_codes", "rewards_json",  "TEXT DEFAULT ''")
-    cur.execute("""
-        CREATE TABLE IF NOT EXISTS promo_uses (
-            id SERIAL PRIMARY KEY,
-            user_id BIGINT NOT NULL,
-            code TEXT NOT NULL
-        )
-    """)
-    conn.commit()
-
-    cur.execute("""
-        CREATE TABLE IF NOT EXISTS admin_logs (
-            id SERIAL PRIMARY KEY,
-            admin_id BIGINT NOT NULL,
-            action TEXT NOT NULL,
-            target_id BIGINT DEFAULT NULL,
-            details TEXT DEFAULT '',
-            created_at BIGINT DEFAULT EXTRACT(EPOCH FROM NOW())::BIGINT
-        )
-    """)
-    conn.commit()
-
-    cur.execute("""
-        CREATE TABLE IF NOT EXISTS admin_restrictions (
-            id SERIAL PRIMARY KEY,
-            admin_id BIGINT NOT NULL,
-            action TEXT NOT NULL,
-            UNIQUE(admin_id, action)
-        )
-    """)
-    conn.commit()
-
-    cur.execute("""
-        CREATE TABLE IF NOT EXISTS crypto_invoices (
-            id SERIAL PRIMARY KEY,
-            invoice_id BIGINT UNIQUE NOT NULL,
-            user_id BIGINT NOT NULL,
-            pkg_idx INTEGER,
-            pkg_key TEXT,
-            coins_amount INTEGER NOT NULL,
-            status TEXT DEFAULT 'active',
-            created_at BIGINT DEFAULT EXTRACT(EPOCH FROM NOW())::BIGINT,
-            paid_at BIGINT DEFAULT NULL
-        )
-    """)
-    conn.commit()
-    try:
-        cur.execute("ALTER TABLE crypto_invoices ALTER COLUMN pkg_idx DROP NOT NULL")
-        conn.commit()
+        await _send_html(bot, uid, text)
     except Exception:
-        conn.rollback()
-    try:
-        cur.execute("ALTER TABLE crypto_invoices ADD COLUMN IF NOT EXISTS pkg_key TEXT")
-        conn.commit()
-    except Exception:
-        conn.rollback()
+        pass
 
-    cur.execute("""
-        CREATE TABLE IF NOT EXISTS custom_coin_packages (
-            id SERIAL PRIMARY KEY,
-            name TEXT NOT NULL,
-            coins_amount INTEGER NOT NULL,
-            stars_price INTEGER NOT NULL,
-            crypto_usd NUMERIC NOT NULL,
-            target_user_id BIGINT DEFAULT NULL,
-            created_by BIGINT NOT NULL,
-            created_at BIGINT DEFAULT EXTRACT(EPOCH FROM NOW())::BIGINT
+
+def finalize_match(match_id: int, winning_team: int, mode: str = '5v5') -> tuple[int, list, list, dict]:
+    """
+    Завершает матч и СРАЗУ начисляет ELO каждому игроку индивидуально.
+    ELO считается автоматически по карьерному K/D каждого игрока из профиля.
+    Для игроков на калибровке — просто засчитывает игру, ELO не меняется.
+    Возвращает (gain, winners, losers, per_uid).
+    """
+    losing_team = 2 if winning_team == 1 else 1
+    calib_games = MODES.get(mode, MODES['5v5'])['calib_games']
+    now_iso     = datetime.datetime.utcnow().isoformat()
+    conn = sqlite3.connect('faceit_bot.db')
+    c    = conn.cursor()
+
+    c.execute('SELECT AVG(elo_before) FROM match_players WHERE match_id=? AND team=?', (match_id, winning_team))
+    avg_w = c.fetchone()[0] or 0
+    c.execute('SELECT AVG(elo_before) FROM match_players WHERE match_id=? AND team=?', (match_id, losing_team))
+    avg_l = c.fetchone()[0] or 0
+    gain  = calculate_elo_change(avg_w, avg_l)
+
+    c.execute('SELECT user_id, elo_before FROM match_players WHERE match_id=? AND team=?', (match_id, winning_team))
+    winners = c.fetchall()
+    c.execute('SELECT user_id, elo_before FROM match_players WHERE match_id=? AND team=?', (match_id, losing_team))
+    losers = c.fetchall()
+
+    per_uid: dict = {}
+
+    ec, mc, wc, lc = mode_cols(mode)
+
+    def _process(uid: int, elo_before: int, won: bool):
+        # Читаем per-mode счётчики
+        c.execute(
+            f'SELECT {mc}, {wc} FROM users WHERE user_id=?',
+            (uid,)
         )
-    """)
-    conn.commit()
-
-    cur.execute("""
-        CREATE TABLE IF NOT EXISTS tickets (
-            id SERIAL PRIMARY KEY,
-            ticket_code TEXT UNIQUE NOT NULL,
-            user_id BIGINT NOT NULL,
-            match_code TEXT DEFAULT '',
-            reason TEXT DEFAULT '',
-            evidence_file_id TEXT DEFAULT '',
-            accused_id BIGINT DEFAULT NULL,
-            accused_name TEXT DEFAULT '',
-            status TEXT DEFAULT 'open',
-            created_at BIGINT DEFAULT EXTRACT(EPOCH FROM NOW())::BIGINT,
-            closed_by BIGINT DEFAULT NULL,
-            close_reason TEXT DEFAULT ''
+        row       = c.fetchone()
+        mp_before = (row[0] or 0) if row else 0   # матчей в этом режиме
+        w_before  = (row[1] or 0) if row else 0   # побед в этом режиме
+        # К/Д этого матча уже распознано автоматически со скриншота результата
+        # (см. _apply_ocr_stats_to_match) — используем его напрямую, без оценки
+        # по прошлым матчам.
+        c.execute(
+            'SELECT kills, deaths FROM match_players WHERE match_id=? AND user_id=?',
+            (match_id, uid)
         )
-    """)
-    conn.commit()
+        kd_row = c.fetchone()
+        kills  = (kd_row[0] or 0) if kd_row else 0
+        deaths = (kd_row[1] or 0) if kd_row else 0
+        calibrated = mp_before >= calib_games
 
-    _add_column_if_missing("matches", "match_code",      "TEXT DEFAULT ''")
-    _add_column_if_missing("matches", "status",          "TEXT DEFAULT 'registered'")
-    _add_column_if_missing("matches", "cancel_reason",   "TEXT DEFAULT ''")
-    _add_column_if_missing("matches", "started_at",      "BIGINT DEFAULT 0")
-    _add_column_if_missing("matches", "private_key",     "TEXT DEFAULT 'fade'")
-    _add_column_if_missing("matches", "admin_thread_id", "BIGINT DEFAULT NULL")
-    _add_column_if_missing("matches", "admin_msg_id",    "BIGINT DEFAULT NULL")
+        # Начисляем Moon Coins при победе (1-10)
+        coins_earned = random.randint(1, 10) if won else 0
+        if coins_earned:
+            c.execute('UPDATE users SET moon_coins=moon_coins+? WHERE user_id=?', (coins_earned, uid))
 
-    # unregistered_matches - колонки которых может не быть в старой таблице
-    _add_column_if_missing("unregistered_matches", "team_ct_json",      "TEXT DEFAULT '[]'")
-    _add_column_if_missing("unregistered_matches", "team_t_json",       "TEXT DEFAULT '[]'")
-    _add_column_if_missing("unregistered_matches", "host_game_id",      "TEXT DEFAULT ''")
-    _add_column_if_missing("unregistered_matches", "ACreenshots_count", "INTEGER DEFAULT 0")
-    _add_column_if_missing("unregistered_matches", "started_at",        "BIGINT DEFAULT 0")
-
-    # Синяя галочка - верификация игрока
-    _add_column_if_missing("players", "is_verified", "INTEGER DEFAULT 0")
-    # UNIQUE-индекс на match_id для ON CONFLICT
-    try:
-        cur.execute("CREATE UNIQUE INDEX IF NOT EXISTS matches_match_id_uq ON matches (match_id)")
-        conn.commit()
-    except Exception:
-        conn.rollback()
-
-    # Per-private match tables: matches
-    for _priv_key, _priv_cfg in PRIVATE_CONFIG.items():
-        _mt = _priv_cfg["matches_table"]
-        cur.execute(f"""
-            CREATE TABLE IF NOT EXISTS {_mt} (
-                id SERIAL PRIMARY KEY,
-                match_id INTEGER NOT NULL,
-                match_code TEXT DEFAULT '',
-                league TEXT DEFAULT '',
-                device TEXT DEFAULT '',
-                map_name TEXT DEFAULT '',
-                winner TEXT DEFAULT '',
-                ACore_w INTEGER DEFAULT 0,
-                ACore_l INTEGER DEFAULT 0,
-                status TEXT DEFAULT 'registered',
-                cancel_reason TEXT DEFAULT '',
-                started_at BIGINT DEFAULT 0,
-                players_json TEXT DEFAULT '[]',
-                finished_at BIGINT DEFAULT EXTRACT(EPOCH FROM NOW())::BIGINT
-            )
-        """)
-        conn.commit()
-        try:
-            cur.execute(f"CREATE UNIQUE INDEX IF NOT EXISTS {_mt}_match_id_uq ON {_mt} (match_id)")
-            conn.commit()
-        except Exception:
-            conn.rollback()
-
-    # ===== МАТЧИ С ТРЕМЯ СТАТУСАМИ =====
-    # active = матч идёт, registered = зарегистрирован, cancelled = отменён
-    cur.execute("""
-        DO $$ BEGIN
-            CREATE TYPE match_status_v2 AS ENUM ('active', 'registered', 'cancelled');
-        EXCEPTION
-            WHEN duplicate_object THEN null;
-        END $$;
-    """)
-    conn.commit()
-
-    cur.execute("""
-        CREATE TABLE IF NOT EXISTS matches_tracked (
-            id SERIAL PRIMARY KEY,
-            match_code TEXT NOT NULL UNIQUE,
-            league TEXT,
-            device TEXT,
-            map_name TEXT,
-            status match_status_v2 NOT NULL DEFAULT 'active',
-            team1_json TEXT,
-            team2_json TEXT,
-            winner_id BIGINT DEFAULT NULL,
-            ACore1 INTEGER DEFAULT NULL,
-            ACore2 INTEGER DEFAULT NULL,
-            cancel_reason TEXT DEFAULT NULL,
-            players_json TEXT,
-            created_at BIGINT DEFAULT EXTRACT(EPOCH FROM NOW())::BIGINT,
-            registered_at BIGINT DEFAULT NULL,
-            cancelled_at BIGINT DEFAULT NULL,
-            finished_at BIGINT DEFAULT NULL
-        )
-    """)
-    conn.commit()
-
-    cur.execute("""
-        CREATE TABLE IF NOT EXISTS unregistered_matches (
-            id SERIAL PRIMARY KEY,
-            match_id INTEGER NOT NULL UNIQUE,
-            match_code TEXT NOT NULL,
-            league TEXT DEFAULT '',
-            device TEXT DEFAULT '',
-            map_name TEXT DEFAULT '',
-            players_json TEXT DEFAULT '[]',
-            team_ct_json TEXT DEFAULT '[]',
-            team_t_json TEXT DEFAULT '[]',
-            host_game_id TEXT DEFAULT '',
-            ACreenshots_count INTEGER DEFAULT 0,
-            started_at BIGINT DEFAULT EXTRACT(EPOCH FROM NOW())::BIGINT
-        )
-    """)
-    conn.commit()
-
-    cur.execute("""
-        CREATE TABLE IF NOT EXISTS seasons (
-            id SERIAL PRIMARY KEY,
-            season_number INTEGER NOT NULL,
-            name TEXT DEFAULT '',
-            started_at BIGINT DEFAULT EXTRACT(EPOCH FROM NOW())::BIGINT,
-            ended_at BIGINT DEFAULT NULL,
-            reset_by BIGINT DEFAULT NULL,
-            is_active INTEGER DEFAULT 1
-        )
-    """)
-    conn.commit()
-
-    cur.execute("""
-        CREATE TABLE IF NOT EXISTS season_player_history (
-            id SERIAL PRIMARY KEY,
-            season_id INTEGER NOT NULL,
-            season_number INTEGER NOT NULL,
-            user_id BIGINT NOT NULL,
-            username TEXT DEFAULT '',
-            elo INTEGER DEFAULT 1000,
-            wins INTEGER DEFAULT 0,
-            losses INTEGER DEFAULT 0,
-            kills INTEGER DEFAULT 0,
-            deaths INTEGER DEFAULT 0,
-            assists INTEGER DEFAULT 0,
-            quals_wins INTEGER DEFAULT 0,
-            quals_losses INTEGER DEFAULT 0,
-            quals_kills INTEGER DEFAULT 0,
-            quals_deaths INTEGER DEFAULT 0,
-            quals_assists INTEGER DEFAULT 0,
-            quals_elo INTEGER DEFAULT 1000,
-            mvp_count INTEGER DEFAULT 0,
-            saved_at BIGINT DEFAULT EXTRACT(EPOCH FROM NOW())::BIGINT
-        )
-    """)
-    conn.commit()
-
-    cur.execute("SELECT COUNT(*) FROM seasons WHERE is_active=1")
-    if cur.fetchone()[0] == 0:
-        cur.execute(
-            "INSERT INTO seasons (season_number, name, is_active) VALUES (1, 'Сезон 1', 1)"
-        )
-        conn.commit()
-
-    conn.close()
-    print("✅ БД инициализирована (PostgreSQL / Supabase).")
-
-
-# ==================== БД ХЕЛПЕРЫ ====================
-def get_setting(key):
-    conn = _db()
-    cur = conn.cursor()
-    cur.execute("SELECT value FROM bot_settings WHERE key=%s", (key,))
-    row = cur.fetchone()
-    conn.close()
-    return row[0] if row else None
-
-def set_setting(key, value):
-    conn = _db()
-    cur = conn.cursor()
-    cur.execute(
-        "INSERT INTO bot_settings (key, value) VALUES (%s, %s) ON CONFLICT (key) DO UPDATE SET value=EXCLUDED.value",
-        (key, str(value))
-    )
-    conn.commit()
-    conn.close()
-
-def load_dynamic_settings():
-    """Загружает сохранённые thread ID из БД и обновляет глобальные переменные."""
-    global _dynamic_log_thread_id, _dynamic_results_thread_id
-    global _dynamic_match_reg_chat_id, _dynamic_match_reg_thread_id
-    global _dynamic_ticket_chat_id, _dynamic_ticket_thread_id
-    try:
-        val = get_setting("log_thread_id")
-        if val:
-            _dynamic_log_thread_id = int(val)
-        val2 = get_setting("results_thread_id")
-        if val2:
-            _dynamic_results_thread_id = int(val2)
-        val3 = get_setting("match_reg_chat_id")
-        if val3:
-            _dynamic_match_reg_chat_id = int(val3)
-        val4 = get_setting("match_reg_thread_id")
-        if val4:
-            _dynamic_match_reg_thread_id = int(val4)
-        val5 = get_setting("ticket_chat_id")
-        if val5:
-            _dynamic_ticket_chat_id = int(val5)
-        val6 = get_setting("ticket_thread_id")
-        if val6:
-            _dynamic_ticket_thread_id = int(val6)
-        print(f"✅ Настройки веток загружены: logs={_dynamic_log_thread_id}, results={_dynamic_results_thread_id}, matchreg={_dynamic_match_reg_chat_id}/{_dynamic_match_reg_thread_id}, tickets={_dynamic_ticket_chat_id}/{_dynamic_ticket_thread_id}")
-        _load_slots_weights()
-    except Exception as e:
-        print(f"load_dynamic_settings error: {e}")
-
-
-async def restore_active_matches():
-    """Восстанавливает активные матчи из БД в running_matches после перезапуска бота."""
-    global running_matches, awaiting_ACreenshot
-    conn = _db()
-    cur = conn.cursor()
-    try:
-        cur.execute(
-            "SELECT match_id, match_code, league, device, map_name, players_json, started_at, "
-            "COALESCE(private_key, 'fade'), admin_thread_id, admin_msg_id, status "
-            "FROM matches WHERE status IN ('active', 'registered')"
-        )
-        rows = cur.fetchall()
-        restored = 0
-        for row in rows:
-            match_id, match_code, league, device, map_name, players_json, started_at, private_key, admin_thread_id, admin_msg_id, db_status = row
-            match_key = f"match_{match_id}"
-
-            team_ct, team_t, players = [], [], []
-            try:
-                players_info = json.loads(players_json or "[]")
-                for p in players_info:
-                    uid = p.get("user_id")
-                    if uid:
-                        players.append(uid)
-                        if p.get("team") == "ct":
-                            team_ct.append(uid)
-                        else:
-                            team_t.append(uid)
-            except Exception:
-                pass
-
-            lobby = {
-                "match_id":        match_id,
-                "match_code":      match_code or "",
-                "league":          league or "",
-                "device":          device or "",
-                "map_name":        map_name or "",
-                "status":          db_status or "active",
-                "players":         players,
-                "team_ct":         team_ct,
-                "team_t":          team_t,
-                "ACreenshots":     {},
-                "ACreenshots_count": 0,
-                "reg_taken_by":    None,
-                "match_key":       match_key,
-                "started_at":      started_at or 0,
-                "private":         private_key or "fade",
-                "admin_thread_id": admin_thread_id,
-                "admin_msg_id":    admin_msg_id,
+        if calibrated:
+            # ELO индивидуально по K/D профиля
+            elo_chg = calculate_individual_elo_change(gain, kills, deaths, won)
+            new_elo = max(0, elo_before + elo_chg)
+            new_lvl = elo_to_level(new_elo)
+            if won:
+                c.execute(
+                    f'UPDATE users SET {ec}=?, {lc}=?, {mc}={mc}+1, {wc}={wc}+1, '
+                    f'matches_played=matches_played+1, wins=wins+1, last_match_at=? WHERE user_id=?',
+                    (new_elo, new_lvl, now_iso, uid)
+                )
+            else:
+                c.execute(
+                    f'UPDATE users SET {ec}=?, {lc}=?, {mc}={mc}+1, '
+                    f'matches_played=matches_played+1, last_match_at=? WHERE user_id=?',
+                    (new_elo, new_lvl, now_iso, uid)
+                )
+            c.execute('UPDATE match_players SET elo_change=?, elo_applied=1 WHERE match_id=? AND user_id=?',
+                      (elo_chg, match_id, uid))
+            per_uid[uid] = {
+                'is_calibrating': False,
+                'calib_done':     False,
+                'calib_elo':      None,
+                'calib_lvl':      None,
+                'elo_change':     elo_chg,
+                'kills':          kills,
+                'deaths':         deaths,
+                'matches_played': mp_before + 1,
+                'wins':           w_before + (1 if won else 0),
+                'won':            won,
+                'coins_earned':   coins_earned,
             }
-            running_matches[match_key] = lobby
-
-            if db_status == "active":
-                for uid in players:
-                    awaiting_ACreenshot[uid] = match_key
-
-            restored += 1
-
-        print(f"♻️ Восстановлено матчей из БД: {restored}")
-    except Exception as e:
-        print(f"restore_active_matches error: {e}")
-    finally:
-        conn.close()
-
-# ==================== ХЕЛПЕРЫ ПРИВАТОК ====================
-
-def save_user_private(uid, key):
-    """Сохраняет выбранную приватку пользователя в БД."""
-    try:
-        conn = _db()
-        cur = conn.cursor()
-        cur.execute(
-            "INSERT INTO user_private_settings (user_id, private_key) VALUES (%s, %s) "
-            "ON CONFLICT (user_id) DO UPDATE SET private_key = EXCLUDED.private_key",
-            (uid, key),
-        )
-        conn.commit()
-        conn.close()
-    except Exception as e:
-        print(f"[save_user_private] error: {e}")
-
-def load_user_privates():
-    """Загружает выбор приватки всех пользователей из БД в оперативную память."""
-    try:
-        conn = _db()
-        cur = conn.cursor()
-        cur.execute("SELECT user_id, private_key FROM user_private_settings")
-        rows = cur.fetchall()
-        conn.close()
-        for uid, key in rows:
-            if key in PRIVATE_CONFIG:
-                user_private[uid] = key
-        print(f"✅ Загружены приватки пользователей: {len(rows)} записей")
-    except Exception as e:
-        print(f"[load_user_privates] error: {e}")
-
-def get_user_private(uid):
-    """Возвращает ключ текущей приватки пользователя."""
-    return user_private.get(uid, "fade")
-
-def get_user_table(uid):
-    """Возвращает имя таблицы текущей приватки пользователя."""
-    return PRIVATE_CONFIG[get_user_private(uid)]["table"]
-
-def get_user_private_display(uid):
-    """Возвращает отображаемое название текущей приватки пользователя."""
-    cfg = PRIVATE_CONFIG[get_user_private(uid)]
-    return f"{cfg['emoji']} {cfg['display']}"
-
-
-def get_player(user_id):
-    """Получает игрока из таблицы players (StandDarling) - используется в admin и общих проверках."""
-    try:
-        conn = _db()
-        cur = conn.cursor()
-        cur.execute("SELECT * FROM players WHERE user_id=%s", (user_id,))
-        row = cur.fetchone()
-        conn.close()
-        return row
-    except Exception as e:
-        print(f"[get_player] Ошибка: {e}")
-        return None
-
-def get_player_from_table(user_id, table):
-    """Получает игрока из указанной таблицы приватки."""
-    try:
-        conn = _db()
-        cur = conn.cursor()
-        cur.execute(f"SELECT * FROM {table} WHERE user_id=%s", (user_id,))
-        row = cur.fetchone()
-        conn.close()
-        return row
-    except Exception:
-        return None
-
-def get_current_player(uid):
-    """Получает игрока из таблицы текущей приватки пользователя."""
-    try:
-        table = get_user_table(uid)
-        conn = _db()
-        cur = conn.cursor()
-        cur.execute(f"SELECT * FROM {table} WHERE user_id=%s", (uid,))
-        row = cur.fetchone()
-        conn.close()
-        return row
-    except Exception as e:
-        print(f"[get_current_player] Ошибка: {e}")
-        return None
-
-def get_player_in_lobby(uid, lobby):
-    """Получает игрока из таблицы приватки лобби/матча (не из user_private)."""
-    private_key = lobby.get("private", "fade") if lobby else "fade"
-    priv_table = PRIVATE_CONFIG.get(private_key, PRIVATE_CONFIG["fade"])["table"]
-    p = get_player_from_table(uid, priv_table)
-    return p if p else get_player(uid)
-
-def is_registered(uid):
-    p = get_current_player(uid)
-    return p is not None and p[12] == 1
-
-def is_admin(uid):
-    p = get_player(uid)
-    return p is not None and p[11] == 1
-
-def is_creator(uid):
-    """Super-admin (creator) - полный доступ поверх админов."""
-    return CREATOR_ID != 0 and uid == CREATOR_ID
-
-def is_admin_restricted(uid, action):
-    """True если креатор запретил данному админу это действие."""
-    if is_creator(uid):
-        return False
-    try:
-        conn = _db()
-        cur = conn.cursor()
-        cur.execute(
-            "SELECT 1 FROM admin_restrictions WHERE admin_id=%s AND action=%s",
-            (uid, action),
-        )
-        row = cur.fetchone()
-        conn.close()
-        return bool(row)
-    except Exception:
-        return False
-
-def log_admin_action(admin_id, action, target_id=None, details=""):
-    """Записать действие админа в admin_logs."""
-    try:
-        conn = _db()
-        cur = conn.cursor()
-        cur.execute(
-            "INSERT INTO admin_logs (admin_id, action, target_id, details) VALUES (%s, %s, %s, %s)",
-            (admin_id, action, target_id, str(details)),
-        )
-        conn.commit()
-        conn.close()
-    except Exception as e:
-        print(f"[log_admin_action] {e}")
-
-async def get_user_avatar(uid):
-    """Скачивает аватарку пользователя из Telegram. Возвращает bytes или None."""
-    try:
-        photos = await bot.get_user_profile_photos(uid, limit=1)
-        if photos and photos.photos and photos.photos[0]:
-            file_id   = photos.photos[0][-1].file_id
-            file_info = await bot.get_file(file_id)
-            data = await bot.download_file(file_info.file_path)
-            return data.read() if hasattr(data, "read") else bytes(data)
-    except Exception as e:
-        print(f"[get_user_avatar] uid={uid}: {e}")
-    return None
-
-def is_game_reg_check(uid):
-    p = get_player(uid)
-    return p is not None and (p[11] == 1 or (len(p) > 17 and p[17] == 1))
-
-def is_bot_player(uid):
-    p = get_player(uid)
-    return p is not None and p[13] == 1
-
-def is_banned_check(uid):
-    # Бан - глобальный, всегда проверяем основную таблицу players
-    p = get_player(uid)
-    return p is not None and len(p) > 14 and p[14] == 1
-
-def is_muted_check(uid):
-    # Мут - глобальный, всегда проверяем основную таблицу players
-    p = get_player(uid)
-    if p is None:
-        return False
-    if len(p) > 19 and p[18] == 1:
-        mute_until = p[19] or 0
-        if mute_until > time.time():
-            return True
-        conn = _db()
-        cur = conn.cursor()
-        cur.execute("UPDATE players SET is_muted=0, mute_until=0 WHERE user_id=%s", (uid,))
-        conn.commit()
-        conn.close()
-    return False
-
-def get_mute_remaining(uid):
-    # Мут - глобальный, всегда из основной таблицы players
-    p = get_player(uid)
-    if p is None or len(p) <= 19:
-        return 0
-    return max(0, int((p[19] or 0) - time.time()))
-
-def is_on_check_db(uid):
-    # Проверка (check) - глобальная, всегда из основной таблицы players
-    p = get_player(uid)
-    return p is not None and len(p) > 20 and p[20] == 1
-
-def is_verified_check(uid):
-    """Возвращает True если у игрока есть синяя галочка."""
-    p = get_player(uid)
-    if p is None:
-        return False
-    try:
-        conn = _db()
-        cur = conn.cursor()
-        cur.execute("SELECT is_verified FROM players WHERE user_id=%s", (uid,))
-        row = cur.fetchone()
-        conn.close()
-        return bool(row and row[0])
-    except Exception:
-        return False
-
-def get_check_admin(uid):
-    # Проверка (check) - глобальная, всегда из основной таблицы players
-    p = get_player(uid)
-    if p is None or len(p) <= 21:
-        return None
-    return p[21]
-
-def has_quals_access(uid):
-    """True если admin, или quals_access=1 (постоянный), или quals_until > now (временный)."""
-    if is_admin(uid):
-        return True
-    p = get_current_player(uid)
-    if p is None:
-        return False
-    # Постоянный доступ
-    if len(p) > 16 and p[16] == 1:
-        return True
-    # Временный доступ через quals_until
-    conn = _db()
-    cur = conn.cursor()
-    table = get_user_table(uid)
-    cur.execute(f"SELECT quals_until FROM {table} WHERE user_id=%s", (uid,))
-    row = cur.fetchone()
-    conn.close()
-    return bool(row and row[0] and row[0] > int(time.time()))
-
-def has_active_premium(uid):
-    """Возвращает True, если у игрока действует Premium (premium_until > now).
-    Premium глобальный - всегда читается из таблицы players."""
-    conn = _db()
-    cur = conn.cursor()
-    cur.execute("SELECT premium_until FROM players WHERE user_id=%s", (uid,))
-    row = cur.fetchone()
-    conn.close()
-    return bool(row and row[0] and row[0] > int(time.time()))
-
-def register_user(uid, username, game_id, device, tg_username=""):
-    table = get_user_table(uid)
-    conn = _db()
-    cur = conn.cursor()
-    cur.execute(
-        f"""INSERT INTO {table} (user_id, username, game_id, device, registered, coins, elo, tg_username)
-           VALUES (%s, %s, %s, %s, 1, 100, 1000, %s)
-           ON CONFLICT (user_id) DO UPDATE SET
-               username=EXCLUDED.username,
-               game_id=EXCLUDED.game_id,
-               device=EXCLUDED.device,
-               registered=1,
-               tg_username=EXCLUDED.tg_username""",
-        (uid, username, game_id, device, tg_username),
-    )
-    conn.commit()
-    conn.close()
-
-def get_user_matches_table(uid):
-    """Returns the matches table for the user's current private."""
-    priv_key = get_user_private(uid)
-    return PRIVATE_CONFIG.get(priv_key, PRIVATE_CONFIG["fade"])["matches_table"]
-
-def update_tg_username(uid, tg_username):
-    try:
-        conn = _db()
-        cur = conn.cursor()
-        cur.execute("UPDATE players SET tg_username=%s WHERE user_id=%s", (tg_username or "", uid))
-        conn.commit()
-        conn.close()
-    except Exception as e:
-        print(f"[update_tg_username] Ошибка: {e}")
-
-def nick_taken(nick, uid=None, exclude_uid=None):
-    table = get_user_table(uid) if uid else "players"
-    conn = _db()
-    cur = conn.cursor()
-    if exclude_uid:
-        cur.execute(f"SELECT COUNT(*) FROM {table} WHERE username=%s AND user_id!=%s AND is_bot=0", (nick, exclude_uid))
-    else:
-        cur.execute(f"SELECT COUNT(*) FROM {table} WHERE username=%s AND is_bot=0", (nick,))
-    count = cur.fetchone()[0]
-    conn.close()
-    return count > 0
-
-def game_id_taken(game_id, uid=None, exclude_uid=None):
-    table = get_user_table(uid) if uid else "players"
-    conn = _db()
-    cur = conn.cursor()
-    if exclude_uid:
-        cur.execute(f"SELECT COUNT(*) FROM {table} WHERE game_id=%s AND user_id!=%s AND is_bot=0", (game_id, exclude_uid))
-    else:
-        cur.execute(f"SELECT COUNT(*) FROM {table} WHERE game_id=%s AND is_bot=0", (game_id,))
-    count = cur.fetchone()[0]
-    conn.close()
-    return count > 0
-
-def get_bots():
-    conn = _db()
-    cur = conn.cursor()
-    cur.execute("SELECT user_id, username FROM players WHERE is_bot=1")
-    bots = cur.fetchall()
-    conn.close()
-    return bots
-
-def get_all_players(table="players"):
-    try:
-        conn = _db()
-        cur = conn.cursor()
-        cur.execute(f"""
-            SELECT user_id, username, elo, wins, losses, kills, deaths, coins, is_banned, warns
-            FROM {table} WHERE is_bot=0 AND registered=1 ORDER BY elo DESC
-        """)
-        rows = cur.fetchall()
-        conn.close()
-        return rows
-    except Exception as e:
-        print(f"[get_all_players] Ошибка: {e}")
-        return []
-
-def get_quals_players(table="players"):
-    try:
-        conn = _db()
-        cur = conn.cursor()
-        cur.execute(f"""
-            SELECT user_id, username, quals_elo, quals_wins, quals_losses, quals_kills, quals_deaths, quals_assists
-            FROM {table} WHERE is_bot=0 AND registered=1 AND quals_access=1
-            ORDER BY quals_elo DESC
-        """)
-        rows = cur.fetchall()
-        conn.close()
-        return rows
-    except Exception as e:
-        print(f"[get_quals_players] Ошибка: {e}")
-        return []
-
-def get_duo_players(table="players"):
-    try:
-        conn = _db()
-        cur = conn.cursor()
-        cur.execute(f"""
-            SELECT user_id, username, duo_elo, duo_wins, duo_losses, duo_kills, duo_deaths, duo_assists
-            FROM {table} WHERE is_bot=0 AND registered=1
-            ORDER BY duo_elo DESC
-        """)
-        rows = cur.fetchall()
-        conn.close()
-        return rows
-    except Exception as e:
-        print(f"[get_duo_players] Ошибка: {e}")
-        return []
-
-
-def get_player_duo_stats(uid, table="players"):
-    conn = _db()
-    cur = conn.cursor()
-    try:
-        cur.execute(f"""
-            SELECT duo_elo, duo_wins, duo_losses, duo_kills, duo_deaths, duo_assists
-            FROM {table} WHERE user_id=%s
-        """, (uid,))
-        row = cur.fetchone()
-    except Exception:
-        row = None
-    conn.close()
-    if not row:
-        return None
-    deo, dw, dl, dk, dd, da = row
-    has_games = (dw or 0) + (dl or 0) > 0
-    if not has_games:
-        return None
-    return {"elo": deo or 1000, "wins": dw or 0, "losses": dl or 0,
-            "kills": dk or 0, "deaths": dd or 0, "assists": da or 0}
-
-def get_player_quals_stats(uid, table="players"):
-    conn = _db()
-    cur = conn.cursor()
-    try:
-        cur.execute(f"""
-            SELECT quals_elo, quals_wins, quals_losses, quals_kills, quals_deaths, quals_assists, quals_access
-            FROM {table} WHERE user_id=%s
-        """, (uid,))
-        row = cur.fetchone()
-    except Exception:
-        row = None
-    conn.close()
-    if not row:
-        return None
-    qelo, qw, ql, qk, qd, qa, q_access = row
-    has_games  = (qw or 0) + (ql or 0) > 0
-    has_access = bool(q_access)
-    # Показываем секцию если есть доступ к quals ИЛИ уже есть сыгранные матчи
-    if not has_games and not has_access:
-        return None
-    return {"elo": qelo or 1000, "wins": qw or 0, "losses": ql or 0,
-            "kills": qk or 0, "deaths": qd or 0, "assists": qa or 0}
-
-def get_player_by_game_id(game_id):
-    conn = _db()
-    cur = conn.cursor()
-    cur.execute("SELECT * FROM players WHERE game_id=%s AND is_bot=0", (game_id,))
-    row = cur.fetchone()
-    conn.close()
-    return row
-
-def add_coins_to_player(uid, amount, table=None):
-    conn = _db()
-    cur = conn.cursor()
-    target = table or get_user_table(uid)
-    cur.execute(f"UPDATE {target} SET coins=coins+%s WHERE user_id=%s", (amount, uid))
-    conn.commit()
-    conn.close()
-
-
-# ==================== ПОЛЬЗОВАТЕЛЬСКИЕ ПАКЕТЫ МОНЕТ (креаторская панель) ====================
-def get_visible_coin_packages(uid):
-    """Возвращает список пакетов (статичные + кастомные, видимые этому uid) в едином формате:
-    {"key": str, "name": str, "coins": int, "stars": int, "usd": float, "price_label": str}."""
-    packages = []
-    for i, (name, coins_amount, stars, price_label) in enumerate(COIN_PACKAGES):
-        packages.append({
-            "key": f"s{i}",
-            "name": name,
-            "coins": coins_amount,
-            "stars": stars,
-            "usd": max(0.10, round(stars * STARS_TO_USD, 2)),
-            "price_label": price_label,
-        })
-    try:
-        conn = _db()
-        cur = conn.cursor()
-        cur.execute(
-            "SELECT id, name, coins_amount, stars_price, crypto_usd FROM custom_coin_packages "
-            "WHERE target_user_id IS NULL OR target_user_id=%s ORDER BY id",
-            (uid,),
-        )
-        rows = cur.fetchall()
-        conn.close()
-        for row in rows:
-            pkg_id, name, coins_amount, stars_price, crypto_usd = row
-            packages.append({
-                "key": f"c{pkg_id}",
-                "name": name,
-                "coins": coins_amount,
-                "stars": stars_price,
-                "usd": float(crypto_usd),
-                "price_label": f"{stars_price} ⭐",
-            })
-    except Exception as e:
-        print(f"[get_visible_coin_packages] db error: {e}")
-    return packages
-
-
-def get_coin_package_by_key(key, uid):
-    """Находит пакет по его ключу (s{idx} или c{id}), проверяя видимость для uid."""
-    for pkg in get_visible_coin_packages(uid):
-        if pkg["key"] == key:
-            return pkg
-    return None
-
-
-# ==================== CRYPTO PAY (@CryptoBot) ====================
-def _crypto_pay_call(method, params=None):
-    """Вызывает метод Crypto Pay API (@CryptoBot). Возвращает (ok, result_or_error)."""
-    if not CRYPTO_PAY_API_TOKEN:
-        return False, "CRYPTO_PAY_API_TOKEN не настроен"
-    url = CRYPTO_PAY_API_URL + method
-    data = json.dumps(params or {}).encode("utf-8")
-    req = urllib.request.Request(
-        url,
-        data=data,
-        headers={
-            "Crypto-Pay-API-Token": CRYPTO_PAY_API_TOKEN,
-            "Content-Type": "application/json",
-            "Accept": "application/json",
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
-        },
-        method="POST",
-    )
-    try:
-        with urllib.request.urlopen(req, timeout=15) as resp:
-            body = json.loads(resp.read().decode("utf-8"))
-    except urllib.error.HTTPError as e:
-        raw = ""
-        try:
-            raw = e.read().decode("utf-8")
-        except Exception:
-            pass
-        print(f"[_crypto_pay_call] HTTP {e.code} {method}: {raw or e}")
-        try:
-            body = json.loads(raw)
-        except Exception:
-            if e.code == 403:
-                return False, "HTTP 403: неверный или неактивный CRYPTO_PAY_API_TOKEN (проверьте токен и статус приложения в @CryptoBot)"
-            return False, f"HTTP {e.code}: {raw or e}"
-    except Exception as e:
-        print(f"[_crypto_pay_call] error {method}: {e}")
-        return False, str(e)
-    if not body.get("ok"):
-        return False, body.get("error", body)
-    return True, body.get("result")
-
-
-def create_crypto_invoice(uid, pkg_key):
-    """Создаёт инвойс в @CryptoBot на покупку монет по ключу пакета (s{idx} или c{id}).
-    Возвращает (ok, pay_url_or_error, invoice_id)."""
-    pkg = get_coin_package_by_key(pkg_key, uid)
-    if not pkg:
-        return False, "❌ Пакет не найден", None
-    name, coins_amount, usd_amount = pkg["name"], pkg["coins"], pkg["usd"]
-    ok, result = _crypto_pay_call("createInvoice", {
-        "currency_type": "crypto",
-        "asset": CRYPTO_PAY_ASSET,
-        "amount": str(usd_amount),
-        "description": f"{coins_amount} AC - пакет ({name})",
-        "payload": f"coins_{pkg_key}_{uid}",
-        "expires_in": 1800,
-    })
-    if not ok:
-        return False, f"❌ Ошибка создания счёта: {result}", None
-    try:
-        conn = _db()
-        cur = conn.cursor()
-        cur.execute(
-            "INSERT INTO crypto_invoices (invoice_id, user_id, pkg_key, coins_amount) VALUES (%s,%s,%s,%s)",
-            (result["invoice_id"], uid, pkg_key, coins_amount),
-        )
-        conn.commit()
-        conn.close()
-    except Exception as e:
-        print(f"[create_crypto_invoice] db error: {e}")
-    return True, result.get("bot_invoice_url") or result.get("pay_url"), result["invoice_id"]
-
-
-def create_item_crypto_invoice(uid, item_id):
-    """Создаёт инвойс в @CryptoBot на покупку товара магазина. Возвращает (ok, pay_url_or_error, invoice_id)."""
-    item = get_shop_item_full(item_id)
-    if not item:
-        return False, "❌ Товар не найден", None
-    _, name, _deAC, _category, _price, _item_type, _price_rub, _price_stars, price_crypto = item
-    if not price_crypto or price_crypto <= 0:
-        return False, "❌ Оплата криптой недоступна для этого товара", None
-    ok, result = _crypto_pay_call("createInvoice", {
-        "currency_type": "crypto",
-        "asset": CRYPTO_PAY_ASSET,
-        "amount": str(price_crypto),
-        "description": f"{name} - Actual FACEIT",
-        "payload": f"item_{item_id}_{uid}",
-        "expires_in": 1800,
-    })
-    if not ok:
-        return False, f"❌ Ошибка создания счёта: {result}", None
-    try:
-        conn = _db()
-        cur = conn.cursor()
-        cur.execute(
-            "INSERT INTO shop_crypto_invoices (invoice_id, user_id, item_id) VALUES (%s,%s,%s)",
-            (result["invoice_id"], uid, item_id),
-        )
-        conn.commit()
-        conn.close()
-    except Exception as e:
-        print(f"[create_item_crypto_invoice] db error: {e}")
-    return True, result.get("bot_invoice_url") or result.get("pay_url"), result["invoice_id"]
-
-
-async def _crypto_pay_poll_loop():
-    """Фоновый поллинг: проверяет активные крипто-инвойсы и начисляет монеты после оплаты."""
-    if not CRYPTO_PAY_API_TOKEN:
-        return
-    while True:
-        try:
-            conn = _db()
-            cur = conn.cursor()
-            cur.execute("SELECT invoice_id, user_id, coins_amount FROM crypto_invoices WHERE status='active'")
-            pending = cur.fetchall()
-            conn.close()
-            for invoice_id, uid, coins_amount in pending:
-                ok, result = _crypto_pay_call("getInvoices", {"invoice_ids": str(invoice_id)})
-                if not ok:
-                    continue
-                items = result.get("items", []) if isinstance(result, dict) else []
-                if not items:
-                    continue
-                inv = items[0]
-                if inv.get("status") == "paid":
-                    add_coins_to_player(uid, coins_amount, table="players")
-                    conn2 = _db()
-                    cur2 = conn2.cursor()
-                    cur2.execute(
-                        "UPDATE crypto_invoices SET status='paid', paid_at=%s WHERE invoice_id=%s",
-                        (int(time.time()), invoice_id),
-                    )
-                    conn2.commit()
-                    conn2.close()
-                    try:
-                        p = get_player(uid)
-                        await bot.send_message(
-                            uid,
-                            f"✅ <b>Оплата криптой прошла!</b>\n💰 Начислено: <b>{coins_amount} AC</b>\n"
-                            f"💳 Баланс: <b>{p[5] if p else '?'} AC</b>",
-                            parse_mode="HTML",
-                        )
-                    except Exception:
-                        pass
-                    if ADMIN_ID:
-                        try:
-                            await bot.send_message(ADMIN_ID, f"💎 Оплата криптой!\nПользователь: {uid}\nНачислено: {coins_amount} AC")
-                        except Exception:
-                            pass
-                elif inv.get("status") == "expired":
-                    conn2 = _db()
-                    cur2 = conn2.cursor()
-                    cur2.execute("UPDATE crypto_invoices SET status='expired' WHERE invoice_id=%s", (invoice_id,))
-                    conn2.commit()
-                    conn2.close()
-        except Exception as e:
-            print(f"[_crypto_pay_poll_loop] {e}")
-
-        # Крипто-инвойсы за товары магазина (оплата криптой в разделе ТОВАРЫ).
-        try:
-            conn = _db()
-            cur = conn.cursor()
-            cur.execute("SELECT invoice_id, user_id, item_id FROM shop_crypto_invoices WHERE status='active'")
-            pending_items = cur.fetchall()
-            conn.close()
-            for invoice_id, uid, item_id in pending_items:
-                ok, result = _crypto_pay_call("getInvoices", {"invoice_ids": str(invoice_id)})
-                if not ok:
-                    continue
-                items = result.get("items", []) if isinstance(result, dict) else []
-                if not items:
-                    continue
-                inv = items[0]
-                if inv.get("status") == "paid":
-                    # Атомарно "забираем" инвойс (status='active' -> 'paid') прежде чем выдавать
-                    # товар, чтобы повторный поллинг не смог выдать его дважды.
-                    conn2 = _db()
-                    cur2 = conn2.cursor()
-                    cur2.execute(
-                        "UPDATE shop_crypto_invoices SET status='paid', paid_at=%s WHERE invoice_id=%s AND status='active'",
-                        (int(time.time()), invoice_id),
-                    )
-                    claimed = cur2.rowcount > 0
-                    conn2.commit()
-                    conn2.close()
-                    if not claimed:
-                        continue
-                    grant_ok, grant_msg = grant_shop_item(uid, item_id)
-                    try:
-                        if grant_ok:
-                            await bot.send_message(uid, f"✅ <b>Оплата криптой прошла!</b>\n{grant_msg}", parse_mode="HTML")
-                        else:
-                            await bot.send_message(uid, f"✅ Оплата получена, но возникла проблема с выдачей товара: {grant_msg}\nОбратитесь в поддержку.")
-                    except Exception:
-                        pass
-                    if ADMIN_ID:
-                        try:
-                            item = get_shop_item(item_id)
-                            await bot.send_message(ADMIN_ID, f"💎 Оплата криптой за товар!\nПользователь: {uid}\nТовар: {item[1] if item else item_id}")
-                        except Exception:
-                            pass
-                elif inv.get("status") == "expired":
-                    conn2 = _db()
-                    cur2 = conn2.cursor()
-                    cur2.execute("UPDATE shop_crypto_invoices SET status='expired' WHERE invoice_id=%s", (invoice_id,))
-                    conn2.commit()
-                    conn2.close()
-        except Exception as e:
-            print(f"[_crypto_pay_poll_loop] shop items: {e}")
-
-        await asyncio.sleep(15)  # converted from time.sleep
-
-def apply_mute(uid, hours=2):
-    until = int(time.time()) + hours * 3600
-    conn = _db()
-    cur = conn.cursor()
-    cur.execute("UPDATE players SET is_muted=1, mute_until=%s WHERE user_id=%s", (until, uid))
-    conn.commit()
-    conn.close()
-    return until
-
-def add_warn_to_player(uid):
-    conn = _db()
-    cur = conn.cursor()
-    cur.execute("UPDATE players SET warns=warns+1 WHERE user_id=%s", (uid,))
-    cur.execute("SELECT warns FROM players WHERE user_id=%s", (uid,))
-    row = cur.fetchone()
-    conn.commit()
-    conn.close()
-    return row[0] if row else 1
-
-def get_next_match_id():
-    conn = _db()
-    cur = conn.cursor()
-    # Ensure the counter row always exists before incrementing
-    cur.execute("INSERT INTO match_counter (id, value) VALUES (1, 0) ON CONFLICT (id) DO NOTHING")
-    cur.execute("UPDATE match_counter SET value=value+1 WHERE id=1 RETURNING value")
-    row = cur.fetchone()
-    if row is None:
-        # Failsafe: counter row still missing - seed it now
-        cur.execute("INSERT INTO match_counter (id, value) VALUES (1, 1) RETURNING value")
-        row = cur.fetchone()
-    val = row[0]
-    conn.commit()
-    conn.close()
-    return val
-
-def generate_match_code():
-    """Generates a random 7-character alphanumeric code like H71BSY1"""
-    chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789'
-    return ''.join(random.choices(chars, k=7))
-
-def generate_ticket_code():
-    """Generates a random ticket code like TKT-AB3X9"""
-    chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789'
-    return 'TKT-' + ''.join(random.choices(chars, k=5))
-
-
-# ==================== СЕЗОНЫ - ХЕЛПЕРЫ ====================
-
-def get_current_season():
-    conn = _db()
-    cur = conn.cursor()
-    cur.execute(
-        "SELECT id, season_number, name, started_at FROM seasons WHERE is_active=1 ORDER BY id DESC LIMIT 1"
-    )
-    row = cur.fetchone()
-    conn.close()
-    return row  # (id, season_number, name, started_at) or None
-
-
-def get_all_seasons():
-    conn = _db()
-    cur = conn.cursor()
-    cur.execute(
-        "SELECT id, season_number, name, started_at, ended_at, is_active FROM seasons ORDER BY season_number DESC"
-    )
-    rows = cur.fetchall()
-    conn.close()
-    return rows
-
-
-def get_season_top(season_id, limit=10):
-    conn = _db()
-    cur = conn.cursor()
-    cur.execute(
-        """SELECT username, elo, wins, losses, kills, deaths, mvp_count
-           FROM season_player_history
-           WHERE season_id=%s AND username NOT LIKE 'Bot_%%'
-           ORDER BY elo DESC LIMIT %s""",
-        (season_id, limit)
-    )
-    rows = cur.fetchall()
-    conn.close()
-    return rows
-
-
-def get_season_top_with_ids(season_id, limit=10):
-    """Топ сезона с user_id для выдачи призов (архивный сезон)."""
-    conn = _db()
-    cur = conn.cursor()
-    cur.execute(
-        """SELECT user_id, username, elo, wins, losses, kills, deaths, mvp_count
-           FROM season_player_history
-           WHERE season_id=%s AND username NOT LIKE 'Bot_%%'
-           ORDER BY elo DESC LIMIT %s""",
-        (season_id, limit)
-    )
-    rows = cur.fetchall()
-    conn.close()
-    return rows
-
-
-def get_current_season_top(priv_table="players", limit=10):
-    """Топ текущего активного сезона - берёт живые данные из таблицы игроков."""
-    conn = _db()
-    cur = conn.cursor()
-    cur.execute(
-        f"""SELECT user_id, username, elo, wins, losses, kills, deaths
-            FROM {priv_table}
-            WHERE is_bot IS NOT TRUE AND username NOT LIKE 'Bot_%%' AND registered=1
-            ORDER BY elo DESC LIMIT %s""",
-        (limit,)
-    )
-    rows = cur.fetchall()
-    conn.close()
-    return rows
-
-
-# Призовой фонд сезона: 1 000 000 AC среди топ-10
-SEASON_TOP_REWARDS = [250000, 200000, 150000, 100000, 80000,
-                      60000, 50000, 40000, 40000, 30000]
-
-
-def reset_season(admin_uid):
-    """
-    Архивирует статистику всех игроков в season_player_history,
-    сбрасывает их ELO/статистику и создаёт новый сезон.
-    Возвращает (new_season_number, players_archived).
-    """
-    conn = _db()
-    cur = conn.cursor()
-    try:
-        cur.execute(
-            "SELECT id, season_number, name FROM seasons WHERE is_active=1 ORDER BY id DESC LIMIT 1"
-        )
-        cur_season = cur.fetchone()
-        if not cur_season:
-            season_id = 1
-            season_number = 1
         else:
-            season_id, season_number, _ = cur_season
-
-        cur.execute(
-            """SELECT user_id, username, elo, wins, losses, kills, deaths, assists,
-                      COALESCE(quals_wins,0), COALESCE(quals_losses,0),
-                      COALESCE(quals_kills,0), COALESCE(quals_deaths,0),
-                      COALESCE(quals_assists,0), COALESCE(quals_elo,1000),
-                      COALESCE(mvp_count,0)
-               FROM players WHERE is_bot=0"""
-        )
-        players = cur.fetchall()
-
-        for p in players:
-            (uid, uname, elo, wins, losses, kills, deaths, assists,
-             qw, ql, qk, qd, qa, qelo, mvp) = p
-            cur.execute(
-                """INSERT INTO season_player_history
-                   (season_id, season_number, user_id, username, elo, wins, losses,
-                    kills, deaths, assists, quals_wins, quals_losses, quals_kills,
-                    quals_deaths, quals_assists, quals_elo, mvp_count)
-                   VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)""",
-                (season_id, season_number, uid, uname or '', elo, wins, losses,
-                 kills, deaths, assists, qw, ql, qk, qd, qa, qelo, mvp)
-            )
-
-        now_ts = int(time.time())
-        cur.execute(
-            "UPDATE seasons SET is_active=0, ended_at=%s, reset_by=%s WHERE id=%s",
-            (now_ts, admin_uid, season_id)
-        )
-
-        new_season_number = season_number + 1
-        new_name = f"Сезон {new_season_number}"
-        cur.execute(
-            "INSERT INTO seasons (season_number, name, is_active, started_at) VALUES (%s, %s, 1, %s)",
-            (new_season_number, new_name, now_ts)
-        )
-
-        cur.execute(
-            """UPDATE players SET
-               elo=1000, wins=0, losses=0, kills=0, deaths=0, assists=0,
-               quals_wins=0, quals_losses=0, quals_kills=0, quals_deaths=0,
-               quals_assists=0, quals_elo=1000, mvp_count=0
-               WHERE is_bot=0"""
-        )
-        conn.commit()
-        conn.close()
-        return new_season_number, len(players)
-    except Exception as e:
-        conn.rollback()
-        conn.close()
-        raise e
-
-def save_match_start(lobby):
-    """Сохраняет матч в БД при старте со статусом 'active'."""
-    players_info = []
-    for uid in list(lobby.get("team_ct", [])) + list(lobby.get("team_t", [])):
-        if is_bot_player(uid):
-            continue
-        p = get_player_in_lobby(uid, lobby)
-        players_info.append({
-            "user_id": uid,
-            "name": p[1] if p else str(uid),
-            "team": "ct" if uid in lobby.get("team_ct", []) else "t",
-        })
-    players_json_str = json.dumps(players_info, ensure_ascii=False)
-    team_ct_json_str = json.dumps(lobby.get("team_ct", []), ensure_ascii=False)
-    team_t_json_str  = json.dumps(lobby.get("team_t",  []), ensure_ascii=False)
-    match_id    = lobby.get("match_id", 0)
-    match_code  = lobby.get("match_code", "")
-    league      = lobby.get("league", "")
-    device      = lobby.get("device", "")
-    map_name    = lobby.get("map_name", "")
-    private_key = lobby.get("private", "fade")
-    admin_thread_id = lobby.get("admin_thread_id")
-    admin_msg_id    = lobby.get("admin_msg_id")
-    host_game_id    = lobby.get("host_game_id", "")
-    now = int(time.time())
-
-    conn = _db()
-    cur = conn.cursor()
-    try:
-        # ── matches ──────────────────────────────────────────────────────────
-        cur.execute("SELECT id FROM matches WHERE match_id=%s", (match_id,))
-        if cur.fetchone():
-            cur.execute(
-                """UPDATE matches SET
-                       match_code=%s, league=%s, device=%s, map_name=%s,
-                       status='active', players_json=%s, started_at=%s,
-                       winner='', ACore_w=0, ACore_l=0,
-                       private_key=%s, admin_thread_id=%s, admin_msg_id=%s
-                   WHERE match_id=%s""",
-                (match_code, league, device, map_name,
-                 players_json_str, now,
-                 private_key, admin_thread_id, admin_msg_id,
-                 match_id),
-            )
-        else:
-            cur.execute(
-                """INSERT INTO matches
-                   (match_id, match_code, league, device, map_name, status, players_json,
-                    started_at, winner, ACore_w, ACore_l, private_key, admin_thread_id, admin_msg_id)
-                   VALUES (%s, %s, %s, %s, %s, 'active', %s, %s, '', 0, 0, %s, %s, %s)""",
-                (match_id, match_code, league, device, map_name,
-                 players_json_str, now,
-                 private_key, admin_thread_id, admin_msg_id),
-            )
-        conn.commit()
-
-        # ── unregistered_matches ─────────────────────────────────────────────
-        try:
-            cur.execute("SELECT id FROM unregistered_matches WHERE match_id=%s", (match_id,))
-            if not cur.fetchone():
-                cur.execute(
-                    """INSERT INTO unregistered_matches
-                       (match_id, match_code, league, device, map_name, players_json,
-                        team_ct_json, team_t_json, host_game_id, ACreenshots_count, started_at)
-                       VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, 0, %s)""",
-                    (match_id, match_code, league, device, map_name,
-                     players_json_str, team_ct_json_str, team_t_json_str,
-                     host_game_id, now),
+            # Калибровка — засчитываем игру, ELO не трогаем
+            if won:
+                c.execute(
+                    f'UPDATE users SET {mc}={mc}+1, {wc}={wc}+1, '
+                    f'matches_played=matches_played+1, wins=wins+1, last_match_at=? WHERE user_id=?',
+                    (now_iso, uid)
                 )
-            conn.commit()
-        except Exception as e2:
-            conn.rollback()
-            print(f"[save_match_start] unregistered_matches error: {e2}")
-
-        # ── приватка-специфичная таблица ─────────────────────────────────────
-        try:
-            _pmt = PRIVATE_CONFIG.get(private_key, PRIVATE_CONFIG["fade"])["matches_table"]
-            cur.execute(f"SELECT id FROM {_pmt} WHERE match_id=%s", (match_id,))
-            if not cur.fetchone():
-                cur.execute(
-                    f"""INSERT INTO {_pmt}
-                       (match_id, match_code, league, device, map_name, status,
-                        players_json, started_at, winner, ACore_w, ACore_l)
-                       VALUES (%s, %s, %s, %s, %s, 'active', %s, %s, '', 0, 0)""",
-                    (match_id, match_code, league, device, map_name,
-                     players_json_str, now),
-                )
-            conn.commit()
-        except Exception as e3:
-            conn.rollback()
-            print(f"[save_match_start] {_pmt} error: {e3}")
-
-    except Exception as e:
-        print(f"[save_match_start] ГЛАВНАЯ ОШИБКА: {e}")
-        import traceback; traceback.print_exc()
-        conn.rollback()
-    finally:
-        conn.close()
-
-
-def rollback_match_stats(lobby):
-    """Откатывает статистику ранее зарегистрированного матча (для перерегистрации)."""
-    all_stats = lobby.get("all_stats")
-    if not all_stats:
-        return
-    priv_table = lobby.get("priv_table", "players")
-    league     = lobby.get("league", "default")
-    is_quals   = (league == "quals")
-    is_duo     = (league == "duo")
-    mvp_uid    = lobby.get("mvp_uid")
-    conn = _db()
-    cur  = conn.cursor()
-    try:
-        for uid, s in all_stats.items():
-            won          = s["won"]
-            elo_change   = s["elo_change"]
-            kills        = s["kills"]
-            deaths       = s["deaths"]
-            assists      = s["assists"]
-            coins_reward = s["coins_reward"]
-            if is_duo:
-                if won:
-                    cur.execute(
-                        f"UPDATE {priv_table} SET duo_wins=GREATEST(0,duo_wins-1),"
-                        "duo_elo=GREATEST(0,duo_elo-%s),"
-                        "duo_kills=GREATEST(0,duo_kills-%s),duo_deaths=GREATEST(0,duo_deaths-%s),"
-                        "duo_assists=GREATEST(0,duo_assists-%s),coins=GREATEST(0,coins-%s) WHERE user_id=%s",
-                        (elo_change, kills, deaths, assists, coins_reward, uid),
-                    )
-                else:
-                    cur.execute(
-                        f"UPDATE {priv_table} SET duo_losses=GREATEST(0,duo_losses-1),"
-                        "duo_elo=GREATEST(0,duo_elo-%s),"
-                        "duo_kills=GREATEST(0,duo_kills-%s),duo_deaths=GREATEST(0,duo_deaths-%s),"
-                        "duo_assists=GREATEST(0,duo_assists-%s),coins=GREATEST(0,coins-%s) WHERE user_id=%s",
-                        (elo_change, kills, deaths, assists, coins_reward, uid),
-                    )
-            elif is_quals:
-                if won:
-                    cur.execute(
-                        f"UPDATE {priv_table} SET quals_wins=GREATEST(0,quals_wins-1),"
-                        "quals_elo=GREATEST(0,quals_elo-%s),"
-                        "quals_kills=GREATEST(0,quals_kills-%s),quals_deaths=GREATEST(0,quals_deaths-%s),"
-                        "quals_assists=GREATEST(0,quals_assists-%s),coins=GREATEST(0,coins-%s) WHERE user_id=%s",
-                        (elo_change, kills, deaths, assists, coins_reward, uid),
-                    )
-                else:
-                    cur.execute(
-                        f"UPDATE {priv_table} SET quals_losses=GREATEST(0,quals_losses-1),"
-                        "quals_elo=GREATEST(0,quals_elo-%s),"
-                        "quals_kills=GREATEST(0,quals_kills-%s),quals_deaths=GREATEST(0,quals_deaths-%s),"
-                        "quals_assists=GREATEST(0,quals_assists-%s),coins=GREATEST(0,coins-%s) WHERE user_id=%s",
-                        (elo_change, kills, deaths, assists, coins_reward, uid),
-                    )
             else:
-                if won:
-                    cur.execute(
-                        f"UPDATE {priv_table} SET wins=GREATEST(0,wins-1),"
-                        "elo=GREATEST(0,elo-%s),"
-                        "kills=GREATEST(0,kills-%s),deaths=GREATEST(0,deaths-%s),"
-                        "assists=GREATEST(0,assists-%s),coins=GREATEST(0,coins-%s) WHERE user_id=%s",
-                        (elo_change, kills, deaths, assists, coins_reward, uid),
-                    )
-                else:
-                    cur.execute(
-                        f"UPDATE {priv_table} SET losses=GREATEST(0,losses-1),"
-                        "elo=GREATEST(0,elo-%s),"
-                        "kills=GREATEST(0,kills-%s),deaths=GREATEST(0,deaths-%s),"
-                        "assists=GREATEST(0,assists-%s),coins=GREATEST(0,coins-%s) WHERE user_id=%s",
-                        (elo_change, kills, deaths, assists, coins_reward, uid),
-                    )
-        if mvp_uid:
-            cur.execute(
-                f"UPDATE {priv_table} SET mvp_count=GREATEST(0,mvp_count-1) WHERE user_id=%s",
-                (mvp_uid,),
-            )
-        conn.commit()
-        lobby.pop("all_stats", None)
-        lobby.pop("mvp_uid",   None)
-        lobby.pop("priv_table_saved", None)
-    except Exception as e:
-        conn.rollback()
-        print(f"[rollback_match_stats] Ошибка: {e}")
-    finally:
+                c.execute(
+                    f'UPDATE users SET {mc}={mc}+1, '
+                    f'matches_played=matches_played+1, last_match_at=? WHERE user_id=?',
+                    (now_iso, uid)
+                )
+            c.execute('UPDATE match_players SET elo_change=0, elo_applied=1 WHERE match_id=? AND user_id=?',
+                      (match_id, uid))
+            new_mp     = mp_before + 1
+            new_wins   = w_before + (1 if won else 0)
+            calib_done = new_mp >= calib_games
+            calib_elo, calib_lvl = None, None
+            if calib_done:
+                calib_elo = calculate_calibration_elo(new_wins, calib_games, kills, deaths)
+                calib_lvl = elo_to_level(calib_elo)
+                c.execute(f'UPDATE users SET {ec}=?, {lc}=? WHERE user_id=?', (calib_elo, calib_lvl, uid))
+            per_uid[uid] = {
+                'is_calibrating': True,
+                'calib_done':     calib_done,
+                'calib_elo':      calib_elo,
+                'calib_lvl':      calib_lvl,
+                'elo_change':     0,
+                'kills':          kills,
+                'deaths':         deaths,
+                'matches_played': new_mp,
+                'wins':           new_wins,
+                'won':            won,
+                'coins_earned':   coins_earned,
+            }
+
+    for uid, elo_before in winners:
+        _process(uid, elo_before, True)
+    for uid, elo_before in losers:
+        _process(uid, elo_before, False)
+
+    c.execute('UPDATE team_matches SET status="finished", winner=?, base_gain=? WHERE match_id=?', (winning_team, gain, match_id))
+    conn.commit()
+    conn.close()
+    return gain, winners, losers, per_uid
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  MVP МАТЧА
+# ══════════════════════════════════════════════════════════════════════════════
+
+MVP_BONUS_COINS = 20
+
+
+def _check_and_award_mvp(match_id: int) -> Optional[dict]:
+    """Как только ВСЕ игроки победившей команды получили распознанный K/D со
+    скриншота, определяет MVP матча — больше всех килов среди победителей (при равенстве
+    килов побеждает тот, у кого меньше смертей, затем — кто раньше присоединился
+    к матчу). Начисляет бонус Moon Coins и помечает матч как обработанный, чтобы
+    награда не выдавалась повторно. Возвращает данные MVP или None, если рано /
+    уже начислено / победили только боты.
+    """
+    conn = sqlite3.connect('faceit_bot.db')
+    c = conn.cursor()
+    c.execute('SELECT status, winner, mode, mvp_awarded FROM team_matches WHERE match_id=?', (match_id,))
+    row = c.fetchone()
+    if not row or row[0] != 'finished' or not row[1] or row[3]:
         conn.close()
+        return None
+    winner, mode = row[1], (row[2] or '5v5')
+    team_size = MODES.get(mode, MODES['5v5'])['team_size']
 
+    c.execute(
+        'SELECT user_id, kills, deaths, kd_entered FROM match_players '
+        'WHERE match_id=? AND team=? ORDER BY id ASC',
+        (match_id, winner)
+    )
+    winners = c.fetchall()
+    if len(winners) < team_size or any(w[3] == 0 for w in winners):
+        conn.close()
+        return None  # не все победители ещё ввели K/D
 
-def save_match_to_history(lobby, data, all_stats):
-    players_info = []
-    for uid, s in all_stats.items():
-        p = get_player_in_lobby(uid, lobby)
-        players_info.append({
-            "user_id": uid,
-            "name": p[1] if p else str(uid),
-            "kills": s["kills"],
-            "deaths": s["deaths"],
-            "assists": s["assists"],
-            "won": s["won"],
-        })
-    players_json_str = json.dumps(players_info, ensure_ascii=False)
-    match_id   = lobby.get("match_id", 0)
-    match_code = lobby.get("match_code", "")
-    league     = lobby.get("league", "")
-    device     = lobby.get("device", "")
-    map_name   = lobby.get("map_name", "")
-    winner     = data.get("winner", "")
-    score_w    = data.get("ACore_w", 0)
-    score_l    = data.get("ACore_l", 0)
-    now        = int(time.time())
-
-    # ── 1. Обновляем главную таблицу matches (отдельная транзакция) ──────────
-    # Важно: коммитим ДО работы с приваточной таблицей, иначе ошибка в
-    # matches откатит и этот UPDATE, оставив статус 'active' в БД.
-    conn = None
-    try:
-        conn = _db()
-        cur = conn.cursor()
-        cur.execute(
-            """INSERT INTO matches
-               (match_id, match_code, league, device, map_name, winner, ACore_w, ACore_l,
-                players_json, status, started_at, finished_at)
-               VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, 'registered', %s, %s)
-               ON CONFLICT (match_id) DO UPDATE SET
-                   winner       = EXCLUDED.winner,
-                   ACore_w      = EXCLUDED.ACore_w,
-                   ACore_l      = EXCLUDED.ACore_l,
-                   players_json = EXCLUDED.players_json,
-                   status       = 'registered',
-                   finished_at  = EXCLUDED.finished_at""",
-            (match_id, match_code, league, device, map_name, winner,
-             score_w, score_l, players_json_str, now, now),
-        )
-        try:
-            cur.execute("DELETE FROM unregistered_matches WHERE match_id=%s", (match_id,))
-        except Exception:
-            pass
+    real_winners = [w for w in winners if not is_bot(w[0])]
+    if not real_winners:
+        c.execute('UPDATE team_matches SET mvp_awarded=1 WHERE match_id=?', (match_id,))
         conn.commit()
-    except Exception as e:
-        print(f"[save_match_to_history] matches UPDATE ERROR: {e}")
-        import traceback; traceback.print_exc()
+        conn.close()
+        return None
+
+    mvp_uid, mvp_kills, mvp_deaths, _ = max(real_winners, key=lambda w: (w[1], -w[2]))
+
+    c.execute('UPDATE users SET mvp_count = mvp_count + 1, moon_coins = moon_coins + ? WHERE user_id=?',
+              (MVP_BONUS_COINS, mvp_uid))
+    c.execute('UPDATE team_matches SET mvp_uid=?, mvp_awarded=1 WHERE match_id=?', (mvp_uid, match_id))
+    conn.commit()
+    conn.close()
+    return {'mvp_uid': mvp_uid, 'kills': mvp_kills, 'deaths': mvp_deaths, 'bonus_coins': MVP_BONUS_COINS}
+
+
+async def _announce_mvp(bot, match_id: int, mvp_info: dict):
+    """Рассылает объявление об MVP матча всем его участникам (кроме ботов)."""
+    mvp_uid = mvp_info['mvp_uid']
+    conn = sqlite3.connect('faceit_bot.db')
+    c = conn.cursor()
+    c.execute('SELECT COALESCE(first_name, username) FROM users WHERE user_id=?', (mvp_uid,))
+    name_row = c.fetchone()
+    mvp_name = _esc(name_row[0]) if name_row and name_row[0] else str(mvp_uid)
+    c.execute('SELECT user_id FROM match_players WHERE match_id=?', (match_id,))
+    participants = [r[0] for r in c.fetchall()]
+    conn.close()
+
+    kills, deaths = mvp_info['kills'], mvp_info['deaths']
+    bonus = mvp_info['bonus_coins']
+    text = (
+        f"{E_TROPHY} <b>MVP матча #{match_id}</b>\n\n"
+        f"{E_ZAP} <b>{mvp_name}</b> — лучший игрок победившей команды!\n"
+        f"<tg-emoji emoji-id='5222486447306602688'>🔫</tg-emoji> Убийства: <b>{kills}</b>  Смерти: <b>{deaths}</b>\n\n"
+        f"{E_PRICE} Бонус: <b>+{bonus} Moon Coins</b> {E_FIRE}"
+    )
+    for uid in participants:
+        if is_bot(uid):
+            continue
         try:
-            if conn:
-                conn.rollback()
+            await _send_html(bot, uid, text)
         except Exception:
             pass
-    finally:
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  АВТОМАТИЧЕСКОЕ РАСПОЗНАВАНИЕ K/D СО СКРИНШОТА (без ИИ, локальный OCR)
+# ══════════════════════════════════════════════════════════════════════════════
+#
+# Требуется установить (не входит в стандартную библиотеку Python):
+#   pip install pytesseract pillow
+#   + системный пакет tesseract-ocr с языковыми пакетами rus и eng
+#     (например: apt install tesseract-ocr tesseract-ocr-rus)
+#
+# Никакие внешние ИИ-сервисы и API-ключи не используются — распознавание
+# полностью локальное, по расположению слов и цифр на скриншоте.
+
+def _normalize_ocr_name(name: str) -> str:
+    """Приводит игровой ник к сравнимому виду: убирает клан-теги вида [VP]/[VX],
+    двоеточия, пробелы и спецсимволы, приводит к нижнему регистру."""
+    if not name:
+        return ""
+    name = _re_ocr.sub(r'\[[^\]]*\]', '', name)   # клан-теги: [VP], [VX] и т.п.
+    name = name.replace(':', ' ')
+    name = _re_ocr.sub(r'[^0-9a-zA-Zа-яА-ЯёЁ]+', '', name)
+    return name.strip().lower()
+
+
+def _ocr_extract_scoreboard(image_bytes: bytes) -> Optional[dict]:
+    """Читает таблицу результатов матча со скриншота локальным OCR (Tesseract),
+    без обращения к каким-либо ИИ-сервисам.
+
+    Логика устойчива к разному разрешению скриншота: вместо фиксированных
+    координат ищет слова по их взаимному расположению — таблица слева и
+    таблица справа, а в каждой строке последние 4 числовых значения — это
+    столбцы «У» (убийства), «П» (помощь), «С» (смерти), «СЧЁТ» — именно в
+    этом порядке в интерфейсе игры.
+
+    Возвращает:
+        {'sides': {'left': [{'name','kills','deaths'}...], 'right': [...]},
+         'winner_side': 'left' | 'right' | None}
+        или None, если распознать изображение не удалось.
+    """
+    import io as _io_ocr
+    try:
+        from PIL import Image
+        import pytesseract
+    except ImportError:
+        logging.error("OCR недоступен: не установлены pytesseract/Pillow.")
+        return None
+
+    try:
+        img = Image.open(_io_ocr.BytesIO(image_bytes)).convert('L')
+    except Exception:
+        logging.exception("Не удалось открыть скриншот для OCR.")
+        return None
+
+    # Увеличиваем мелкий текст для более точного распознавания
+    scale = 2 if max(img.size) < 2200 else 1
+    if scale > 1:
+        img = img.resize((img.width * scale, img.height * scale), Image.LANCZOS)
+
+    try:
+        data = pytesseract.image_to_data(
+            img, lang='rus+eng', config='--psm 11',
+            output_type=pytesseract.Output.DICT
+        )
+    except Exception:
+        logging.exception("Ошибка Tesseract OCR при разборе скриншота.")
+        return None
+
+    words = []
+    for i in range(len(data['text'])):
+        text = (data['text'][i] or '').strip()
+        if not text:
+            continue
         try:
-            if conn:
+            conf = float(data['conf'][i])
+        except (ValueError, TypeError):
+            conf = -1
+        if conf < 0:
+            continue
+        words.append({
+            'text': text,
+            'x': data['left'][i],
+            'y': data['top'][i],
+            'w': data['width'][i],
+        })
+    if not words:
+        return None
+
+    width = img.width
+    left_words  = [w for w in words if w['x'] + w['w'] / 2 < width / 2]
+    right_words = [w for w in words if w['x'] + w['w'] / 2 >= width / 2]
+
+    def _has_word(ws, needle):
+        needle = needle.upper()
+        return any(needle in w['text'].upper() for w in ws)
+
+    winner_side = None
+    if _has_word(left_words, 'ПОБЕД'):
+        winner_side = 'left'
+    elif _has_word(right_words, 'ПОБЕД'):
+        winner_side = 'right'
+
+    def _group_rows(ws):
+        """Группирует слова в строки по вертикальной координате."""
+        ws = sorted(ws, key=lambda w: w['y'])
+        rows, current, current_y = [], [], None
+        row_tol = 14 * scale
+        for w in ws:
+            if current and abs(w['y'] - current_y) > row_tol:
+                rows.append(current)
+                current = []
+            current.append(w)
+            current_y = w['y'] if current_y is None else (current_y + w['y']) / 2
+        if current:
+            rows.append(current)
+        return rows
+
+    def _parse_side(ws):
+        players = []
+        for row in _group_rows(ws):
+            row = sorted(row, key=lambda w: w['x'])
+            digit_tokens = [w for w in row if _re_ocr.fullmatch(r'\d+', w['text'])]
+            if len(digit_tokens) < 4:
+                continue  # не строка статистики игрока (например, заголовок таблицы)
+            stat_tokens = digit_tokens[-4:]
+            kills, _assists, deaths, _score = (int(t['text']) for t in stat_tokens)
+            first_digit_x = digit_tokens[0]['x']   # начало столбца "пинг"
+            first_stat_x  = stat_tokens[0]['x']    # начало столбца "У" (убийства)
+            name_tokens = [
+                w['text'] for w in row
+                if first_digit_x + 5 < w['x'] < first_stat_x - 5
+                and not _re_ocr.fullmatch(r'\$?\d+', w['text'])
+            ]
+            name = ' '.join(name_tokens).strip()
+            if not name:
+                continue
+            players.append({'name': name, 'kills': kills, 'deaths': deaths})
+        return players
+
+    return {
+        'sides': {'left': _parse_side(left_words), 'right': _parse_side(right_words)},
+        'winner_side': winner_side,
+    }
+
+
+def _apply_ocr_stats_to_match(match_id: int, ocr: dict) -> tuple[bool, list]:
+    """Сопоставляет распознанных со скриншота игроков с участниками матча
+    по игровому нику (game_id) и сразу сохраняет их kills/deaths в БД.
+
+    Сопоставление стороны таблицы (left/right) с командой (1/2) идёт через
+    ct_team матча: левая панель в интерфейсе игры — всегда СПЕЦНАЗ (CT).
+
+    Возвращает (все_сопоставлены: bool, unmatched_uids: list[int]).
+    """
+    conn = sqlite3.connect('faceit_bot.db')
+    c = conn.cursor()
+    c.execute('SELECT ct_team FROM team_matches WHERE match_id=?', (match_id,))
+    row = c.fetchone()
+    ct_team = (row[0] or 1) if row else 1
+    t_team  = 2 if ct_team == 1 else 1
+    side_to_team = {'left': ct_team, 'right': t_team}
+
+    c.execute(
+        'SELECT mp.user_id, mp.team, u.game_id FROM match_players mp '
+        'JOIN users u ON u.user_id = mp.user_id WHERE mp.match_id=?',
+        (match_id,)
+    )
+    participants = c.fetchall()
+
+    unmatched = []
+    for side, team_num in side_to_team.items():
+        ocr_players = (ocr.get('sides') or {}).get(side, [])
+        team_participants = [
+            (uid, gid) for uid, team, gid in participants
+            if team == team_num and not is_bot(uid)
+        ]
+        used = set()
+        for uid, gid in team_participants:
+            gid_norm = _normalize_ocr_name(gid or '')
+            best_idx, best_score = None, 0.0
+            for idx, p in enumerate(ocr_players):
+                if idx in used:
+                    continue
+                p_norm = _normalize_ocr_name(p['name'])
+                if not gid_norm or not p_norm:
+                    continue
+                if gid_norm == p_norm:
+                    score = 1.0
+                elif gid_norm in p_norm or p_norm in gid_norm:
+                    score = 0.9
+                else:
+                    score = _difflib.SequenceMatcher(None, gid_norm, p_norm).ratio()
+                if score > best_score:
+                    best_score, best_idx = score, idx
+            if best_idx is not None and best_score >= 0.6:
+                used.add(best_idx)
+                p = ocr_players[best_idx]
+                c.execute(
+                    'UPDATE match_players SET kills=?, deaths=?, kd_entered=1 '
+                    'WHERE match_id=? AND user_id=?',
+                    (p['kills'], p['deaths'], match_id, uid)
+                )
+                c.execute(
+                    'UPDATE users SET kills=kills+?, deaths=deaths+? WHERE user_id=?',
+                    (p['kills'], p['deaths'], uid)
+                )
+            else:
+                unmatched.append(uid)
+    conn.commit()
+    conn.close()
+    return (len(unmatched) == 0), unmatched
+
+
+def _reset_match_kd(match_id: int):
+    """Сбрасывает распознанную статистику матча (используется при отклонении
+    скриншота администратором, чтобы можно было загрузить и распознать заново)."""
+    conn = sqlite3.connect('faceit_bot.db')
+    c = conn.cursor()
+    c.execute('SELECT user_id, kills, deaths, kd_entered FROM match_players WHERE match_id=?', (match_id,))
+    rows = c.fetchall()
+    for uid, kills, deaths, kd_entered in rows:
+        if kd_entered:
+            c.execute(
+                'UPDATE users SET kills=MAX(0, kills-?), deaths=MAX(0, deaths-?) WHERE user_id=?',
+                (kills or 0, deaths or 0, uid)
+            )
+    c.execute(
+        'UPDATE match_players SET kills=0, deaths=0, kd_entered=0 WHERE match_id=?',
+        (match_id,)
+    )
+    conn.commit()
+    conn.close()
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  LIVE-ОБНОВЛЕНИЕ ЛОББИ
+# ══════════════════════════════════════════════════════════════════════════════
+
+def _cleanup_uid(uid: int):
+    _queue_join_time.pop(uid, None)
+    _lobby_msg_info.pop(uid, None)
+
+
+async def _refresh_lobby_messages(context: ContextTypes.DEFAULT_TYPE,
+                                   lobby_id: int, mode: str, exclude_uid: int = None):
+    """Обновляет сообщение лобби у всех игроков внутри него."""
+    lobby  = lobby_queues[mode].get(lobby_id, [])
+    total  = len(lobby)
+    match  = MODES[mode]['match_size']
+    markup = lobby_list_keyboard(mode, uid_in_lobby=True)
+    players_text = queue_list_text(lobby_id, mode)
+    text = (
+        f"{E_CHECK} <b>Вы в лобби {lobby_id}  [{mode}]</b>  ({total}/{match})\n"
+        f"Ожидаем ещё <b>{match - total}</b> игрок(ов)...\n\n"
+        f"{E_PEOPLE} Игроки:\n{players_text}\n\n"
+        f"{E_SEARCH} <i>Другие лобби:</i>"
+    )
+    _t, _e = _parse_msg(text)
+    for uid in list(lobby):
+        if uid == exclude_uid or is_bot(uid):
+            continue
+        info = _lobby_msg_info.get(uid)
+        if not info:
+            # Нет сохранённого сообщения — шлём новое и запоминаем
+            try:
+                sent = await context.bot.send_message(
+                    chat_id=uid, text=_t, entities=_e, reply_markup=markup
+                )
+                _lobby_msg_info[uid] = (sent.chat_id, sent.message_id, lobby_id, mode)
+            except Exception:
+                pass
+            continue
+        chat_id, msg_id, _, _ = info
+        try:
+            await context.bot.edit_message_text(
+                chat_id=chat_id,
+                message_id=msg_id,
+                text=_t,
+                entities=_e,
+                reply_markup=markup,
+            )
+        except Exception:
+            # Сообщение удалено или недоступно — шлём новое
+            try:
+                sent = await context.bot.send_message(
+                    chat_id=uid, text=_t, entities=_e, reply_markup=markup
+                )
+                _lobby_msg_info[uid] = (sent.chat_id, sent.message_id, lobby_id, mode)
+            except Exception:
+                pass
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  /start  +  регистрация
+# ══════════════════════════════════════════════════════════════════════════════
+
+PENDING_REG_STEP_TTL_SEC = 2 * 3600  # старше 2 часов — считаем регистрацию заброшенной
+
+
+def _set_pending_reg_step(uid: int, step) -> None:
+    """Персистентно сохраняет шаг регистрации вместе с меткой времени (или
+    очищает оба поля при step=None), чтобы его можно было восстановить после
+    перезапуска бота — в отличие от context.user_data, который живёт только
+    в памяти процесса. Метка времени нужна, чтобы не воскрешать регистрацию,
+    заброшенную много дней назад."""
+    ts = datetime.datetime.utcnow().isoformat() if step else None
+    try:
+        conn = sqlite3.connect('faceit_bot.db')
+        conn.execute(
+            'UPDATE users SET pending_reg_step=?, pending_reg_step_at=? WHERE user_id=?',
+            (step, ts, uid)
+        )
+        conn.commit()
+        conn.close()
+    except Exception:
+        pass
+
+
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    msg = update.effective_message
+    if not msg:
+        return
+    user = update.effective_user
+
+    if not await _is_channel_subscribed(context.bot, user.id):
+        await _reply_html(
+            msg,
+            "<tg-emoji emoji-id='5208585145702978799'>🔥</tg-emoji> Добро пожаловать в Moon Faceit!\n\n"
+            "Для продолжения подпишись на канал, а затем нажми «Я подписался»:",
+            reply_markup=_sub_gate_keyboard(),
+        )
+        return
+
+    try:
+        conn = sqlite3.connect('faceit_bot.db')
+        c = conn.cursor()
+        c.execute('INSERT OR IGNORE INTO users (user_id, username, elo, level) VALUES (?,?,0,1)',
+                  (user.id, user.username or str(user.id)))
+        conn.commit()
+        c.execute('SELECT first_name, game_id FROM users WHERE user_id = ?', (user.id,))
+        row = c.fetchone()
+        conn.close()
+    except Exception as e:
+        print(f"[start] DB error: {e}")
+        await _reply_html(msg, "<tg-emoji emoji-id='5447644880824181073'>⚠️</tg-emoji> Ошибка базы данных. Попробуйте ещё раз.")
+        return
+
+    already_registered = row and row[0] and row[1]
+    half_registered    = row and row[0] and not row[1]
+
+    try:
+        if already_registered:
+            nick = row[0]
+            await _reply_html(msg,
+                f"<tg-emoji emoji-id='5325547803936572038'>✨</tg-emoji> Привет! Рад тебя видеть, {nick}!\n\n<tg-emoji emoji-id='5406745015365943482'>⬇️</tg-emoji> Выбери действие:",
+                reply_markup=inline_main_menu_keyboard()
+            )
+            return
+
+        if half_registered:
+            context.user_data['reg_step'] = 'awaiting_game_id'
+            context.user_data['reg_nick'] = row[0]
+            _set_pending_reg_step(user.id, 'awaiting_game_id')
+            await _reply_html(msg,
+                f"{E_WAITING} Ты уже ввёл никнейм {row[0]}, но не завершил регистрацию.\n\n"
+                "<tg-emoji emoji-id='5319247469165433798'>🎮</tg-emoji> Введи свой ID в игре:"
+            )
+            return
+
+        context.user_data['reg_step'] = 'awaiting_nickname'
+        context.user_data.pop('reg_nick', None)
+        _set_pending_reg_step(user.id, 'awaiting_nickname')
+        await _reply_html(msg,
+            "<tg-emoji emoji-id='5314508432315817301'>Ⓜ️</tg-emoji> Привет! Ты попал в Moon Faceit!\n\n"
+            "Для начала пройди регистрацию.\n\n<tg-emoji emoji-id='5319247469165433798'>📝</tg-emoji> Введи свой никнейм:"
+        )
+    except Exception as e:
+        print(f"[start] send error: {e}")
+        try:
+            await _reply_html(msg, "<tg-emoji emoji-id='5447644880824181073'>⚠️</tg-emoji> Произошла ошибка. Попробуйте /start ещё раз.")
+        except Exception:
+            pass
+
+
+async def check_sub_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Кнопка «Я подписался» — перепроверяет подписку и, если всё ок,
+    продолжает туда же, куда ведёт /start (регистрация или главное меню)."""
+    query = update.callback_query
+    uid = query.from_user.id
+
+    if not await _is_channel_subscribed(context.bot, uid):
+        await query.answer("Подписка не найдена. Подпишись на канал и попробуй снова.", show_alert=True)
+        return
+
+    await query.answer("Подписка подтверждена!")
+    try:
+        await query.edit_message_reply_markup(reply_markup=None)
+    except Exception:
+        pass
+    await start(update, context)
+
+
+async def registration_step_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    step = context.user_data.get('reg_step')
+    uid  = update.effective_user.id
+
+    if not step:
+        # reg_step хранится только в памяти (context.user_data) и теряется при
+        # перезапуске бота. Если это произошло между вводом никнейма и ID —
+        # пользователь пишет ID, а бот "молчит", что и выглядит как баг.
+        # Восстанавливаем шаг из отдельной колонки pending_reg_step — она
+        # выставляется/очищается только самим шагами регистрации, поэтому,
+        # в отличие от проверки "first_name задан, а game_id — нет", не
+        # путает мид-регистрацию с другими путями, которые тоже могут менять
+        # first_name без game_id (админский /setnick, смена ника и т.п.).
+        try:
+            _conn = sqlite3.connect('faceit_bot.db')
+            _row = _conn.execute(
+                'SELECT first_name, pending_reg_step, pending_reg_step_at FROM users WHERE user_id=?',
+                (uid,)
+            ).fetchone()
+            _conn.close()
+        except Exception:
+            _row = None
+
+        _stale = False
+        if _row and _row[1]:
+            if not _row[2]:
+                _stale = True  # шаг есть, а метки времени нет — не доверяем, считаем устаревшим
+            else:
+                try:
+                    _age = (datetime.datetime.utcnow() - datetime.datetime.fromisoformat(_row[2])).total_seconds()
+                    _stale = _age > PENDING_REG_STEP_TTL_SEC
+                except Exception:
+                    _stale = True  # битая метка времени — тоже не доверяем
+
+        if _stale:
+            # Регистрация была заброшена много дней назад — не воскрешаем её
+            # случайным сообщением, просто чистим метку и ждём нового /start.
+            _set_pending_reg_step(uid, None)
+            return
+        elif _row and _row[1] == 'awaiting_game_id':
+            step = 'awaiting_game_id'
+            context.user_data['reg_step'] = step
+            context.user_data['reg_nick'] = _row[0] or ''
+        elif _row and _row[1] == 'awaiting_nickname':
+            step = 'awaiting_nickname'
+            context.user_data['reg_step'] = step
+        else:
+            return
+
+    text = update.message.text.strip()
+
+    # Кнопка «Меню» всегда отменяет текущий шаг и возвращает в главное меню
+    if text == "Меню":
+        context.user_data.pop('reg_step', None)
+        _set_pending_reg_step(uid, None)
+        await action_show_menu(update, context)
+        return
+
+    if step == 'awaiting_nickname':
+        import re as _re
+        if not text or not _re.fullmatch(r'\S{2,32}', text):
+            await _reply_html(update.message,
+                "<tg-emoji emoji-id='5274099962655816924'>❗️</tg-emoji> Никнейм не должен:\n"
+                "• Содержать пробелы\n"
+                "• Быть короче 2 или длиннее 32 символов"
+            )
+            raise ApplicationHandlerStop
+        # Сохраняем никнейм в БД сразу, а не только в context.user_data —
+        # это позволяет восстановить шаг выше, если бот перезапустится до
+        # того, как пользователь введёт ID. Шаг+таймстамп ставим через
+        # _set_pending_reg_step, чтобы оба поля всегда обновлялись вместе.
+        try:
+            _conn = sqlite3.connect('faceit_bot.db')
+            _conn.execute('UPDATE users SET first_name=? WHERE user_id=?', (text, uid))
+            _conn.commit()
+            _conn.close()
+        except Exception:
+            pass
+        _set_pending_reg_step(uid, 'awaiting_game_id')
+        context.user_data['reg_nick'] = text
+        context.user_data['reg_step'] = 'awaiting_game_id'
+        await _reply_html(update.message, f"{E_CHECK} Никнейм: <b>{text}</b>\n\n{EP_GAME} Введите ваш <b>ID в игре</b> (буквы и цифры):")
+        raise ApplicationHandlerStop
+
+    elif step == 'awaiting_game_id':
+        import re as _re
+        if not text or not _re.fullmatch(r'\S{1,40}', text):
+            await _reply_html(update.message,
+                "<tg-emoji emoji-id='5274099962655816924'>❗️</tg-emoji> ID в игре не должен:\n"
+                "• Содержать пробелы\n"
+                "• Быть длиннее 40 символов"
+            )
+            raise ApplicationHandlerStop
+        conn = sqlite3.connect('faceit_bot.db')
+        c = conn.cursor()
+        nick = context.user_data.get('reg_nick', '')
+        if not nick:
+            # reg_nick мог не сохраниться в user_data (например, шаг был
+            # восстановлен из БД без него) — не затираем first_name пустотой.
+            c.execute('SELECT first_name FROM users WHERE user_id=?', (uid,))
+            _row = c.fetchone()
+            nick = (_row[0] if _row and _row[0] else '') or 'Игрок'
+        c.execute(
+            'UPDATE users SET first_name=?, game_id=?, pending_reg_step=NULL, pending_reg_step_at=NULL '
+            'WHERE user_id=?',
+            (nick, text, uid)
+        )
+        conn.commit()
+        conn.close()
+        context.user_data.pop('reg_step', None)
+        context.user_data.pop('reg_nick', None)
+
+        # Подтверждение обязательно должно дойти до пользователя — регистрация
+        # в БД уже сохранена выше, поэтому при сбое красивого HTML-сообщения
+        # (например, из-за необычных символов в никнейме) отправляем
+        # простой текст, а не оставляем пользователя без единого ответа.
+        try:
+            await _reply_html(update.message, f"{E_MOON} <b>Регистрация завершена!</b>\n\n"
+                f"{EP_USER} Никнейм: <b>{_esc(nick)}</b>\n"
+                f"{EP_GAME} ID в игре: <code>{_esc(text)}</code>\n"
+                f'<tg-emoji emoji-id="5231200819986047254">📊</tg-emoji> ELO: <b>0</b>', reply_markup=main_keyboard())
+        except Exception:
+            await update.message.reply_text(
+                f"Регистрация завершена!\nНикнейм: {nick}\nID в игре: {text}\nELO: 0",
+                reply_markup=main_keyboard()
+            )
+        await update.message.reply_text(
+            "Выбери действие:", reply_markup=inline_main_menu_keyboard()
+        )
+        raise ApplicationHandlerStop
+
+    elif step == 'change_nick':
+        import re as _re
+        if not text or not _re.fullmatch(r'\S{2,32}', text):
+            await _reply_html(update.message,
+                "<tg-emoji emoji-id='5274099962655816924'>❗️</tg-emoji> Никнейм не должен:\n"
+                "• Содержать пробелы\n"
+                "• Быть короче 2 или длиннее 32 символов"
+            )
+            raise ApplicationHandlerStop
+        conn = sqlite3.connect('faceit_bot.db')
+        c = conn.cursor()
+        c.execute('SELECT last_nick_change FROM users WHERE user_id=?', (uid,))
+        row = c.fetchone()
+        if row and row[0]:
+            last_change = datetime.datetime.fromisoformat(row[0])
+            diff = datetime.datetime.utcnow() - last_change
+            if diff.total_seconds() < 43200:
+                remaining = 43200 - int(diff.total_seconds())
+                hours, rem = divmod(remaining, 3600)
+                minutes = rem // 60
                 conn.close()
-        except Exception:
-            pass
-
-    # ── 2. Обновляем таблицу конкретной приватки (отдельная транзакция) ──────
-    # Если эта часть падает - главная таблица matches уже закоммичена выше,
-    # матч не потеряется после рестарта.
-    conn2 = None
-    try:
-        conn2 = _db()
-        cur2  = conn2.cursor()
-        _pmt  = PRIVATE_CONFIG.get(lobby.get("private", "fade"), PRIVATE_CONFIG["fade"])["matches_table"]
-        cur2.execute(
-            f"""INSERT INTO {_pmt}
-               (match_id, match_code, league, device, map_name, winner, ACore_w, ACore_l,
-                players_json, status, started_at, finished_at)
-               VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, 'registered', %s, %s)
-               ON CONFLICT (match_id) DO UPDATE SET
-                   winner       = EXCLUDED.winner,
-                   ACore_w      = EXCLUDED.ACore_w,
-                   ACore_l      = EXCLUDED.ACore_l,
-                   players_json = EXCLUDED.players_json,
-                   status       = 'registered',
-                   finished_at  = EXCLUDED.finished_at""",
-            (match_id, match_code, league, device, map_name, winner,
-             score_w, score_l, players_json_str, now, now),
-        )
-        conn2.commit()
-    except Exception as e2:
-        print(f"[save_match_to_history] {_pmt} UPDATE ERROR: {e2}")
-        try:
-            if conn2:
-                conn2.rollback()
-        except Exception:
-            pass
-    finally:
-        try:
-            if conn2:
-                conn2.close()
-        except Exception:
-            pass
-
-
-def save_match_cancelled(lobby, reason=""):
-    """Обновляет/сохраняет матч в БД со статусом 'cancelled'."""
-    players_info = []
-    for uid in list(lobby.get("team_ct", [])) + list(lobby.get("team_t", [])):
-        if is_bot_player(uid):
-            continue
-        p = get_player_in_lobby(uid, lobby)
-        players_info.append({
-            "user_id": uid,
-            "name": p[1] if p else str(uid),
-            "team": "ct" if uid in lobby.get("team_ct", []) else "t",
-        })
-    players_json_str = json.dumps(players_info, ensure_ascii=False)
-    match_id   = lobby.get("match_id", 0)
-    match_code = lobby.get("match_code", "")
-    league     = lobby.get("league", "")
-    device     = lobby.get("device", "")
-    map_name   = lobby.get("map_name", "")
-    now        = int(time.time())
-
-    # ── 1. Главная таблица matches (отдельная транзакция) ────────────────────
-    conn = None
-    try:
-        conn = _db()
-        cur = conn.cursor()
-        cur.execute(
-            """INSERT INTO matches
-               (match_id, match_code, league, device, map_name, status, cancel_reason,
-                players_json, winner, ACore_w, ACore_l, started_at)
-               VALUES (%s, %s, %s, %s, %s, 'cancelled', %s, %s, '', 0, 0, %s)
-               ON CONFLICT (match_id) DO UPDATE SET
-                   status        = 'cancelled',
-                   cancel_reason = EXCLUDED.cancel_reason""",
-            (match_id, match_code, league, device, map_name, reason, players_json_str, now),
-        )
-        try:
-            cur.execute("DELETE FROM unregistered_matches WHERE match_id=%s", (match_id,))
-        except Exception:
-            pass
+                await _reply_html(update.message, f"{E_WAITING} Сменить никнейм можно раз в 12 часов.\n"
+                    f"Следующая смена доступна через: <b>{hours}ч {minutes}м</b>")
+                raise ApplicationHandlerStop
+        now_str = datetime.datetime.utcnow().isoformat()
+        c.execute('UPDATE users SET first_name=?, last_nick_change=? WHERE user_id=?', (text, now_str, uid))
         conn.commit()
-    except Exception as e:
-        print(f"[save_match_cancelled] matches UPDATE ERROR: {e}")
-        try:
-            if conn:
-                conn.rollback()
-        except Exception:
-            pass
-    finally:
-        try:
-            if conn:
+        conn.close()
+        context.user_data.pop('reg_step', None)
+        await _reply_html(update.message, f'{E_CHECK} Никнейм успешно изменён на <b>{text}</b>')
+        raise ApplicationHandlerStop
+
+    elif step == 'change_id':
+        import re as _re
+        if not text or not _re.fullmatch(r'\S{1,40}', text):
+            await _reply_html(update.message,
+                "<tg-emoji emoji-id='5274099962655816924'>❗️</tg-emoji> ID в игре не должен:\n"
+                "• Содержать пробелы\n"
+                "• Быть длиннее 40 символов"
+            )
+            raise ApplicationHandlerStop
+        conn = sqlite3.connect('faceit_bot.db')
+        c = conn.cursor()
+        c.execute('SELECT last_id_change FROM users WHERE user_id=?', (uid,))
+        row = c.fetchone()
+        if row and row[0]:
+            last_change = datetime.datetime.fromisoformat(row[0])
+            diff = datetime.datetime.utcnow() - last_change
+            if diff.total_seconds() < 43200:
+                remaining = 43200 - int(diff.total_seconds())
+                hours, rem = divmod(remaining, 3600)
+                minutes = rem // 60
                 conn.close()
-        except Exception:
-            pass
-
-    # ── 2. Таблица приватки (отдельная транзакция) ───────────────────────────
-    conn2 = None
-    try:
-        conn2 = _db()
-        cur2  = conn2.cursor()
-        _pmt  = PRIVATE_CONFIG.get(lobby.get("private", "fade"), PRIVATE_CONFIG["fade"])["matches_table"]
-        cur2.execute(
-            f"""INSERT INTO {_pmt}
-               (match_id, match_code, league, device, map_name, status, cancel_reason,
-                players_json, winner, ACore_w, ACore_l, started_at)
-               VALUES (%s, %s, %s, %s, %s, 'cancelled', %s, %s, '', 0, 0, %s)
-               ON CONFLICT (match_id) DO UPDATE SET
-                   status = 'cancelled', cancel_reason = EXCLUDED.cancel_reason""",
-            (match_id, match_code, league, device, map_name, reason, players_json_str, now),
-        )
-        conn2.commit()
-    except Exception as e2:
-        print(f"[save_match_cancelled] {_pmt} UPDATE ERROR: {e2}")
-        try:
-            if conn2:
-                conn2.rollback()
-        except Exception:
-            pass
-    finally:
-        try:
-            if conn2:
-                conn2.close()
-        except Exception:
-            pass
-
-
-# ==================== ТИКЕТЫ (БД хелперы) ====================
-def create_ticket(user_id, match_code, reason, evidence_file_id, accused_id, accused_name):
-    code = generate_ticket_code()
-    conn = _db()
-    cur = conn.cursor()
-    try:
-        cur.execute(
-            """INSERT INTO tickets (ticket_code, user_id, match_code, reason, evidence_file_id, accused_id, accused_name)
-               VALUES (%s, %s, %s, %s, %s, %s, %s) RETURNING id""",
-            (code, user_id, match_code, reason, evidence_file_id or '', accused_id, accused_name or ''),
-        )
+                await _reply_html(update.message, f"{E_WAITING} Сменить ID можно раз в 12 часов.\n"
+                    f"Следующая смена доступна через: <b>{hours}ч {minutes}м</b>")
+                raise ApplicationHandlerStop
+        now_str = datetime.datetime.utcnow().isoformat()
+        c.execute('UPDATE users SET game_id=?, last_id_change=? WHERE user_id=?', (text, now_str, uid))
         conn.commit()
         conn.close()
-        return code
-    except Exception as e:
-        print(f"create_ticket error: {e}")
-        conn.rollback()
-        conn.close()
-        return None
+        context.user_data.pop('reg_step', None)
+        await _reply_html(update.message, f'{E_CHECK} ID в игре успешно изменён на <code>{text}</code>')
+        raise ApplicationHandlerStop
 
-def get_open_tickets():
-    conn = _db()
-    cur = conn.cursor()
-    cur.execute(
-        "SELECT id, ticket_code, user_id, match_code, reason, accused_name, status, created_at FROM tickets WHERE status='open' ORDER BY created_at DESC"
-    )
-    rows = cur.fetchall()
-    conn.close()
-    return rows
-
-def close_ticket(ticket_code, admin_id, close_reason, new_status):
-    conn = _db()
-    cur = conn.cursor()
-    cur.execute(
-        "UPDATE tickets SET status=%s, closed_by=%s, close_reason=%s WHERE ticket_code=%s",
-        (new_status, admin_id, close_reason, ticket_code),
-    )
-    conn.commit()
-    t = None
-    cur.execute("SELECT user_id, match_code, reason FROM tickets WHERE ticket_code=%s", (ticket_code,))
-    t = cur.fetchone()
-    conn.close()
-    return t
-
-def get_match_history(limit=10):
-    conn = _db()
-    cur = conn.cursor()
-    cur.execute(
-        "SELECT match_id, league, device, map_name, winner, ACore_w, ACore_l, finished_at FROM matches ORDER BY finished_at DESC LIMIT %s",
-        (limit,),
-    )
-    rows = cur.fetchall()
-    conn.close()
-    return rows
-
-
-def get_player_map_stats(user_id, matches_table="matches"):
-    """Returns list of {"map": str, "wr": float, "kd": float} for each map the player played in current season."""
-    season_start = _get_season_start_ts()
-    conn = _db()
-    cur = conn.cursor()
-    cur.execute(
-        f"SELECT map_name, players_json FROM {matches_table} WHERE status='registered' AND players_json IS NOT NULL AND finished_at >= %s",
-        (season_start,)
-    )
-    rows = cur.fetchall()
-    conn.close()
-
-    from collections import defaultdict
-    stats = defaultdict(lambda: {"wins": 0, "total": 0, "kills": 0, "deaths": 0})
-    for map_name, pj in rows:
-        if not map_name:
-            continue
-        try:
-            players = json.loads(pj or "[]")
-        except Exception:
-            continue
-        for p in players:
-            if p.get("user_id") == user_id:
-                k = stats[map_name]
-                k["total"]  += 1
-                k["wins"]   += 1 if p.get("won") else 0
-                k["kills"]  += p.get("kills",  0)
-                k["deaths"] += p.get("deaths", 1)
-
-    result = []
-    for map_name, s in stats.items():
-        wr = s["wins"] / s["total"] if s["total"] > 0 else 0.0
-        kd = round(s["kills"] / max(s["deaths"], 1), 2)
-        result.append({
-            "map":    map_name,
-            "wins":   s["wins"],
-            "losses": s["total"] - s["wins"],
-            "wr":     wr,
-            "kd":     kd,
-        })
-
-    # Sort by matches played deAC, pad with zeroes for default maps
-    for default_map in MAPS:
-        if not any(r["map"] == default_map for r in result):
-            result.append({"map": default_map, "wr": 0.0, "kd": 0.0})
-
-    result.sort(key=lambda r: r["wr"], reverse=True)
-    return result[:5]
-
-
-def _get_season_start_ts():
-    """Returns the started_at timestamp of the current active season, or 0 if none."""
-    try:
-        conn = _db()
-        cur = conn.cursor()
-        cur.execute("SELECT started_at FROM seasons WHERE is_active=1 ORDER BY id DESC LIMIT 1")
-        row = cur.fetchone()
-        conn.close()
-        return row[0] if row else 0
-    except Exception:
-        return 0
-
-
-def get_player_recent_matches(user_id, limit=5, matches_table="matches"):
-    """Returns list of booleans (True=win) for last N Default matches of the player in current season."""
-    season_start = _get_season_start_ts()
-    conn = _db()
-    cur = conn.cursor()
-    cur.execute(
-        f"SELECT players_json FROM {matches_table} WHERE status='registered' AND (league='default' OR league IS NULL) AND players_json IS NOT NULL AND finished_at >= %s ORDER BY finished_at DESC LIMIT 50",
-        (season_start,)
-    )
-    rows = cur.fetchall()
-    conn.close()
-
-    recent = []
-    for (pj,) in rows:
-        if len(recent) >= limit:
-            break
-        try:
-            players = json.loads(pj or "[]")
-        except Exception:
-            continue
-        for p in players:
-            if p.get("user_id") == user_id:
-                recent.append(bool(p.get("won")))
-                break
-    return recent
-
-
-def get_player_quals_recent_matches(user_id, limit=5, matches_table="matches"):
-    """Returns list of booleans (True=win) for last N Quals matches of the player in current season."""
-    season_start = _get_season_start_ts()
-    conn = _db()
-    cur = conn.cursor()
-    cur.execute(
-        f"SELECT players_json FROM {matches_table} WHERE status='registered' AND league='quals' AND players_json IS NOT NULL AND finished_at >= %s ORDER BY finished_at DESC LIMIT 50",
-        (season_start,)
-    )
-    rows = cur.fetchall()
-    conn.close()
-
-    recent = []
-    for (pj,) in rows:
-        if len(recent) >= limit:
-            break
-        try:
-            players = json.loads(pj or "[]")
-        except Exception:
-            continue
-        for p in players:
-            if p.get("user_id") == user_id:
-                recent.append(bool(p.get("won")))
-                break
-    return recent
-
-
-
-
-# ==================== ПРОМОКОДЫ ====================
-
-def _rewards_to_str(rewards: list) -> str:
-    """Человекочитаемое описание списка наград."""
-    parts = []
-    for r in rewards:
-        t = r.get("type", "")
-        if t == "coins":
-            parts.append(f"💰 {r.get('value', 0)} AC")
-        elif t == "premium":
-            parts.append(f"👑 Premium {r.get('days', 30)} дн.")
-        elif t == "quals":
-            parts.append(f"⭐ Quals {r.get('days', 30)} дн.")
-        else:
-            parts.append(t)
-    return " + ".join(parts) if parts else "-"
-
-def create_promo_code(code, rewards: list, max_uses):
-    """rewards = [{"type": "coins"|"premium"|"quals", "value": int, "days": int}, ...]
-    Returns (True, "created") / (True, "reactivated") / (False, "exists_active") / (False, "error")
-    """
-    conn = _db()
-    cur = conn.cursor()
-    try:
-        code_upper = code.upper()
-        r0 = rewards[0] if rewards else {}
-        rtype = r0.get("type", "coins")
-        rvalue = r0.get("value", 0)
-        rdays = r0.get("days", 30)
-        rjson = json.dumps(rewards, ensure_ascii=False)
-
-        cur.execute("SELECT id, is_active FROM promo_codes WHERE code=%s", (code_upper,))
-        existing = cur.fetchone()
-
-        if existing:
-            ex_id, ex_active = existing
-            if ex_active:
-                return False, "exists_active"
-            cur.execute(
-                "UPDATE promo_codes SET reward_type=%s, reward_value=%s, max_uses=%s, uses=0, "
-                "is_active=1, reward_days=%s, rewards_json=%s WHERE id=%s",
-                (rtype, rvalue, max_uses, rdays, rjson, ex_id),
+    elif step == 'awaiting_promo':
+        code = text.strip().upper()
+        if not code:
+            await _reply_html(update.message, f"{E_CROSS} Введите промокод.", reply_markup=_promo_cancel_keyboard())
+            raise ApplicationHandlerStop
+        conn = sqlite3.connect('faceit_bot.db')
+        c = conn.cursor()
+        c.execute('SELECT reward, activations_left FROM promo_codes WHERE code=?', (code,))
+        row = c.fetchone()
+        if not row or row[1] <= 0:
+            conn.close()
+            await _reply_html(
+                update.message,
+                f"{E_CROSS} Промокод <b>{_esc(code)}</b> недействителен или уже исчерпан.",
+                reply_markup=_promo_cancel_keyboard()
             )
-            conn.commit()
-            return True, "reactivated"
-        else:
-            cur.execute(
-                "INSERT INTO promo_codes (code, reward_type, reward_value, max_uses, reward_days, rewards_json) "
-                "VALUES (%s, %s, %s, %s, %s, %s)",
-                (code_upper, rtype, rvalue, max_uses, rdays, rjson),
-            )
-            conn.commit()
-            return True, "created"
-    except Exception as e:
-        conn.rollback()
-        print(f"[create_promo_code] Ошибка: {e}")
-        return False, "error"
-    finally:
-        conn.close()
-
-def _apply_single_reward(cur, table, uid, reward: dict, now: int) -> str:
-    """Применяет одну награду, возвращает строку-описание."""
-    t = reward.get("type", "")
-    if t == "coins":
-        v = reward.get("value", 0)
-        cur.execute(f"UPDATE {table} SET coins=coins+%s WHERE user_id=%s", (v, uid))
-        return f"💰 <b>{v} AC</b>"
-    elif t == "premium":
-        # Premium глобальный - всегда players
-        days = reward.get("days", 30)
-        cur.execute("SELECT premium_until FROM players WHERE user_id=%s", (uid,))
-        prow = cur.fetchone()
-        base = max((prow[0] or 0), now) if prow else now
-        new_until = base + days * 24 * 3600
-        cur.execute("UPDATE players SET premium_until=%s WHERE user_id=%s", (new_until, uid))
-        return f"👑 <b>Premium {days} дн.</b> (до {fmt_dt(new_until)})"
-    elif t == "quals":
-        # Quals глобальный - всегда players
-        days = reward.get("days", 30)
-        cur.execute("SELECT quals_until FROM players WHERE user_id=%s", (uid,))
-        qrow = cur.fetchone()
-        base = max((qrow[0] or 0), now) if qrow else now
-        new_until = base + days * 24 * 3600
-        cur.execute("UPDATE players SET quals_until=%s, quals_access=1 WHERE user_id=%s", (new_until, uid))
-        return f"⭐ <b>Quals {days} дн.</b> (до {fmt_dt(new_until)})"
-    return ""
-
-def use_promo_code(uid, code):
-    conn = _db()
-    cur = conn.cursor()
-    code_upper = code.upper()
-    cur.execute(
-        "SELECT id, reward_type, reward_value, max_uses, uses, is_active, reward_days, rewards_json "
-        "FROM promo_codes WHERE code=%s",
-        (code_upper,),
-    )
-    row = cur.fetchone()
-    if not row:
-        conn.close()
-        return False, "❌ Промокод не найден"
-    pid, reward_type, reward_value, max_uses, uses, is_active, reward_days, rewards_json = row
-    if not is_active:
-        conn.close()
-        return False, "❌ Промокод недействителен"
-    if max_uses > 0 and uses >= max_uses:
-        conn.close()
-        return False, "❌ Промокод исчерпан"
-    cur.execute("SELECT COUNT(*) FROM promo_uses WHERE user_id=%s AND code=%s", (uid, code_upper))
-    if cur.fetchone()[0] > 0:
-        conn.close()
-        return False, "❌ Вы уже использовали этот промокод"
-    # Парсим список наград (новый формат или старый)
-    rewards = []
-    if rewards_json:
-        try:
-            rewards = json.loads(rewards_json)
-        except Exception:
-            pass
-    if not rewards:
-        rewards = [{"type": reward_type, "value": reward_value or 0, "days": reward_days or 30}]
-    table = get_user_table(uid)
-    now = int(time.time())
-    lines = []
-    for r in rewards:
-        deAC = _apply_single_reward(cur, table, uid, r, now)
-        if deAC:
-            lines.append(deAC)
-    cur.execute("INSERT INTO promo_uses (user_id, code) VALUES (%s, %s)", (uid, code_upper))
-    cur.execute("UPDATE promo_codes SET uses=uses+1 WHERE id=%s", (pid,))
-    conn.commit()
-    conn.close()
-    rewards_text = "\n".join(f"- {l}" for l in lines)
-    return True, f"🎁 <b>Промокод активирован!</b>\n\nВы получили:\n{rewards_text}"
-
-def get_all_promo_codes():
-    conn = _db()
-    cur = conn.cursor()
-    cur.execute(
-        "SELECT code, reward_type, reward_value, max_uses, uses, is_active, reward_days, rewards_json "
-        "FROM promo_codes ORDER BY id DESC"
-    )
-    rows = cur.fetchall()
-    conn.close()
-    return rows
-
-def deactivate_promo_code(code):
-    conn = _db()
-    cur = conn.cursor()
-    cur.execute("UPDATE promo_codes SET is_active=0 WHERE code=%s", (code.upper(),))
-    conn.commit()
-    conn.close()
-
-
-# ==================== МАГАЗИН ХЕЛПЕРЫ ====================
-def get_shop_item(item_id):
-    conn = _db()
-    cur = conn.cursor()
-    cur.execute(
-        "SELECT id, name, deACription, category, price, item_type FROM shop_items WHERE id=%s",
-        (item_id,),
-    )
-    item = cur.fetchone()
-    conn.close()
-    return item
-
-def get_shop_item_full(item_id):
-    """Возвращает товар со всеми ценами: coins/rub/stars/crypto."""
-    conn = _db()
-    cur = conn.cursor()
-    cur.execute(
-        "SELECT id, name, deACription, category, price, item_type, "
-        "COALESCE(price_rub,0), COALESCE(price_stars,0), COALESCE(price_crypto,0) "
-        "FROM shop_items WHERE id=%s",
-        (item_id,),
-    )
-    item = cur.fetchone()
-    conn.close()
-    return item
-
-
-SHOP_CURRENCY_LABELS = {
-    "coins":  "💰 Actual Coin",
-    "rub":    "💵 Рубли",
-    "stars":  "⭐ Telegram Stars",
-    "crypto": "💎 Крипта (USDT)",
-}
-_SHOP_CURRENCY_COLUMNS = {
-    "coins":  "price",
-    "rub":    "price_rub",
-    "stars":  "price_stars",
-    "crypto": "price_crypto",
-}
-
-
-def set_shop_item_price(item_id, currency, value):
-    """Обновляет цену товара в указанной валюте (coins/rub/stars/crypto)."""
-    col = _SHOP_CURRENCY_COLUMNS.get(currency)
-    if not col:
-        return False
-    conn = _db()
-    cur = conn.cursor()
-    cur.execute(f"UPDATE shop_items SET {col}=%s WHERE id=%s", (value, item_id))
-    conn.commit()
-    conn.close()
-    return True
-
-
-def grant_shop_item(uid, item_id):
-    """Выдаёт товар игроку без списания монет - используется при оплате
-    Telegram Stars / рублями / криптой (списание там происходит через сам платёж)."""
-    item = get_shop_item(item_id)
-    if not item:
-        return False, "❌ Товар не найден"
-    _, name, _deAC, _category, _price, item_type = item
-    stackable = {"sticker", "unwarn", "x2coins", "rename"}
-    if item_type not in stackable and item_type not in ("premium", "quals") and has_item_in_inventory(uid, item_id):
-        return False, "❌ Этот предмет уже есть в вашем инвентаре!"
-    conn = _db()
-    cur = conn.cursor()
-    try:
-        if item_type in ("premium", "quals"):
-            now = int(time.time())
-            days30 = 30 * 24 * 3600
-            if item_type == "premium":
-                cur.execute("SELECT premium_until FROM players WHERE user_id=%s", (uid,))
-                row = cur.fetchone()
-                base = max(row[0] or 0, now)
-                new_until = base + days30
-                cur.execute("UPDATE players SET premium_until=%s WHERE user_id=%s", (new_until, uid))
-                dt = fmt_dt(new_until)
-                conn.commit(); conn.close()
-                return True, f"👑 <b>Premium активирован на 30 дней!</b>\nДействует до: {dt}"
-            else:
-                cur.execute("SELECT quals_until FROM players WHERE user_id=%s", (uid,))
-                row = cur.fetchone()
-                base = max(row[0] or 0, now)
-                new_until = base + days30
-                cur.execute("UPDATE players SET quals_until=%s, quals_access=1 WHERE user_id=%s", (new_until, uid))
-                dt = fmt_dt(new_until)
-                conn.commit(); conn.close()
-                return True, f"⭐ <b>Quals доступ выдан на 30 дней!</b>\nДействует до: {dt}"
-
-        cur.execute("INSERT INTO inventory (user_id, item_id) VALUES (%s, %s)", (uid, item_id))
+            raise ApplicationHandlerStop
+        reward, activations_left = row
+        c.execute('UPDATE promo_codes SET activations_left = activations_left - 1 WHERE code=?', (code,))
+        c.execute('UPDATE users SET moon_coins = COALESCE(moon_coins, 0) + ? WHERE user_id=?', (reward, uid))
+        c.execute('INSERT INTO promo_redemptions (code, user_id, reward) VALUES (?, ?, ?)', (code, uid, reward))
         conn.commit()
         conn.close()
-        return True, f"✅ Куплено: <b>{name}</b>\n\n💡 Активируйте предмет в 🎒 Инвентаре"
-    except Exception as e:
-        try:
-            conn.rollback(); conn.close()
-        except Exception:
-            pass
-        print(f"[grant_shop_item] Ошибка: {e}")
-        return False, "❌ Ошибка при выдаче товара. Обратитесь в поддержку."
-
-
-def get_shop_items_by_category(category):
-    conn = _db()
-    cur = conn.cursor()
-    cur.execute(
-        "SELECT id, name, deACription, price, item_type FROM shop_items WHERE category=%s AND is_active=1",
-        (category,),
-    )
-    items = cur.fetchall()
-    conn.close()
-    return items
-
-def get_all_shop_items_list():
-    """Returns a formatted string of all shop items with their IDs."""
-    conn = _db()
-    cur = conn.cursor()
-    cur.execute("SELECT id, name, category, price, item_type FROM shop_items WHERE is_active=1 ORDER BY category, id")
-    items = cur.fetchall()
-    conn.close()
-    lines = []
-    cur_cat = None
-    cat_icons = {"decor": "🖼 Декор", "goods": "📦 Товары"}
-    for item_id, name, category, price, item_type in items:
-        if category != cur_cat:
-            cur_cat = category
-            lines.append(f"\n<b>{cat_icons.get(category, category)}</b>")
-        lines.append(f"  <code>{item_id}</code> - {name} ({price} AC)")
-    return "\n".join(lines)
-
-def get_active_cosmetics(uid):
-    """Returns (active_frame, active_banner, active_background) for a player."""
-    try:
-        conn = _db()
-        cur = conn.cursor()
-        cur.execute(
-            "SELECT active_frame, active_banner, active_background FROM players WHERE user_id=%s",
-            (uid,),
+        context.user_data.pop('reg_step', None)
+        await _reply_html(
+            update.message,
+            f"{E_CHECK} Промокод <b>{_esc(code)}</b> активирован! Начислено {E_PRICE} <b>{reward}</b> Moon Coins."
         )
-        row = cur.fetchone()
+        raise ApplicationHandlerStop
+
+    elif step == 'search_player':
+        # Ищем игрока по нику или @юзернейму
+        query_name = text.lstrip('@').strip()
+        if not query_name:
+            await _reply_html(update.message, f"{E_CROSS} Введите имя или @юзернейм для поиска.")
+            raise ApplicationHandlerStop
+        target = find_user_by_name(query_name)
+        if not target:
+            await _reply_html(
+                update.message,
+                f"{E_CROSS} Игрок <b>{query_name}</b> не найден.\n\n"
+                f"Проверьте написание и попробуйте снова:",
+                reply_markup=InlineKeyboardMarkup([[
+                    _ebtn("Выйти", "6035130900075777681", 2, "search_exit")
+                ]])
+            )
+            raise ApplicationHandlerStop
+        target_id, _ = target
+        # Сбрасываем шаг — пользователь увидит кнопки в профиле
+        context.user_data.pop('reg_step', None)
+        await _show_found_player(update.message, target_id, context.bot)
+        raise ApplicationHandlerStop
+
+    elif step == 'party_add_friend':
+        query_name = text.lstrip('@').strip()
+        if not query_name:
+            await _reply_html(update.message, f"{E_CROSS} Введите никнейм или @юзернейм.")
+            raise ApplicationHandlerStop
+        target = find_user_by_name(query_name)
+        if not target:
+            await _reply_html(
+                update.message,
+                f"{E_CROSS} Игрок <b>{query_name}</b> не найден.\n\nПроверь написание и попробуй снова:",
+            )
+            raise ApplicationHandlerStop
+        target_id, target_name = target
+        if target_id == uid:
+            await _reply_html(update.message, f"{E_CROSS} Нельзя добавить самого себя в пати.")
+            raise ApplicationHandlerStop
+        context.user_data.pop('reg_step', None)
+        # Получаем имя приглашающего
+        conn = sqlite3.connect('faceit_bot.db')
+        c = conn.cursor()
+        c.execute('SELECT COALESCE(first_name, username) FROM users WHERE user_id=?', (uid,))
+        row = c.fetchone()
         conn.close()
-        if row:
-            return row[0], row[1], row[2]
-    except Exception as e:
-        print(f"[get_active_cosmetics] {e}")
-    return None, None, None
-
-def has_item_in_inventory(uid, item_id):
-    conn = _db()
-    cur = conn.cursor()
-    cur.execute("SELECT COUNT(*) FROM inventory WHERE user_id=%s AND item_id=%s", (uid, item_id))
-    count = cur.fetchone()[0]
-    conn.close()
-    return count > 0
-
-def buy_item(uid, item_id):
-    item = get_shop_item(item_id)
-    if not item:
-        return False, "❌ Товар не найден"
-    price = item[4]
-    item_type = item[5]
-    p = get_player(uid)
-    if not p:
-        return False, "❌ Игрок не найден"
-    if p[5] < price:
-        return False, f"❌ Недостаточно Actual Coin!\nНужно: {price} AC\nУ вас: {p[5]} AC"
-    stackable = {"sticker", "unwarn", "x2coins", "rename"}
-    if item_type not in stackable and item_type not in ("premium", "quals") and has_item_in_inventory(uid, item_id):
-        return False, "❌ Этот предмет уже есть в вашем инвентаре!"
-    # Атомарное списание: списываем ровно price и только если баланса хватает
-    # на момент самого списания (защита от гонки при двойном нажатии "Купить").
-    conn = _db()
-    cur = conn.cursor()
-    try:
-        cur.execute(
-            "UPDATE players SET coins=coins-%s WHERE user_id=%s AND coins>=%s",
-            (price, uid, price),
-        )
-        if cur.rowcount == 0:
-            conn.rollback(); conn.close()
-            fresh = get_player(uid)
-            bal = fresh[5] if fresh else 0
-            return False, f"❌ Недостаточно Actual Coin!\nНужно: {price} AC\nУ вас: {bal} AC"
-
-        # premium и quals обрабатываются напрямую (без инвентаря)
-        # Монеты всегда списываются из players (глобальные), premium/quals тоже глобальные
-        if item_type in ("premium", "quals"):
-            now = int(time.time())
-            days30 = 30 * 24 * 3600
-            if item_type == "premium":
-                # Продлеваем от текущего остатка если премиум ещё активен
-                cur.execute("SELECT premium_until FROM players WHERE user_id=%s", (uid,))
-                row = cur.fetchone()
-                base = max(row[0] or 0, now)
-                new_until = base + days30
-                cur.execute("UPDATE players SET premium_until=%s WHERE user_id=%s", (new_until, uid))
-                dt = fmt_dt(new_until)
-                conn.commit(); conn.close()
-                return True, f"👑 <b>Premium активирован на 30 дней!</b>\nДействует до: {dt}"
-            else:  # quals
-                cur.execute("SELECT quals_until FROM players WHERE user_id=%s", (uid,))
-                row = cur.fetchone()
-                base = max(row[0] or 0, now)
-                new_until = base + days30
-                cur.execute("UPDATE players SET quals_until=%s, quals_access=1 WHERE user_id=%s", (new_until, uid))
-                dt = fmt_dt(new_until)
-                conn.commit(); conn.close()
-                return True, f"⭐ <b>Quals доступ выдан на 30 дней!</b>\nДействует до: {dt}"
-
-        cur.execute("INSERT INTO inventory (user_id, item_id) VALUES (%s, %s)", (uid, item_id))
-        conn.commit()
-        conn.close()
-        return True, f"✅ Куплено: <b>{item[1]}</b>\nСписано: {price} AC\n\n💡 Активируйте предмет в 🎒 Инвентаре"
-    except Exception as e:
+        inviter_name = row[0] if row and row[0] else str(uid)
+        # Отправляем приглашение другу
+        invite_kb = InlineKeyboardMarkup([[
+            _ebtn('Принять', "5206607081334906820", 2, f"party_invite_accept_{uid}"),
+            _ebtn('Отклонить', "5210952531676504517", 2, f"party_invite_decline_{uid}"),
+        ]])
         try:
-            conn.rollback(); conn.close()
+            await _send_html(
+                context.bot, target_id,
+                f"<tg-emoji emoji-id='5956527135928617699'>👥</tg-emoji> <b>Вас хотят добавить в пати!</b>\n\n"
+                f"Игрок <b>{inviter_name}</b> приглашает вас в свою пати.",
+                reply_markup=invite_kb,
+            )
+            await _reply_html(
+                update.message,
+                f"{E_CHECK} Приглашение отправлено игроку <b>{target_name}</b>!"
+            )
         except Exception:
-            pass
-        print(f"[buy_item] Ошибка: {e}")
-        return False, "❌ Ошибка при покупке. Попробуйте ещё раз."
+            await _reply_html(update.message, f"{E_CROSS} Не удалось отправить приглашение игроку <b>{target_name}</b>.")
+        raise ApplicationHandlerStop
 
-def get_inventory(uid):
-    conn = _db()
-    cur = conn.cursor()
-    cur.execute(
-        """SELECT i.id, s.name, s.category, s.item_type, i.purchased_at, i.is_activated, s.id
-           FROM inventory i JOIN shop_items s ON i.item_id=s.id
-           WHERE i.user_id=%s ORDER BY i.purchased_at DESC""",
-        (uid,),
-    )
-    items = cur.fetchall()
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  МЕНЮ
+# ══════════════════════════════════════════════════════════════════════════════
+
+async def action_show_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    uid = update.effective_user.id
+    conn = sqlite3.connect('faceit_bot.db')
+    c = conn.cursor()
+    c.execute('SELECT COALESCE(first_name, username) FROM users WHERE user_id = ?', (uid,))
+    row = c.fetchone()
     conn.close()
-    return items
+    nick = row[0] if row and row[0] else update.effective_user.first_name or str(uid)
+    await _reply_html(update.message, f'<tg-emoji emoji-id="5458797798495377338">🔥</tg-emoji> Привет! Рад тебя видеть, <b>{nick}</b>!\n\n'
+        f'<tg-emoji emoji-id="5406745015365943482">⬇️</tg-emoji> Выбери действие:', reply_markup=inline_main_menu_keyboard())
 
-def activate_inventory_item(inv_id, uid, item_type, item_name):
-    conn = _db()
-    cur = conn.cursor()
-    if item_type == "unwarn":
-        cur.execute("SELECT warns FROM players WHERE user_id=%s", (uid,))
-        row = cur.fetchone()
-        if row and row[0] > 0:
-            cur.execute("UPDATE players SET warns=warns-1 WHERE user_id=%s", (uid,))
-        else:
+
+async def menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    action_map = {
+        "menu_profile":     action_profile,
+        "menu_find":        action_find_match,
+        "menu_leaderboard": action_leaderboard,
+        "menu_rules":       action_rules,
+        "menu_report":      action_report,
+        "menu_season":      action_season,
+        "menu_support":     action_support,
+        "menu_history":     action_history,
+        "menu_shop":        action_shop,
+        "menu_donate":      action_donate_menu,
+        "menu_search":      action_search_player,
+        "menu_tasks":       action_tasks,
+        "menu_party":       action_party,
+        "menu_promo":       action_promo,
+        "menu_promo_cancel": action_promo_cancel,
+    }
+    handler = action_map.get(query.data)
+    if handler:
+        await handler(update, context)
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  ЗАДАНИЯ
+# ══════════════════════════════════════════════════════════════════════════════
+
+def _tasks_get_user_stats(uid: int) -> dict:
+    """Возвращает словарь со статистикой игрока для проверки заданий.
+    Не бросает исключений — при сбое подключения к БД возвращает нулевую
+    статистику вместо падения (текстовый вид заданий не должен пропадать)."""
+    today = datetime.datetime.utcnow().strftime('%Y-%m-%d')
+    row = mr = dr = None
+    try:
+        conn = sqlite3.connect('faceit_bot.db')
+        try:
+            c = conn.cursor()
+
+            # Общая статистика из match_players
+            try:
+                c.execute('''
+                    SELECT COUNT(*),
+                           COALESCE(SUM(CASE WHEN mp.team = tm.winner THEN 1 ELSE 0 END), 0)
+                    FROM match_players mp
+                    JOIN team_matches tm ON mp.match_id = tm.match_id
+                    WHERE mp.user_id = ? AND tm.status = "finished"
+                ''', (uid,))
+                row = c.fetchone()
+            except Exception:
+                row = None
+
+            # Per-mode матчи / уровни (колонки могут отсутствовать в старой БД)
+            try:
+                c.execute(
+                    'SELECT matches_5v5, matches_3v3, matches_2v2, '
+                    'level_5v5, level_3v3, level_2v2 FROM users WHERE user_id=?', (uid,)
+                )
+                mr = c.fetchone()
+            except Exception:
+                mr = None
+
+            # Сегодняшние матчи (UTC)
+            try:
+                c.execute('''
+                    SELECT COUNT(*),
+                           COALESCE(SUM(CASE WHEN mp.team = tm.winner THEN 1 ELSE 0 END), 0)
+                    FROM match_players mp
+                    JOIN team_matches tm ON mp.match_id = tm.match_id
+                    WHERE mp.user_id = ? AND tm.status = "finished"
+                      AND DATE(tm.timestamp) = ?
+                ''', (uid, today))
+                dr = c.fetchone()
+            except Exception:
+                dr = None
+        finally:
             conn.close()
-            return False, "❌ У вас нет варнов для снятия"
-    elif item_type == "rename":
-        conn.close()
-        return "rename", "✏️ Введите новый никнейм (2-20 символов):"
-    elif item_type == "premium":
-        # Premium глобальный - всегда players
-        now = int(time.time())
-        cur.execute("SELECT premium_until FROM players WHERE user_id=%s", (uid,))
-        row = cur.fetchone()
-        base = max(row[0] or 0, now)
-        new_until = base + 30 * 24 * 3600
-        cur.execute("UPDATE players SET premium_until=%s WHERE user_id=%s", (new_until, uid))
-    elif item_type == "quals":
-        # Quals глобальный - всегда players
-        now = int(time.time())
-        cur.execute("SELECT quals_until FROM players WHERE user_id=%s", (uid,))
-        row = cur.fetchone()
-        base = max(row[0] or 0, now)
-        new_until = base + 30 * 24 * 3600
-        cur.execute("UPDATE players SET quals_until=%s, quals_access=1 WHERE user_id=%s", (new_until, uid))
-    elif item_type == "frame":
-        cur.execute(
-            """UPDATE inventory SET is_activated=0
-               WHERE user_id=%s AND id IN (
-                   SELECT i.id FROM inventory i
-                   JOIN shop_items s ON i.item_id=s.id
-                   WHERE i.user_id=%s AND s.item_type='frame' AND i.is_activated=1
-               )""",
-            (uid, uid),
-        )
-        cur.execute("UPDATE players SET active_frame=%s WHERE user_id=%s", (item_name, uid))
-    elif item_type == "banner":
-        cur.execute(
-            """UPDATE inventory SET is_activated=0
-               WHERE user_id=%s AND id IN (
-                   SELECT i.id FROM inventory i
-                   JOIN shop_items s ON i.item_id=s.id
-                   WHERE i.user_id=%s AND s.item_type='banner' AND i.is_activated=1
-               )""",
-            (uid, uid),
-        )
-        cur.execute("UPDATE players SET active_banner=%s WHERE user_id=%s", (item_name, uid))
-    elif item_type == "background":
-        cur.execute(
-            """UPDATE inventory SET is_activated=0
-               WHERE user_id=%s AND id IN (
-                   SELECT i.id FROM inventory i
-                   JOIN shop_items s ON i.item_id=s.id
-                   WHERE i.user_id=%s AND s.item_type='background' AND i.is_activated=1
-               )""",
-            (uid, uid),
-        )
-        cur.execute("UPDATE players SET active_background=%s WHERE user_id=%s", (item_name, uid))
-    cur.execute(
-        "UPDATE inventory SET is_activated=1, activated_at=%s WHERE id=%s",
-        (int(time.time()), inv_id),
-    )
-    conn.commit()
-    conn.close()
-    return True, f"✅ Предмет <b>{item_name}</b> активирован!"
-
-
-def deactivate_inventory_item(inv_id, uid, item_type):
-    """Снять (деактивировать) рамку или баннер — вернуть к авто-режиму."""
-    if item_type not in ("frame", "banner", "background"):
-        return False, "❌ Этот тип предмета нельзя снять"
-    conn = _db()
-    cur = conn.cursor()
-    cur.execute(
-        "UPDATE inventory SET is_activated=0, activated_at=NULL WHERE id=%s AND user_id=%s",
-        (inv_id, uid),
-    )
-    if item_type == "frame":
-        cur.execute("UPDATE players SET active_frame=NULL WHERE user_id=%s", (uid,))
-    elif item_type == "banner":
-        cur.execute("UPDATE players SET active_banner=NULL WHERE user_id=%s", (uid,))
-    elif item_type == "background":
-        cur.execute("UPDATE players SET active_background=NULL WHERE user_id=%s", (uid,))
-    conn.commit()
-    conn.close()
-    return True, "✅ Предмет снят. Теперь используется авто-оформление по уровню."
-
-
-# ==================== ПАТИ ====================
-def get_party_of(uid):
-    pid = user_party.get(uid)
-    return parties.get(pid) if pid else None
-
-def get_party_max_size(party):
-    for m in party["members"]:
-        if has_active_premium(m):
-            return 3
-    return 2
-
-
-# ==================== КАПИТАН ====================
-def pick_captain(team):
-    if not team:
-        return None
-    # Всегда предпочитаем живых игроков ботам: капитан должен баниь карты вручную
-    real_in_team = [u for u in team if not is_bot_player(u)]
-    effective_team = real_in_team if real_in_team else team
-    party_leaders_in_team = []
-    party_members_non_leader = set()
-    for u in effective_team:
-        party = get_party_of(u)
-        if party and len(party["members"]) > 1:
-            team_members_in_party = [m for m in party["members"] if m in effective_team]
-            if len(team_members_in_party) > 1:
-                if u == party["leader"]:
-                    party_leaders_in_team.append(u)
-                else:
-                    party_members_non_leader.add(u)
-    eligible = [u for u in effective_team if u not in party_members_non_leader]
-    if not eligible:
-        eligible = effective_team
-    if party_leaders_in_team:
-        leader = party_leaders_in_team[0]
-        if random.random() < 0.60:
-            return leader
-        rest = [u for u in eligible if u != leader]
-        if not rest:
-            return leader
-        weights = [1.07 if has_active_premium(u) else 1.0 for u in rest]
-        return random.choices(rest, weights=weights, k=1)[0]
-    weights = [1.07 if has_active_premium(u) else 1.0 for u in eligible]
-    return random.choices(eligible, weights=weights, k=1)[0]
-
-
-# ==================== ВСПОМОГАТЕЛЬНЫЕ УТИЛИТЫ ====================
-
-def tg_link(uid, name):
-    """Создаёт кликабельную ссылку на TG-профиль без превью."""
-    return f'<a href="tg://user?id={uid}">{name}</a>'
-
-async def send_punishment_log(text):
-    """Отправляет лог наказания в паблик (ветка, заданная /setlogtopic)."""
-    if not LOG_CHAT_ID:
-        return
-    try:
-        kw = {"parse_mode": "HTML", "disable_web_page_preview": True}
-        if _dynamic_log_thread_id:
-            kw["message_thread_id"] = _dynamic_log_thread_id
-        await bot.send_message(LOG_CHAT_ID, text, **kw)
-    except Exception as e:
-        print(f"Punishment log error: {e}")
-
-def send_punishment_log_priv(admin_uid, text):
-    """Отправляет лог наказания с указанием приватки администратора."""
-    priv_display = get_user_private_display(admin_uid)
-    send_punishment_log(f"🏠 <b>{priv_display}</b>\n\n{text}")
-
-async def send_result_log(text):
-    """Отправляет результат матча в паблик (ветка, заданная /setresulttopic)."""
-    if not LOG_CHAT_ID:
-        return
-    try:
-        kw = {"parse_mode": "HTML", "disable_web_page_preview": True}
-        tid = _dynamic_results_thread_id if _dynamic_results_thread_id else _dynamic_log_thread_id
-        if tid:
-            kw["message_thread_id"] = tid
-        await bot.send_message(LOG_CHAT_ID, text, **kw)
-    except Exception as e:
-        print(f"Result log error: {e}")
-
-async def send_error_log(context: str, error: Exception):
-    """Отправляет лог ошибки администраторам и в LOG_CHAT."""
-    import traceback as _tb
-    tb_text = _tb.format_exc()
-    short_tb = tb_text[-800:] if len(tb_text) > 800 else tb_text
-    message = (
-        f"🔴 <b>Ошибка бота</b>\n"
-        f"📍 <b>Место:</b> <code>{context}</code>\n"
-        f"❗ <b>Ошибка:</b> <code>{type(error).__name__}: {str(error)[:300]}</code>\n"
-        f"📋 <b>Трейс:</b>\n<pre>{short_tb}</pre>"
-    )
-    # Отправляем всем администраторам
-    for _aid in ADMIN_IDS_LIST:
-        try:
-            await bot.send_message(_aid, message, parse_mode="HTML", disable_web_page_preview=True)
-        except Exception:
-            pass
-    # Дублируем в лог-чат если настроен
-    if LOG_CHAT_ID:
-        try:
-            kw = {"parse_mode": "HTML", "disable_web_page_preview": True}
-            if _dynamic_log_thread_id:
-                kw["message_thread_id"] = _dynamic_log_thread_id
-            await bot.send_message(LOG_CHAT_ID, message, **kw)
-        except Exception:
-            pass
-    print(f"[ERROR][{context}] {type(error).__name__}: {error}")
-
-async def kick_from_lobby_if_present(uid):
-    """Кикает игрока из лобби/фазы принятия если он там есть."""
-    lobby_id = user_lobby.get(uid)
-    if not lobby_id:
-        return
-    lobby = active_lobbies.get(lobby_id)
-    if not lobby:
-        user_lobby.pop(uid, None)
-        return
-    if uid in lobby.get("players", []):
-        lobby["players"].remove(uid)
-        lobby_player_messages.get(lobby_id, {}).pop(uid, None)
-        accept_status_messages.get(lobby_id, {}).pop(uid, None)
-        match_found_messages.get(lobby_id, {}).pop(uid, None)
-        if not lobby["players"]:
-            active_lobbies.pop(lobby_id, None)
-        else:
-            broadcast_lobby_update(lobby_id)
-    user_lobby.pop(uid, None)
-    try:
-        await bot.send_message(uid, "🚫 Вы были исключены из лобби.")
     except Exception:
         pass
 
-
-# ==================== ПРОВЕРКА БЛОКИРОВОК ====================
-def check_blocked(uid):
-    if is_banned_check(uid):
-        return "🚫 Вы заблокированы в боте."
-    if is_on_check_db(uid):
-        admin_uid = get_check_admin(uid)
-        admin_name = "администратора"
-        if admin_uid:
-            ap = get_player(admin_uid)
-            if ap:
-                tg_u = ap[22] if len(ap) > 22 else ""
-                admin_name = f"@{tg_u}" if tg_u else f"администратора (id:{admin_uid})"
-        return (
-            f"⚠️ <b>Вас вызвал на проверку {admin_name}</b>\n\n"
-            "Доступ к боту ограничен до прохождения проверки.\nОбратитесь к администратору."
-        )
-    return None
-
-
-# ==================== ГЛАВНОЕ МЕНЮ ====================
-# ==================== АНИМАЦИЯ КНОПОК ГЛАВНОГО МЕНЮ ====================
-# Пока меню открыто, фоновый поток циклически подменяет иконки на кнопках
-# обычными (не премиум) эмодзи из пула ниже - Telegram не поддерживает
-# анимацию/кастомные эмодзи в тексте самих кнопок, поэтому "движение"
-# имитируется частым переизданием клавиатуры (как это делает Walker Faceit).
-MENU_ANIM_POOLS = {
-    "profile":        ["👤", "🙂", "😎"],
-    "find":           ["🎮", "🕹", "👾"],
-    "rejoin_lobby":   ["🔄", "🔁", "↩️"],
-    "top":            ["🏆", "🥇", "🎖"],
-    "season_info":    ["🏅", "🎗", "🏵"],
-    "shop":           ["🛒", "🛍", "📦"],
-    "inv":            ["🎒", "🧳", "📦"],
-    "buy_coins":      ["💳", "💰", "🪙"],
-    "slots_menu":     ["🎰", "🎲", "🃏"],
-    "promo":          ["🎁", "🎊", "🎀"],
-    "ticket_start":   ["🎟", "📩", "✉️"],
-    "party_menu":     ["👥", "🧑‍🤝‍🧑", "👫"],
-    "add_bots_admin": ["🤖", "⚙️", "🛠"],
-    "admin_panel":    ["⚙️", "🛠", "🔧"],
-    "game_reg_panel": ["📋", "📝", "🗒"],
-    "creator_panel":  ["🔴", "🟥", "⭕"],
-}
-
-
-def _menu_icon(cb_key, base_emoji, frame):
-    """Возвращает иконку для кадра анимации frame (frame=0 - оригинальная иконка)."""
-    pool = MENU_ANIM_POOLS.get(cb_key)
-    if not pool or frame <= 0:
-        return base_emoji
-    return pool[frame % len(pool)]
-
-
-# ==================== ПРЕМИУМ-ИКОНКИ КНОПОК ====================
-# Настоящий механизм показа premium-эмодзи на кнопке - параметр
-# icon_custom_emoji_id у InlineKeyboardButton (а не текст кнопки).
-# Условие показа (см. Bot API): либо у бота куплен юзернейм на Fragment,
-# либо владелец бота (аккаунт из BotFather) имеет Telegram Premium -
-# подтверждено, что оно есть, поэтому подключаем реальные ID из пака
-# NewsEmoji. Если Premium когда-нибудь отключится - Telegram просто
-# молча проигнорирует поле и покажет кнопку без иконки, без ошибок.
-MENU_ICON_CUSTOM_EMOJI = {
-    "profile":        "5391112412445288650",  # прислано заказчиком
-    "find":           "5231012545799666522",  # прислано заказчиком
-    "rejoin_lobby":   "5375338737028841420",  # 🔄
-    "top":            "5188344996356448758",  # прислано заказчиком
-    "season_info":    "5334544901428229844",  # прислано заказчиком
-    "shop":           "5406683434124859552",  # прислано заказчиком
-    "inv":            "5417924076503062111",  # прислано заказчиком
-    "buy_coins":      "5201873447554145566",  # прислано заказчиком
-    "slots_menu":     "5235989279024373566",  # прислано заказчиком
-    "promo":          "5188481279963715781",  # прислано заказчиком
-    "ticket_start":   "5253742260054409879",  # ✉️
-    "party_menu_add": "5397916757333654639",  # прислано заказчиком
-    "admin_panel":    "5341715473882955310",  # ⚙️
-    "creator_panel":  "5411225014148014586",  # 🔴
-    "add_bots_admin": "5019523782004441717",  # прислано заказчиком
-    "game_reg_panel": "5021905410089550576",  # прислано заказчиком
-}
-
-
-def _kb_button(text, callback_data, icon_key=None):
-    """InlineKeyboardButton — icon_key игнорируется (icon_custom_emoji_id не поддерживается InlineKeyboardButton)."""
-    return types.InlineKeyboardButton(text=text, callback_data=callback_data)
-
-
-def main_menu(uid, frame=0):
-    kb = InlineKeyboardBuilder()
-    if uid in user_lobby:
-        kb.add(
-            _kb_button("Профиль", "profile", "profile"),
-            _kb_button("Вернуться в лобби", "rejoin_lobby", "rejoin_lobby"),
-        )
-    else:
-        kb.add(
-            _kb_button("Профиль", "profile", "profile"),
-            _kb_button("Найти матч", "find", "find"),
-        )
-    _menu_btns = [
-        _kb_button("Топ", "top", "top"),
-    ]
-    if get_user_private(uid) == "fade":
-        _menu_btns.append(_kb_button("О сезоне", "season_info", "season_info"))
-    _menu_btns += [
-        _kb_button("Магазин", "shop", "shop"),
-        _kb_button("Инвентарь", "inv", "inv"),
-        _kb_button("Купить монеты", "buy_coins", "buy_coins"),
-        _kb_button("Слоты", "slots_menu", "slots_menu"),
-        _kb_button("Промокод", "promo", "promo"),
-        _kb_button("Тикет / Жалоба", "ticket_start", "ticket_start"),
-    ]
-    kb.add(*_menu_btns)
-    in_party = uid in user_party
-    kb.add(_kb_button(
-        "Моя пати" if in_party else "Создать пати",
-        "party_menu",
-        None if in_party else "party_menu_add",
-    ))
-    if is_admin(uid):
-        kb.add(
-            _kb_button("Добавить ботов", "add_bots_admin", "add_bots_admin"),
-            _kb_button("Админ панель", "admin_panel", "admin_panel"),
-        )
-    elif is_game_reg_check(uid):
-        kb.add(_kb_button("Регистрация матчей", "game_reg_panel", "game_reg_panel"))
-    if is_creator(uid):
-        kb.add(_kb_button("Креаторская панель", "creator_panel", "creator_panel"))
-    kb.adjust(2)
-    return kb.as_markup()
-
-
-def main_menu_text(uid):
-    p = get_current_player(uid) or get_player(uid)
-    coins = p[5] if p and len(p) > 5 else 0
-    priv_display = get_user_private_display(uid)
-    return (
-        f"⚡ <b>Actual FACEIT</b>\n"
-        f"<tg-emoji emoji-id=\"5447410659077661506\">🏠</tg-emoji> Приватка: <b>{priv_display}</b>\n"
-        f"<tg-emoji emoji-id=\"5325547803936572038\">🪙</tg-emoji> Кошелёк: <b>{coins} AC</b>\n"
-        f"<tg-emoji emoji-id=\"5334544901428229844\">🆔</tg-emoji> Ваш TG ID: <code>{uid}</code>\n\n"
-        f"💳 Пополнение: "
-        f"<tg-emoji emoji-id=\"{STARS_EMOJI_ID}\">⭐</tg-emoji> Stars · "
-        f"<tg-emoji emoji-id=\"{CRYPTO_EMOJI_ID}\">💎</tg-emoji> Крипта"
-    )
-
-
-MAIN_MENU_MARKER = "⚡ <b>Actual FACEIT</b>"
-MENU_ANIM_INTERVAL = 0.6        # секунд между кадрами анимации кнопок
-MENU_ANIM_BURST_FRAMES = 5      # сколько раз сменить иконки при открытии меню, затем остановиться
-
-_menu_anim_views: dict = {}     # chat_id -> {"message_id", "uid", "frame", "started_at"}
-_menu_anim_lock = threading.Lock()
-
-
-def _register_menu_view(chat_id, uid, message_id):
-    if not message_id:
-        return
-    with _menu_anim_lock:
-        _menu_anim_views[chat_id] = {
-            "message_id": message_id,
-            "uid": uid,
-            "frame": 0,
-            "started_at": time.time(),
-        }
-
-
-def _unregister_menu_view(chat_id):
-    with _menu_anim_lock:
-        _menu_anim_views.pop(chat_id, None)
-
-
-async def _menu_animation_loop():
-    """Фоновый поток: при открытии главного меню несколько раз подряд
-    подменяет иконки на кнопках (короткая "вспышка" анимации), затем
-    возвращает обычные иконки и перестаёт трогать это сообщение.
-    Так эффект живого меню сохраняется, но клавиатура не переиздаётся
-    бесконечно, пока меню открыто - постоянные правки повышали риск
-    "проглатывания" нажатий, если тап приходил в момент перерисовки."""
-    while True:
-        try:
-            with _menu_anim_lock:
-                snapshot = list(_menu_anim_views.items())
-            for chat_id, info in snapshot:
-                if info["frame"] >= MENU_ANIM_BURST_FRAMES:
-                    # финальный кадр анимации - возвращаем оригинальные иконки
-                    # и снимаем регистрацию, дальше сообщение не трогаем
-                    try:
-                        await bot.edit_message_reply_markup(
-                            chat_id, info["message_id"],
-                            reply_markup=main_menu(info["uid"], 0),
-                        )
-                    except Exception:
-                        pass
-                    with _menu_anim_lock:
-                        cur = _menu_anim_views.get(chat_id)
-                        if cur and cur["message_id"] == info["message_id"]:
-                            _menu_anim_views.pop(chat_id, None)
-                    continue
-                frame = info["frame"] + 1
-                try:
-                    await bot.edit_message_reply_markup(
-                        chat_id, info["message_id"],
-                        reply_markup=main_menu(info["uid"], frame),
-                    )
-                    with _menu_anim_lock:
-                        cur = _menu_anim_views.get(chat_id)
-                        # обновляем кадр, только если это всё ещё та же самая
-                        # регистрация - за время edit могла прийти новая
-                        if cur and cur["message_id"] == info["message_id"]:
-                            cur["frame"] = frame
-                except Exception as _anim_err:
-                    if "message is not modified" not in str(_anim_err).lower():
-                        with _menu_anim_lock:
-                            cur = _menu_anim_views.get(chat_id)
-                            if cur and cur["message_id"] == info["message_id"]:
-                                _menu_anim_views.pop(chat_id, None)
-        except Exception as e:
-            print(f"[menu_animation] Ошибка: {e}")
-        await asyncio.sleep(MENU_ANIM_INTERVAL)  # converted from time.sleep
-
-
-_orig_bot_send_message = bot.send_message
-_orig_bot_edit_message_text = bot.edit_message_text
-
-
-def _menu_tracking_send_message(chat_id, text, *args, **kwargs):
-    result = _orig_bot_send_message(chat_id, text, *args, **kwargs)
-    try:
-        # Новое сообщение в чате никак не влияет на уже открытое меню -
-        # снимаем регистрацию только когда САМО отслеживаемое сообщение
-        # меняется (см. _menu_tracking_edit_message_text), а не при любой
-        # отправке чего-либо ещё в этот чат.
-        if isinstance(text, str) and text.startswith(MAIN_MENU_MARKER):
-            _register_menu_view(chat_id, chat_id, getattr(result, "message_id", None))
-    except Exception:
-        pass
-    return result
-
-
-def _menu_tracking_edit_message_text(text, chat_id=None, message_id=None, *args, **kwargs):
-    result = _orig_bot_edit_message_text(text, chat_id, message_id, *args, **kwargs)
-    try:
-        if chat_id is not None:
-            if isinstance(text, str) and text.startswith(MAIN_MENU_MARKER):
-                mid = message_id or getattr(result, "message_id", None)
-                _register_menu_view(chat_id, chat_id, mid)
-            elif message_id is not None:
-                # снимаем анимацию, только если перезаписали именно то
-                # сообщение, на котором она крутилась - правки других
-                # сообщений в этом же чате не должны её обрывать
-                with _menu_anim_lock:
-                    cur = _menu_anim_views.get(chat_id)
-                    if cur and cur["message_id"] == message_id:
-                        _menu_anim_views.pop(chat_id, None)
-    except Exception:
-        pass
-    return result
-
-
-bot.send_message = _menu_tracking_send_message
-bot.edit_message_text = _menu_tracking_edit_message_text
-# Смена иконок отключена по просьбе заказчика - фоновый поток анимации
-# больше не запускается. Кнопка "Профиль" теперь всегда показывает
-# фиксированный TEST_PROFILE_BUTTON_RAW_TAG, остальные кнопки - обычные
-# статичные иконки (main_menu(uid) без анимации, frame всегда 0).
-# asyncio.create_task(_menu_animation_loop())
-
-
-@router.message(Command("setlogtopic"))
-async def cmd_setlogtopic(message: Message):
-    # converted to async in post-pass
-    pass_async_marker = True; 
-    """Привязать текущую ветку как ветку логов наказаний. Только для главных админов."""
-    uid = message.from_user.id
-    if uid not in ADMIN_IDS_LIST:
-        return
-    thread_id = message.message_thread_id
-    if not thread_id:
-        await bot.send_message(message.chat.id, "❌ Команда должна быть отправлена внутри ветки (topic), а не в общем чате.")
-        return
-    global _dynamic_log_thread_id
-    _dynamic_log_thread_id = thread_id
-    set_setting("log_thread_id", thread_id)
-    await bot.send_message(
-        message.chat.id,
-        f"✅ <b>Ветка логов наказаний</b> привязана!\n\nThread ID: <code>{thread_id}</code>\n\nСюда будут приходить: 🚫 баны, 🔇 муты, ⚠️ варны, ❌ отмены матчей.",
-        parse_mode="HTML",
-        message_thread_id=thread_id
-    )
-
-
-@router.message(Command("setresulttopic"))
-async def cmd_setresulttopic(message: Message):
-    # converted to async in post-pass
-    pass_async_marker = True; 
-    """Привязать текущую ветку как ветку результатов матчей. Только для главных админов."""
-    uid = message.from_user.id
-    if uid not in ADMIN_IDS_LIST:
-        return
-    thread_id = message.message_thread_id
-    if not thread_id:
-        await bot.send_message(message.chat.id, "❌ Команда должна быть отправлена внутри ветки (topic), а не в общем чате.")
-        return
-    global _dynamic_results_thread_id
-    _dynamic_results_thread_id = thread_id
-    set_setting("results_thread_id", thread_id)
-    await bot.send_message(
-        message.chat.id,
-        f"✅ <b>Ветка результатов матчей</b> привязана!\n\nThread ID: <code>{thread_id}</code>\n\nСюда будут приходить: 🏁 результаты всех зарегистрированных матчей.",
-        parse_mode="HTML",
-        message_thread_id=thread_id
-    )
-
-
-@router.message(Command("setmatchreg"))
-async def cmd_setmatchreg(message: Message):
-    # converted to async in post-pass
-    pass_async_marker = True; 
-    """Привязать текущий чат/ветку как чат для рег/отменённых матчей."""
-    uid = message.from_user.id
-    if uid not in ADMIN_IDS_LIST:
-        return
-    global _dynamic_match_reg_chat_id, _dynamic_match_reg_thread_id
-    chat_id   = message.chat.id
-    thread_id = message.message_thread_id
-    _dynamic_match_reg_chat_id  = chat_id
-    _dynamic_match_reg_thread_id = thread_id
-    set_setting("match_reg_chat_id",  chat_id)
-    set_setting("match_reg_thread_id", thread_id or "")
-    thread_info = f"ветка <code>{thread_id}</code>" if thread_id else "общий чат (без ветки)"
-    send_kw = {"parse_mode": "HTML"}
-    if thread_id:
-        send_kw["message_thread_id"] = thread_id
-    await bot.send_message(
-        chat_id,
-        f"✅ <b>Чат проверки матчей привязан!</b>\n\n"
-        f"Chat ID: <code>{chat_id}</code>\n"
-        f"Место: {thread_info}\n\n"
-        f"Сюда будут приходить:\n"
-        f"✅ Зарегистрированные матчи (кнопка (На перерегистрацию))\n"
-        f"❌ Отменённые матчи",
-        **send_kw,
-    )
-
-
-@router.message(Command("setticketchat"))
-async def cmd_setticketchat(message: Message):
-    # converted to async in post-pass
-    pass_async_marker = True; 
-    """Привязать текущий чат/ветку как чат для тикетов."""
-    uid = message.from_user.id
-    if uid not in ADMIN_IDS_LIST:
-        return
-    global _dynamic_ticket_chat_id, _dynamic_ticket_thread_id
-    chat_id   = message.chat.id
-    thread_id = message.message_thread_id
-    _dynamic_ticket_chat_id  = chat_id
-    _dynamic_ticket_thread_id = thread_id
-    set_setting("ticket_chat_id",  chat_id)
-    set_setting("ticket_thread_id", thread_id or "")
-    thread_info = f"ветка <code>{thread_id}</code>" if thread_id else "общий чат (без ветки)"
-    send_kw = {"parse_mode": "HTML"}
-    if thread_id:
-        send_kw["message_thread_id"] = thread_id
-    await bot.send_message(
-        chat_id,
-        f"✅ <b>Чат тикетов привязан!</b>\n\n"
-        f"Chat ID: <code>{chat_id}</code>\n"
-        f"Место: {thread_info}\n\n"
-        f"Сюда будут приходить: 🎟 все новые тикеты от игроков",
-        **send_kw,
-    )
-
-
-@router.message(Command("topicsettings"))
-async def cmd_topicsettings(message: Message):
-    # converted to async in post-pass
-    pass_async_marker = True; 
-    """Показать текущие настройки веток. Только для главных админов."""
-    uid = message.from_user.id
-    if uid not in ADMIN_IDS_LIST:
-        return
-    log_info = f"<code>{_dynamic_log_thread_id}</code>" if _dynamic_log_thread_id else "не задана"
-    res_info = f"<code>{_dynamic_results_thread_id}</code>" if _dynamic_results_thread_id else "не задана (используется ветка логов)"
-    mreg_info = (
-        f"chat <code>{_dynamic_match_reg_chat_id}</code>"
-        + (f" / thread <code>{_dynamic_match_reg_thread_id}</code>" if _dynamic_match_reg_thread_id else "")
-        if _dynamic_match_reg_chat_id else "не задан"
-    )
-    ticket_info = (
-        f"chat <code>{_dynamic_ticket_chat_id}</code>"
-        + (f" / thread <code>{_dynamic_ticket_thread_id}</code>" if _dynamic_ticket_thread_id else "")
-        if _dynamic_ticket_chat_id else "не задан (личка админам)"
-    )
-    await bot.send_message(
-        message.chat.id,
-        f"⚙️ <b>Текущие настройки чатов/веток</b>\n\n"
-        f"📋 Логи (баны/муты/варны):\n{log_info}\n\n"
-        f"🏁 Результаты матчей:\n{res_info}\n\n"
-        f"✅ Рег/отмена матчей:\n{mreg_info}\n\n"
-        f"🎟 Тикеты:\n{ticket_info}\n\n"
-        f"<i>Команды для привязки:\n"
-        f"/setlogtopic - логи\n"
-        f"/setresulttopic - результаты\n"
-        f"/setmatchreg - рег/отмена матчей\n"
-        f"/setticketchat - тикеты</i>",
-        parse_mode="HTML",
-    )
-
-
-@router.message(Command("revive_match"))
-async def cmd_revive_match(message: Message):
-    # converted to async in post-pass
-    pass_async_marker = True; 
-    """
-    /revive_match КОД  - оживить матч по коду (напр. COBVVK1).
-    Восстанавливает лобби в памяти и отправляет новую admin-карточку.
-    Только для администраторов.
-    """
-    uid = message.from_user.id
-    if not is_admin(uid):
-        return
-
-    parts = message.text.strip().split()
-    if len(parts) < 2:
-        bot.reply_to(message,
-            "❌ Укажи код матча.\nПример: <code>/revive_match COBVVK1</code>",
-            parse_mode="HTML")
-        return
-
-    match_code_arg = parts[1].strip().upper()
-
-    conn = _db()
-    cur  = conn.cursor()
-    row_um = row_m = None
-    try:
-        # 1. Ищем в unregistered_matches (там есть team_ct_json / team_t_json)
-        cur.execute(
-            "SELECT match_id, match_code, league, device, map_name, "
-            "players_json, team_ct_json, team_t_json, host_game_id, acreenshots_count "
-            "FROM unregistered_matches WHERE UPPER(match_code)=%s LIMIT 1",
-            (match_code_arg,),
-        )
-        row_um = cur.fetchone()
-
-        # 2. Ищем в matches
-        cur.execute(
-            "SELECT match_id, match_code, league, device, map_name, "
-            "players_json, started_at, COALESCE(private_key,'fade'), "
-            "admin_thread_id, admin_msg_id, status "
-            "FROM matches WHERE UPPER(match_code)=%s LIMIT 1",
-            (match_code_arg,),
-        )
-        row_m = cur.fetchone()
-    except Exception as _e:
-        bot.reply_to(message, f"❌ Ошибка БД: {_e}")
-        conn.close()
-        return
-    finally:
-        conn.close()
-
-    if not row_um and not row_m:
-        bot.reply_to(message,
-            f"❌ Матч <b>{match_code_arg}</b> не найден ни в matches, ни в unregistered_matches.",
-            parse_mode="HTML")
-        return
-
-    # ── Собираем данные из доступных источников ───────────────────────────
-    if row_um:
-        match_id, match_code, league, device, map_name, \
-            players_json, team_ct_json_s, team_t_json_s, host_game_id, AC_count = row_um
-        private_key     = "fade"
-        admin_thread_id = None
-        admin_msg_id    = None
-        if row_m:
-            private_key     = row_m[7] or "fade"
-            admin_thread_id = row_m[8]
-            admin_msg_id    = row_m[9]
-    else:
-        match_id, match_code, league, device, map_name, \
-            players_json, started_at, private_key, \
-            admin_thread_id, admin_msg_id, _ = row_m
-        team_ct_json_s = "[]"
-        team_t_json_s  = "[]"
-        host_game_id   = ""
-        AC_count       = 0
-
-    match_key = f"match_{match_id}"
-
-    # ── Парсим команды ────────────────────────────────────────────────────
-    try:
-        team_ct = json.loads(team_ct_json_s or "[]")
-        team_t  = json.loads(team_t_json_s  or "[]")
-    except Exception:
-        team_ct, team_t = [], []
-
-    players_info = []
-    try:
-        players_info = json.loads(players_json or "[]")
-    except Exception:
-        pass
-
-    # Если team_ct/team_t пустые - восстанавливаем из players_json
-    if not team_ct and not team_t and players_info:
-        for p in players_info:
-            uid2 = p.get("user_id")
-            if not uid2:
-                continue
-            if p.get("team") == "ct":
-                team_ct.append(uid2)
-            else:
-                team_t.append(uid2)
-
-    players = list(dict.fromkeys(team_ct + team_t))
-
-    # ── Ищем хоста ───────────────────────────────────────────────────────
-    _rv_priv_cfg = PRIVATE_CONFIG.get(private_key, PRIVATE_CONFIG["fade"])
-    _rv_table    = _rv_priv_cfg["table"]
-    host_uid     = next((u for u in team_ct if not is_bot_player(u)), None)
-    if host_uid:
-        host_p_row = get_player_from_table(host_uid, _rv_table) or get_player(host_uid)
-        if host_p_row:
-            host_name_rv    = host_p_row[1]
-            host_game_id_rv = host_p_row[2] if not host_game_id else host_game_id
-        else:
-            host_name_rv    = str(host_uid)
-            host_game_id_rv = host_game_id or "-"
-    else:
-        host_name_rv    = "-"
-        host_game_id_rv = host_game_id or "-"
-
-    # ── Строим лобби в памяти ─────────────────────────────────────────────
-    lobby = {
-        "match_id":          match_id,
-        "match_code":        match_code or match_code_arg,
-        "league":            league or "default",
-        "device":            device or "",
-        "map_name":          map_name or "",
-        "status":            "active",
-        "players":           players,
-        "team_ct":           team_ct,
-        "team_t":            team_t,
-        "ACreenshots":       {},
-        "ACreenshots_count": AC_count or 0,
-        "reg_taken_by":      None,
-        "match_key":         match_key,
-        "started_at":        int(time.time()),
-        "private":           private_key,
-        "admin_thread_id":   admin_thread_id,
-        "admin_msg_id":      admin_msg_id,
-        "host_uid":          host_uid,
-        "host_game_id":      host_game_id_rv,
+    return {
+        'matches':       (row[0] or 0) if row else 0,
+        'wins':          (row[1] or 0) if row else 0,
+        'matches_5v5':   (mr[0] or 0) if mr else 0,
+        'matches_3v3':   (mr[1] or 0) if mr else 0,
+        'matches_2v2':   (mr[2] or 0) if mr else 0,
+        'lvl_5v5':       (mr[3] or 1) if mr else 1,
+        'lvl_3v3':       (mr[4] or 1) if mr else 1,
+        'lvl_2v2':       (mr[5] or 1) if mr else 1,
+        'today_matches': (dr[0] or 0) if dr else 0,
+        'today_wins':    (dr[1] or 0) if dr else 0,
+        'today_date':    today,
     }
-    running_matches[match_key] = lobby
 
-    # Восстанавливаем awaiting_ACreenshot для игроков
-    for p_uid in players:
-        if not is_bot_player(p_uid):
-            awaiting_ACreenshot[p_uid] = match_key
 
-    # ── Обновляем unregistered_matches ───────────────────────────────────
+def _tasks_get_claimed(uid: int) -> set:
+    """Возвращает множество task_id уже полученных milestone-заданий.
+    Не бросает исключений — при сбое БД (например, database is locked)
+    возвращает пустое множество, чтобы текстовый вид заданий не падал целиком."""
     try:
-        _pj  = json.dumps(players_info, ensure_ascii=False)
-        _ctj = json.dumps(team_ct,      ensure_ascii=False)
-        _tj  = json.dumps(team_t,       ensure_ascii=False)
-        _conn2 = _db(); _cur2 = _conn2.cursor()
-        _cur2.execute(
-            """INSERT INTO unregistered_matches
-               (match_id, match_code, league, device, map_name,
-                players_json, team_ct_json, team_t_json, host_game_id, acreenshots_count, started_at)
-               VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
-               ON CONFLICT (match_id) DO UPDATE SET
-                   match_code        = EXCLUDED.match_code,
-                   players_json      = EXCLUDED.players_json,
-                   team_ct_json      = EXCLUDED.team_ct_json,
-                   team_t_json       = EXCLUDED.team_t_json,
-                   acreenshots_count = EXCLUDED.acreenshots_count""",
-            (match_id, match_code or match_code_arg, league or "", device or "",
-             map_name or "", _pj, _ctj, _tj, host_game_id_rv, AC_count or 0,
-             int(time.time())),
-        )
-        _conn2.commit(); _conn2.close()
-    except Exception as _ue:
-        print(f"[revive_match] unregistered_matches update error: {_ue}")
-
-    # ── Строим текст admin-карточки ───────────────────────────────────────
-    _adm_priv_label = f"{_rv_priv_cfg['emoji']} {_rv_priv_cfg['display']}"
-
-    async def _rv_pline(idx, u):
-        p2 = get_player_from_table(u, _rv_table) or get_player(u)
-        num = NUMBER_EMOJI[idx] if idx < len(NUMBER_EMOJI) else f"{idx+1}."
-        if p2:
-            prem = " 👑" if (not p2[13] and has_active_premium(u)) else ""
-            elo  = _resolve_display_elo(u, p2, _rv_table, league or "default")
-            return f"{num} {p2[1]}{prem} | ID: <code>{u}</code> | ELO: {elo}"
-        return f"{num} <code>{u}</code>"
-
-    ct_lines = "\n".join([_rv_pline(i, u) for i, u in enumerate(team_ct)])
-    t_lines  = "\n".join([_rv_pline(i, u) for i, u in enumerate(team_t)])
-
-    match_text = (
-        f"♻️ <b>МАТЧ #{match_code or match_code_arg} ОЖИВЛЁН</b>\n\n"
-        f"🏠 Приватка: <b>{_adm_priv_label}</b>\n"
-        f"🏷 Лига: {format_league(league or 'default')}\n"
-        f"📱 Устройство: {(device or '').upper()}\n"
-        f"🗺 Карта: <b>{map_name or '?'}</b>\n"
-        f"👑 Хост: <b>{host_name_rv}</b> | Game ID: <code>{host_game_id_rv}</code>\n\n"
-        f"💙 <b>Команда CT</b>\n{ct_lines}\n\n"
-        f"🧡 <b>Команда T</b>\n{t_lines}"
-    )
-
-    # ── Отправляем новую admin-карточку ──────────────────────────────────
-    kb_admin = _build_admin_match_kb(match_key, match_code or match_code_arg, AC_count or 0)
-
-    if ADMIN_CHAT_ID:
-        new_thread_id = admin_thread_id  # пробуем переиспользовать старую ветку
-        if not new_thread_id:
-            try:
-                topic = bot.create_forum_topic(ADMIN_CHAT_ID, f"MATCH #{match_code or match_code_arg}")
-                new_thread_id = topic.message_thread_id
-            except Exception:
-                pass
-
-        lobby["admin_thread_id"] = new_thread_id
+        conn = sqlite3.connect('faceit_bot.db')
         try:
-            send_kw = {"reply_markup": kb_admin, "parse_mode": "HTML"}
-            if new_thread_id:
-                send_kw["message_thread_id"] = new_thread_id
-            sent = await bot.send_message(ADMIN_CHAT_ID, match_text, **send_kw)
-            lobby["admin_msg_id"] = sent.message_id
-            try:
-                await bot.pin_chat_message(ADMIN_CHAT_ID, sent.message_id, disable_notification=True)
-            except Exception:
-                pass
-        except Exception as _ae:
-            print(f"[revive_match] admin send error: {_ae}")
-            bot.reply_to(message, f"⚠️ Лобби восстановлено в памяти, но не удалось отправить в admin-чат: {_ae}")
-            return
-
-    # ── Подтверждение тому, кто вызвал команду ───────────────────────────
-    bot.reply_to(
-        message,
-        f"✅ <b>Матч #{match_code or match_code_arg} оживлён!</b>\n\n"
-        f"- Лобби восстановлено в памяти\n"
-        f"- Карточка отправлена в admin-чат\n"
-        f"- Игроки: {len(players)} (CT: {len(team_ct)}, T: {len(team_t)})\n"
-        f"- Скриншоты: {AC_count or 0}",
-        parse_mode="HTML",
-    )
-
-
-@router.message(CommandStart())
-async def cmd_start(message: Message):
-    # converted to async in post-pass
-    pass_async_marker = True; 
-    uid = message.from_user.id
-    try:
-        if message.from_user.username:
-            update_tg_username(uid, message.from_user.username)
-        # Проверка обязательной подписки на каналы
-        not_subbed = await check_subACriptions(uid)
-        if not_subbed:
-            try:
-                await send_subACribe_message(uid)
-            except Exception as sub_err:
-                print(f"[cmd_start] Ошибка отправки сообщения о подписке uid={uid}: {sub_err}")
-                await bot.send_message(uid, "⚠️ <b>Для использования бота необходимо подписаться на наши каналы.</b>\n\nПожалуйста, подпишитесь на <a href='https://t.me/VisionFaceit'>Официальный канал</a> и <a href='https://t.me/+Wjzn5RXBYwQ5YmZh'>Паблик StandDarling</a>, затем напишите /start снова.", parse_mode="HTML", disable_web_page_preview=True)
-            return
-        # Убираем любую ReplyKeyboard
-        try:
-            rm = await bot.send_message(uid, "...", reply_markup=ReplyKeyboardRemove())
-            await bot.delete_message(uid, rm.message_id)
-        except Exception:
-            pass
-        # Автоматически устанавливаем приватку fade
-        if uid not in user_private:
-            user_private[uid] = "fade"
-            save_user_private(uid, "fade")
-        err = check_blocked(uid)
-        if err:
-            await bot.send_message(uid, err, parse_mode="HTML")
-            return
-        if is_registered(uid):
-            await bot.send_message(uid, main_menu_text(uid), reply_markup=main_menu(uid), parse_mode="HTML")
-            return
-        user_flow[uid] = {"state": "nick", "bot_msgs": []}
-        priv_name = get_user_private_display(uid)
-        m = await bot.send_message(
-            uid,
-            f"👋 Добро пожаловать в <b>{priv_name}</b>!\n\n<b>Шаг 1:</b> Введи свой никнейм (2-20 символов):",
-            parse_mode="HTML",
-        )
-        user_flow[uid]["bot_msgs"].append(m.message_id)
-    except Exception as e:
-        print(f"[cmd_start] Критическая ошибка uid={uid}: {e}")
-        try:
-            await bot.send_message(uid, "⚠️ Произошла ошибка. Попробуй ещё раз через несколько секунд.")
-        except Exception:
-            pass
-
-
-@router.message(Command("ranks"))
-async def cmd_ranks(message: Message):
-    # converted to async in post-pass
-    pass_async_marker = True; 
-    """Показывает список рангов по ELO для Default, Qualification и FPL лиг."""
-    sep   = "┄" * 18
-    icons = NUMBER_EMOJI  # ①②③…⑩
-
-    async def _league_block(title: str, subtitle: str, promo_text: str) -> str:
-        lines = [f"<b>{title}</b>\n<i>{subtitle}</i>\n{sep}"]
-        for i, rng in enumerate(ELO_RANGES_TEXT):
-            icon = icons[i] if i < len(icons) else f"{i+1}."
-            if i == 9:  # Уровень 10
-                lines.append(f"{icon} - {rng} → {promo_text}")
-            else:
-                lines.append(f"{icon} - {rng}")
-        return "\n".join(lines)
-
-    text = (
-        "🏆 <b>СПИСОК РАНГОВ</b>\n\n"
-        + _league_block(
-            "🔵 Default League",
-            "Доступна всем игрокам",
-            "переход в <b>Qualification</b> 🟡",
-        )
-        + "\n\n"
-        + _league_block(
-            "🟡 Qualification League",
-            "Для продвинутых игроков",
-            "переход в <b>FPL</b> 🔴",
-        )
-        + "\n\n"
-        + _league_block(
-            "🔴 FPL (Pro League)",
-            "Высший уровень — только лучшие",
-            "🏅 Топ игроков",
-        )
-    )
-    await bot.send_message(message.chat.id, text, parse_mode="HTML")
-
-
-@router.callback_query(F.data == "check_sub")
-async def cb_check_sub(callback: CallbackQuery):
-    uid = callback.from_user.id
-    not_subbed = await check_subACriptions(uid)
-    if not_subbed:
-        names = " и ".join(ch["name"] for ch in not_subbed)
-        await safe_answer(callback.id, f"❌ Вы не подписаны на: {names}. Подпишитесь и попробуйте снова.", show_alert=True)
-        return
-    await safe_answer(callback.id, "✅ Подписка подтверждена!")
-    try:
-        await bot.delete_message(callback.message.chat.id, callback.message.message_id)
-    except Exception:
-        pass
-    # Убираем любую ReplyKeyboard
-    try:
-        rm = await bot.send_message(uid, "...", reply_markup=ReplyKeyboardRemove())
-        await bot.delete_message(uid, rm.message_id)
-    except Exception:
-        pass
-    # Автоматически устанавливаем приватку fade
-    if uid not in user_private:
-        user_private[uid] = "fade"
-        save_user_private(uid, "fade")
-    err = check_blocked(uid)
-    if err:
-        await bot.send_message(uid, err)
-        return
-    if is_registered(uid):
-        await bot.send_message(uid, main_menu_text(uid), reply_markup=main_menu(uid), parse_mode="HTML")
-        return
-    user_flow[uid] = {"state": "nick", "bot_msgs": []}
-    priv_name = get_user_private_display(uid)
-    m = await bot.send_message(
-        uid,
-        f"👋 Добро пожаловать в <b>{priv_name}</b>!\n\n<b>Шаг 1:</b> Введи свой никнейм (2-20 символов):",
-        parse_mode="HTML",
-    )
-    user_flow[uid]["bot_msgs"].append(m.message_id)
-
-
-@router.callback_query(F.data == "back_main")
-async def cb_back_main(callback: CallbackQuery):
-    uid = callback.from_user.id
-    await safe_answer(callback.id)
-    try:
-        await callback.message.edit_text(main_menu_text(uid), reply_markup=main_menu(uid), parse_mode="HTML")
-    except Exception:
-        await bot.send_message(uid, main_menu_text(uid), reply_markup=main_menu(uid), parse_mode="HTML")
-
-
-@router.callback_query(F.data == "rejoin_lobby")
-async def cb_rejoin_lobby(callback: CallbackQuery):
-    uid = callback.from_user.id
-    lobby_id = user_lobby.get(uid)
-    if not lobby_id:
-        await safe_answer(callback.id, "❌ Вы не в лобби")
-        await callback.message.edit_text(main_menu_text(uid), reply_markup=main_menu(uid), parse_mode="HTML")
-        return
-    lobby = active_lobbies.get(lobby_id)
-    if not lobby or lobby.get("status") != "waiting":
-        await safe_answer(callback.id, "❌ Лобби недоступно")
-        await callback.message.edit_text(main_menu_text(uid), reply_markup=main_menu(uid), parse_mode="HTML")
-        return
-    text = build_lobby_text(lobby_id)
-    kb = build_lobby_kb(lobby_id, uid)
-    await callback.message.edit_text(text, reply_markup=kb.as_markup())
-    if lobby_player_messages.get(lobby_id) is None:
-        lobby_player_messages[lobby_id] = {}
-    lobby_player_messages[lobby_id][uid] = (callback.message.chat.id, callback.message.message_id)
-    await safe_answer(callback.id)
-
-
-# ==================== ПРОМОКОД (пользователь) ====================
-@router.callback_query(F.data == "promo")
-async def cb_promo(callback: CallbackQuery):
-    uid = callback.from_user.id
-    err = check_blocked(uid)
-    if err:
-        await safe_answer(callback.id, "⚠️ Доступ ограничен", show_alert=True)
-        return
-    if not is_registered(uid):
-        await safe_answer(callback.id, "❌ Сначала зарегистрируйтесь /start")
-        return
-    promo_flow[uid] = True
-    await safe_answer(callback.id)
-    kb = InlineKeyboardBuilder()
-    kb.button(text="❌ Отмена", callback_data="promo_cancel")
-    await bot.send_message(uid, "🎁 Введите промокод:", reply_markup=kb.as_markup())
-
-@router.callback_query(F.data == "promo_cancel")
-async def cb_promo_cancel(callback: CallbackQuery):
-    uid = callback.from_user.id
-    promo_flow.pop(uid, None)
-    await safe_answer(callback.id)
-    try:
-        await bot.delete_message(callback.message.chat.id, callback.message.message_id)
-    except Exception:
-        pass
-
-@router.message(lambda m: m.from_user.id in promo_flow and m.text is not None)
-async def handle_promo_input(message: Message):
-    # converted to async in post-pass
-    pass_async_marker = True; 
-    uid = message.from_user.id
-    promo_flow.pop(uid, None)
-    code = message.text.strip()
-    ok, result_msg = use_promo_code(uid, code)
-    p = get_player(uid)
-    balance = f"\n💰 Баланс: <b>{p[5]} AC</b>" if p and ok else ""
-    await bot.send_message(uid, f"{result_msg}{balance}")
-
-
-# ==================== РЕГИСТРАЦИЯ ====================
-@router.message(lambda m: user_flow.get(m.from_user.id, {}).get("state") == "nick")
-async def reg_nick(message: Message):
-    # converted to async in post-pass
-    pass_async_marker = True; 
-    uid = message.from_user.id
-    nick = message.text.strip()
-    bot_msgs = user_flow[uid].get("bot_msgs", [])
-    if not (2 <= len(nick) <= 20):
-        await bot.send_message(uid, "❌ Никнейм 2-20 символов")
-        return
-    if nick_taken(nick, uid=uid):
-        await bot.send_message(uid, "❌ <b>Этот никнейм уже занят!</b>\n\nЕсли это ваш никнейм - обратитесь к администратору.\nВведите другой никнейм:")
-        return
-    user_flow[uid] = {"state": "id", "nick": nick, "bot_msgs": bot_msgs}
-    m = await bot.send_message(uid, "<b>Шаг 2:</b> Введи игровой ID\n\nМожно: русские и английские буквы, цифры, <code>_</code> и <code>-</code>", parse_mode="HTML")
-    user_flow[uid]["bot_msgs"].append(m.message_id)
-
-@router.message(lambda m: user_flow.get(m.from_user.id, {}).get("state") == "id")
-async def reg_id(message: Message):
-    # converted to async in post-pass
-    pass_async_marker = True; 
-    uid = message.from_user.id
-    game_id = message.text.strip()
-    if not re.match(r'^[a-zA-ZА-Яа-яёЁ0-9_-]+$', game_id):
-        await bot.send_message(uid, "❌ Недопустимые символы! Только буквы, цифры, <code>_</code>, <code>-</code>", parse_mode="HTML")
-        return
-    if game_id_taken(game_id, uid=uid):
-        await bot.send_message(uid, "❌ <b>Этот Game ID уже занят!</b>\n\nВведите другой Game ID:", parse_mode="HTML")
-        return
-    user_flow[uid]["game_id"] = game_id
-    user_flow[uid]["state"] = "device"
-    kb = ReplyKeyboardBuilder()
-    kb.row("MOBILE", "PC")
-    m = await bot.send_message(uid, "<b>Шаг 3:</b> Выбери устройство:", reply_markup=kb.as_markup(), parse_mode="HTML")
-    user_flow[uid]["bot_msgs"].append(m.message_id)
-
-@router.message(lambda m: user_flow.get(m.from_user.id, {}).get("state") == "device")
-async def reg_device(message: Message):
-    # converted to async in post-pass
-    pass_async_marker = True; 
-    uid = message.from_user.id
-    device = message.text.strip()
-    if device not in ("MOBILE", "PC"):
-        await bot.send_message(uid, "❌ Выбери MOBILE или PC")
-        return
-    data = user_flow.pop(uid)
-    tg_u = message.from_user.username or ""
-    register_user(uid, data["nick"], data["game_id"], device, tg_u)
-    # Удаляем все сообщения бота из процесса регистрации
-    for mid in data.get("bot_msgs", []):
-        try:
-            await bot.delete_message(uid, mid)
-        except Exception:
-            pass
-    priv_name = get_user_private_display(uid)
-    await bot.send_message(
-        uid,
-        f"✅ Регистрация завершена!\n🏠 Приватка: <b>{priv_name}</b>\n\nНик: <b>{data['nick']}</b>\nGame ID: <code>{data['game_id']}</code>\nDevice: {device}",
-        reply_markup=ReplyKeyboardRemove(),
-        parse_mode="HTML",
-    )
-    await bot.send_message(uid, main_menu_text(uid), reply_markup=main_menu(uid), parse_mode="HTML")
-
-
-# ==================== СМЕНА ДАННЫХ ====================
-@router.callback_query(F.data.in_({"change_nick", "change_game_id"}))
-async def cb_change_own(callback: CallbackQuery):
-    uid = callback.from_user.id
-    field = "nick" if callback.data == "change_nick" else "game_id"
-    change_flow[uid] = {"field": field}
-    await safe_answer(callback.id)
-    if field == "nick":
-        await bot.send_message(uid, "✏️ Введите новый никнейм (2-20 символов):")
-    else:
-        await bot.send_message(uid, "🎮 Введите новый Game ID:\n\nТолько буквы, цифры, <code>_</code> и <code>-</code>")
-
-@router.message(lambda m: m.from_user.id in change_flow and "field" in change_flow.get(m.from_user.id, {}) and m.text is not None)
-async def handle_change_flow(message: Message):
-    # converted to async in post-pass
-    pass_async_marker = True; 
-    uid = message.from_user.id
-    if uid not in change_flow:
-        return
-    data = change_flow.pop(uid)
-    field = data["field"]
-    text = message.text.strip()
-    conn = _db()
-    cur = conn.cursor()
-    if field == "nick":
-        if not (2 <= len(text) <= 20):
-            await bot.send_message(uid, "❌ Никнейм 2-20 символов.")
+            c = conn.cursor()
+            c.execute('SELECT task_id FROM user_tasks WHERE user_id=? AND claimed=1', (uid,))
+            return {r[0] for r in c.fetchall()}
+        finally:
             conn.close()
-            return
-        if nick_taken(text, uid=uid, exclude_uid=uid):
-            await bot.send_message(uid, "❌ <b>Этот никнейм уже занят!</b>")
-            conn.close()
-            return
-        table = get_user_table(uid)
-        cur.execute(f"UPDATE {table} SET username=%s WHERE user_id=%s", (text, uid))
-        conn.commit()
-        conn.close()
-        await bot.send_message(uid, f"✅ Никнейм изменён на <b>{text}</b>!")
-    elif field == "game_id":
-        if not re.match(r'^[a-zA-ZА-Яа-яёЁ0-9_-]+$', text):
-            await bot.send_message(uid, "❌ Только буквы, цифры, <code>_</code> и <code>-</code>")
-            conn.close()
-            return
-        if game_id_taken(text, uid=uid, exclude_uid=uid):
-            await bot.send_message(uid, "❌ <b>Этот Game ID уже занят!</b>")
-            conn.close()
-            return
-        table = get_user_table(uid)
-        cur.execute(f"UPDATE {table} SET game_id=%s WHERE user_id=%s", (text, uid))
-        conn.commit()
-        conn.close()
-        await bot.send_message(uid, f"✅ Game ID изменён на <code>{text}</code>!")
-    elif field == "admin_nick":
-        target_id = data.get("target_id")
-        conn.close()
-        if not target_id:
-            return
-        if not (2 <= len(text) <= 20):
-            await bot.send_message(uid, "❌ Никнейм 2-20 символов.")
-            return
-        if nick_taken(text, exclude_uid=target_id):
-            await bot.send_message(uid, f"❌ Никнейм <b>{text}</b> уже занят!")
-            return
-        c2 = _db(); c2cur = c2.cursor()
-        c2cur.execute("UPDATE players SET username=%s WHERE user_id=%s", (text, target_id))
-        c2.commit(); c2.close()
-        await bot.send_message(uid, f"✅ Никнейм игрока изменён на <b>{text}</b>!")
-        try:
-            await bot.send_message(target_id, f"✏️ Администратор изменил ваш никнейм на <b>{text}</b>!")
-        except Exception:
-            pass
-    elif field == "admin_id":
-        target_id = data.get("target_id")
-        conn.close()
-        if not target_id:
-            return
-        if not re.match(r'^[a-zA-ZА-Яа-яёЁ0-9_-]+$', text):
-            await bot.send_message(uid, "❌ Только буквы, цифры, <code>_</code> и <code>-</code>")
-            return
-        if game_id_taken(text, exclude_uid=target_id):
-            await bot.send_message(uid, f"❌ Game ID <code>{text}</code> уже занят!")
-            return
-        c2 = _db(); c2cur = c2.cursor()
-        c2cur.execute("UPDATE players SET game_id=%s WHERE user_id=%s", (text, target_id))
-        c2.commit(); c2.close()
-        await bot.send_message(uid, f"✅ Game ID игрока изменён на <code>{text}</code>!")
-        try:
-            await bot.send_message(target_id, f"🎮 Администратор изменил ваш Game ID на <code>{text}</code>!")
-        except Exception:
-            pass
-    else:
-        conn.close()
-
-
-# ==================== ПРОФИЛЬ ====================
-@router.callback_query(F.data == "profile")
-async def cb_profile(callback: CallbackQuery):
-    uid = callback.from_user.id
-    p = get_current_player(uid)
-    if not p:
-        await callback.message.edit_text("❌ Ошибка")
-        await safe_answer(callback.id)
-        return
-
-    games   = p[6] + p[7]
-    winrate = round(p[6] / games * 100, 1) if games > 0 else 0
-    kd      = round(p[8] / p[9], 2) if p[9] > 0 else p[8]
-    warns   = p[15] if len(p) > 15 else 0
-    quals   = "✅" if (len(p) > 16 and p[16] == 1) else "❌"
-    premium = has_active_premium(uid)
-    crown   = f" {_prem_crown_tag()} Premium" if premium else ""
-    verified_badge = " ✅" if is_verified_check(uid) else ""
-    lvl     = get_faceit_level(p[4])
-    bar     = elo_bar(p[4], lvl)
-    muted   = is_muted_check(uid)
-    mute_text = ""
-    if muted:
-        mins = get_mute_remaining(uid) // 60
-        mute_text = f"\n🔇 Мут: {mins} мин."
-
-    kb = InlineKeyboardBuilder()
-    kb.add(
-        types.InlineKeyboardButton(text="✏️ Изменить ник",     callback_data="change_nick"),
-        types.InlineKeyboardButton(text="🎮 Изменить Game ID", callback_data="change_game_id"),
-    )
-    kb.button(text="💸 Перевести монеты", callback_data="transfer_coins")
-    extra_btns = []
-    if has_quals_access(uid):
-        extra_btns.append(types.InlineKeyboardButton(text="⭐ Quals профиль", callback_data="profile_quals"))
-    _priv_table_check = get_user_table(uid)
-    _duo_check = get_player_duo_stats(uid, _priv_table_check)
-    if _duo_check:
-        extra_btns.append(types.InlineKeyboardButton(text="🤝 2vs2 профиль", callback_data="profile_duo"))
-    if extra_btns:
-        kb.add(*extra_btns)
-    kb.button(text="🔙 Назад", callback_data="back")
-
-    if CARDS_ENABLED:
-        try:
-            # rank among registered players in current private
-            _priv_table = get_user_table(uid)
-            all_p   = get_all_players(_priv_table)
-            rank    = next((i+1 for i, row in enumerate(all_p) if row[0] == uid), len(all_p))
-            league  = "DEFAULT"
-
-            _matches_table = get_user_matches_table(uid)
-            map_stats   = get_player_map_stats(uid, _matches_table)
-            recent      = get_player_recent_matches(uid, limit=5, matches_table=_matches_table)
-            quals_stats = get_player_quals_stats(uid, _priv_table)
-            duo_stats   = get_player_duo_stats(uid, _priv_table)
-            lb_data     = [
-                (i+1, row[1], row[2], has_active_premium(row[0]), is_admin(row[0]), is_verified_check(row[0]))
-                for i, row in enumerate(all_p[:3])
-            ]
-            mvp_count   = p[31] if len(p) > 31 else 0
-
-            avatar_bytes = await get_user_avatar(uid)
-            active_frame, active_banner, active_background = get_active_cosmetics(uid)
-            img_buf = generate_profile_card(
-                username           = p[1]   or "Unknown",
-                game_id            = p[2]   or "",
-                user_id            = p[0],
-                elo                = p[4],
-                wins               = p[6],
-                losses             = p[7],
-                kills              = p[8],
-                deaths             = p[9],
-                assists            = p[10],
-                is_premium         = premium,
-                is_admin           = is_admin(uid),
-                global_rank        = rank,
-                league             = league,
-                map_stats          = map_stats,
-                recent             = recent,
-                leaderboard        = lb_data,
-                quals_stats        = quals_stats,
-                mvp_count          = mvp_count,
-                is_verified        = is_verified_check(uid),
-                duo_stats          = duo_stats,
-                avatar_bytes       = avatar_bytes,
-                active_frame       = active_frame,
-                active_banner      = active_banner,
-                active_background  = active_background,
-            )
-
-            # delete old message, send photo with buttons
-            try:
-                await bot.delete_message(callback.message.chat.id, callback.message.message_id)
-            except Exception:
-                pass
-
-            caption = (
-                f"👤 <b>{p[1]}</b>{verified_badge}{crown}  |  📊 ELO: <b>{p[4]}</b>  |  Lvl <b>{lvl}</b>\n"
-                f"💰 Баланс: {p[5]} AC  ·  ⭐ Quals: {quals}  ·  ⚠️ Варны: {warns}/3{mute_text}"
-            )
-            await bot.send_photo(
-                callback.message.chat.id, BufferedInputFile(img_buf.read() if hasattr(img_buf, "read") else img_buf, "profile.png"),
-                caption    = caption,
-                reply_markup = kb.as_markup(),
-                parse_mode = "HTML",
-            )
-            await safe_answer(callback.id)
-            return
-        except Exception as e:
-            print(f"[card_profile Default ERROR] {type(e).__name__}: {e}")
-            await send_error_log("card_profile (Default)", e)
-
-    # fallback text profile
-    text = (
-        f"👤 <b>{p[1]}</b>{verified_badge}{crown}\n"
-        f"🆔 Telegram ID: <code>{p[0]}</code>\n"
-        f"🎮 Game ID: <code>{p[2]}</code>\n"
-        f"📱 Device: {p[3]}\n"
-        f"📊 ELO: {p[4]} · Lvl {lvl}\n"
-        f"{bar}\n"
-        f"💰 Баланс: {p[5]} AC\n"
-        f"⭐ Quals: {quals}\n"
-        f"⚠️ Варны: {warns}/3{mute_text}\n\n"
-        f"🏆 {p[6]}W · ❌ {p[7]}L · 📈 {winrate}%\n"
-        f"🔫 K: {p[8]} · 💀 D: {p[9]} · 🤝 A: {p[10]} · K/D: {kd}"
-    )
-    await callback.message.edit_text(text, reply_markup=kb.as_markup())
-    await safe_answer(callback.id)
-
-
-# ==================== ПЕРЕВОД МОНЕТ ====================
-# Словарь: uid -> {step: "target"|"amount", target_uid, target_name}
-_transfer_flow: dict = {}
-
-TRANSFER_COMMISSION = 0.03  # 3%
-
-@router.callback_query(F.data == "transfer_coins")
-async def cb_transfer_coins_start(callback: CallbackQuery):
-    uid = callback.from_user.id
-    err = check_blocked(uid)
-    if err:
-        await safe_answer(callback.id, "⚠️ Доступ ограничен", show_alert=True)
-        return
-    if not is_registered(uid):
-        await safe_answer(callback.id, "❌ Сначала зарегистрируйтесь", show_alert=True)
-        return
-    p = get_player(uid)
-    coins = p[5] if p and len(p) > 5 else 0
-    await safe_answer(callback.id)
-    _transfer_flow[uid] = {"step": "target"}
-    sent = await bot.send_message(
-        uid,
-        f"💸 <b>Перевод монет</b>\n\n"
-        f"💰 Ваш баланс: <b>{coins} AC</b>\n"
-        f"📋 Комиссия: <b>3%</b> (списывается с вас)\n\n"
-        f"Введите Telegram ID или никнейм получателя:",
-        parse_mode="HTML",
-    )  # next_step handled by flow dict state
-
-
-async def _transfer_step_target(message):
-    uid = message.from_user.id
-    if uid not in _transfer_flow:
-        return
-    text = message.text.strip() if message.text else ""
-    if not text:
-        await bot.send_message(uid, "❌ Введите ID или никнейм:")  # next_step handled by flow dict state
-        return
-
-    # Ищем получателя
-    target = None
-    if text.isdigit():
-        target = get_player(int(text))
-    else:
-        try:
-            conn2 = _db(); cur2 = conn2.cursor()
-            cur2.execute("SELECT * FROM players WHERE username=%s AND is_bot=0", (text,))
-            target = cur2.fetchone(); conn2.close()
-        except Exception:
-            pass
-
-    if not target:
-        await bot.send_message(uid, "❌ Игрок не найден. Введите корректный ID или никнейм:")  # next_step handled by flow dict state
-        return
-
-    target_uid = target[0]
-    if target_uid == uid:
-        await bot.send_message(uid, "❌ Нельзя переводить монеты самому себе. Введите другого игрока:")  # next_step handled by flow dict state
-        return
-
-    target_name = target[1] or str(target_uid)
-    _transfer_flow[uid]["step"] = "amount"
-    _transfer_flow[uid]["target_uid"] = target_uid
-    _transfer_flow[uid]["target_name"] = target_name
-
-    p = get_player(uid)
-    coins = p[5] if p and len(p) > 5 else 0
-    sent = await bot.send_message(
-        uid,
-        f"💸 <b>Перевод монет</b>\n\n"
-        f"📤 Получатель: <b>{target_name}</b> (<code>{target_uid}</code>)\n"
-        f"💰 Ваш баланс: <b>{coins} AC</b>\n"
-        f"📋 Комиссия: <b>3%</b> (спишется сверху)\n\n"
-        f"Введите сумму перевода (минимум <b>2 AC</b>):",
-        parse_mode="HTML",
-    )  # next_step handled by flow dict state
-
-
-async def _transfer_step_amount(message):
-    uid = message.from_user.id
-    flow = _transfer_flow.pop(uid, None)
-    if not flow:
-        return
-    text = message.text.strip() if message.text else ""
-    try:
-        amount = int(text)
-        if amount < 2:
-            raise ValueError
-    except ValueError:
-        await bot.send_message(uid, "❌ Введите целое число от 2 AC. Начните перевод заново - нажмите (💸 Перевести монеты).")
-        return
-
-    target_uid  = flow["target_uid"]
-    target_name = flow["target_name"]
-
-    p = get_player(uid)
-    coins = p[5] if p and len(p) > 5 else 0
-
-    commission = max(1, round(amount * TRANSFER_COMMISSION))
-    total_cost = amount + commission
-
-    if total_cost > coins:
-        await bot.send_message(
-            uid,
-            f"❌ Недостаточно монет!\n\n"
-            f"Перевод: <b>{amount} AC</b>\n"
-            f"Комиссия (3%): <b>{commission} AC</b>\n"
-            f"Итого нужно: <b>{total_cost} AC</b>\n"
-            f"У вас: <b>{coins} AC</b>\n\n"
-            f"Начните перевод заново - нажмите (💸 Перевести монеты).",
-            parse_mode="HTML",
-        )
-        return
-
-    # Проверяем получателя
-    target = get_player(target_uid)
-    if not target:
-        await bot.send_message(uid, "❌ Получатель не найден. Начните перевод заново.")
-        return
-
-    # Выполняем перевод
-    try:
-        conn = _db(); cur = conn.cursor()
-        # Списываем с отправителя (сумма + комиссия)
-        cur.execute("UPDATE players SET coins=GREATEST(0, coins-%s) WHERE user_id=%s", (total_cost, uid))
-        # Зачисляем получателю
-        cur.execute("UPDATE players SET coins=coins+%s WHERE user_id=%s", (amount, target_uid))
-        conn.commit(); conn.close()
-    except Exception as _te:
-        print(f"[transfer_coins] {_te}")
-        await bot.send_message(uid, "❌ Ошибка при переводе. Попробуйте позже.")
-        return
-
-    new_balance = coins - total_cost
-    # Уведомляем отправителя
-    await bot.send_message(
-        uid,
-        f"✅ <b>Перевод выполнен!</b>\n\n"
-        f"📤 Отправлено: <b>{amount} AC</b> → <b>{target_name}</b>\n"
-        f"📋 Комиссия: <b>{commission} AC</b> (3%)\n"
-        f"💰 Ваш новый баланс: <b>{new_balance} AC</b>",
-        parse_mode="HTML",
-    )
-    # Уведомляем получателя
-    sender_p = get_player(uid)
-    sender_name = sender_p[1] if sender_p else str(uid)
-    target_coins = target[5] if len(target) > 5 else 0
-    try:
-        await bot.send_message(
-            target_uid,
-            f"💰 <b>Вам перевели монеты!</b>\n\n"
-            f"📥 Получено: <b>+{amount} AC</b>\n"
-            f"📤 От: <b>{sender_name}</b>\n"
-            f"💰 Ваш новый баланс: <b>{target_coins + amount} AC</b>",
-            parse_mode="HTML",
-        )
     except Exception:
-        pass
-
-
-# ==================== QUALS ПРОФИЛЬ ====================
-@router.callback_query(F.data == "profile_quals")
-async def cb_profile_quals(callback: CallbackQuery):
-    uid = callback.from_user.id
-    if not has_quals_access(uid):
-        await safe_answer(callback.id, "❌ Нет доступа к Quals лиге", show_alert=True)
-        return
-    _priv_table_q = get_user_table(uid)
-    p = get_player_from_table(uid, _priv_table_q) or get_player(uid)
-    if not p:
-        await safe_answer(callback.id)
-        return
-
-    qs = get_player_quals_stats(uid, _priv_table_q)
-    q_elo    = qs["elo"]    if qs else 1000
-    q_wins   = qs["wins"]   if qs else 0
-    q_losses = qs["losses"] if qs else 0
-    q_kills  = qs["kills"]  if qs else 0
-    q_deaths = qs["deaths"] if qs else 0
-    q_assists= qs["assists"]if qs else 0
-
-    premium  = has_active_premium(uid)
-    crown    = f" {_prem_crown_tag()} Premium" if premium else ""
-    lvl      = get_faceit_level(q_elo)
-
-    kb = InlineKeyboardBuilder()
-    kb.add(
-        types.InlineKeyboardButton(text="📊 Default профиль", callback_data="profile"),
-        types.InlineKeyboardButton(text="🔙 Назад",           callback_data="back"),
-    )
-
-    if CARDS_ENABLED:
-        try:
-            _priv_table_quals = get_user_table(uid)
-            _matches_table_quals = get_user_matches_table(uid)
-            quals_list = get_quals_players(_priv_table_quals)
-            q_rank     = next((i+1 for i, row in enumerate(quals_list) if row[0] == uid), len(quals_list))
-            lb_data    = [
-                (i+1, row[1], row[2], has_active_premium(row[0]), is_admin(row[0]), is_verified_check(row[0]))
-                for i, row in enumerate(quals_list[:3])
-            ]
-            quals_recent = get_player_quals_recent_matches(uid, limit=5, matches_table=_matches_table_quals)
-            q_mvp_count  = p[31] if len(p) > 31 else 0
-            avatar_bytes = await get_user_avatar(uid)
-            active_frame, active_banner, active_background = get_active_cosmetics(uid)
-            img_buf = generate_profile_card(
-                username          = p[1] or "Unknown",
-                game_id           = p[2] or "",
-                user_id           = p[0],
-                elo               = q_elo,
-                wins              = q_wins,
-                losses            = q_losses,
-                kills             = q_kills,
-                deaths            = q_deaths,
-                assists           = q_assists,
-                is_premium        = premium,
-                is_admin          = is_admin(uid),
-                global_rank       = q_rank,
-                league            = "QUALS",
-                map_stats         = [],
-                recent            = quals_recent,
-                leaderboard       = lb_data,
-                quals_stats       = None,
-                mvp_count         = q_mvp_count,
-                is_verified       = is_verified_check(uid),
-                avatar_bytes      = avatar_bytes,
-                active_frame      = active_frame,
-                active_banner     = active_banner,
-                active_background = active_background,
-            )
-            try:
-                await bot.delete_message(callback.message.chat.id, callback.message.message_id)
-            except Exception:
-                pass
-            q_games = q_wins + q_losses
-            q_wr    = round(q_wins / q_games * 100, 1) if q_games > 0 else 0.0
-            caption = (
-                f"⭐ <b>{p[1]}</b>{crown}  |  Quals ELO: <b>{q_elo}</b>  |  Lvl <b>{lvl}</b>\n"
-                f"🏆 {q_wins}W · ❌ {q_losses}L · 📈 {q_wr}%  |  Rank #{q_rank}"
-            )
-            await bot.send_photo(callback.message.chat.id, BufferedInputFile(img_buf.read() if hasattr(img_buf, "read") else img_buf, "profile.png"),
-                           caption=caption, reply_markup=kb.as_markup(), parse_mode="HTML")
-            await safe_answer(callback.id)
-            return
-        except Exception as e:
-            print(f"[card_profile Quals ERROR] {type(e).__name__}: {e}")
-            await send_error_log("card_profile (Quals)", e)
-
-    # fallback text
-    q_games = q_wins + q_losses
-    q_wr    = round(q_wins / q_games * 100, 1) if q_games > 0 else 0.0
-    q_kd    = round(q_kills / q_deaths, 2) if q_deaths > 0 else float(q_kills)
-    text = (
-        f"⭐ <b>{p[1]}</b> - Quals профиль\n\n"
-        f"📊 Quals ELO: <b>{q_elo}</b>  |  Lvl <b>{lvl}</b>\n"
-        f"🏆 {q_wins}W · ❌ {q_losses}L · 📈 {q_wr}%\n"
-        f"🔫 K: {q_kills} · 💀 D: {q_deaths} · 🤝 A: {q_assists} · K/D: {q_kd}"
-    )
-    await callback.message.edit_text(text, reply_markup=kb.as_markup(), parse_mode="HTML")
-    await safe_answer(callback.id)
-
-
-@router.callback_query(F.data == "profile_duo")
-async def cb_profile_duo(callback: CallbackQuery):
-    uid = callback.from_user.id
-    _priv_table_d = get_user_table(uid)
-    p = get_player_from_table(uid, _priv_table_d) or get_player(uid)
-    if not p:
-        await safe_answer(callback.id)
-        return
-
-    ds = get_player_duo_stats(uid, _priv_table_d)
-    if not ds:
-        await safe_answer(callback.id, "❌ Нет 2vs2 статистики", show_alert=True)
-        return
-
-    d_elo     = ds.get("elo",     1000)
-    d_wins    = ds.get("wins",    0)
-    d_losses  = ds.get("losses",  0)
-    d_kills   = ds.get("kills",   0)
-    d_deaths  = ds.get("deaths",  0)
-    d_assists = ds.get("assists", 0)
-
-    premium = has_active_premium(uid)
-    crown   = f" {_prem_crown_tag()} Premium" if premium else ""
-    lvl     = get_faceit_level(d_elo)
-
-    kb = InlineKeyboardBuilder()
-    kb.add(
-        types.InlineKeyboardButton(text="📊 Default профиль", callback_data="profile"),
-        types.InlineKeyboardButton(text="🔙 Назад",           callback_data="back"),
-    )
-
-    if CARDS_ENABLED:
-        try:
-            all_duo = get_all_players(_priv_table_d)
-            all_duo_sorted = sorted(all_duo, key=lambda r: (r[22] if len(r) > 22 and r[22] else 0), reverse=True)
-            d_rank = next((i+1 for i, row in enumerate(all_duo_sorted) if row[0] == uid), len(all_duo_sorted))
-            lb_data = [
-                (i+1, row[1], row[2], has_active_premium(row[0]), is_admin(row[0]), is_verified_check(row[0]))
-                for i, row in enumerate(all_duo_sorted[:3])
-            ]
-            d_mvp_count  = p[31] if len(p) > 31 else 0
-            avatar_bytes = await get_user_avatar(uid)
-            active_frame, active_banner, active_background = get_active_cosmetics(uid)
-            img_buf = generate_profile_card(
-                username          = p[1] or "Unknown",
-                game_id           = p[2] or "",
-                user_id           = p[0],
-                elo               = d_elo,
-                wins              = d_wins,
-                losses            = d_losses,
-                kills             = d_kills,
-                deaths            = d_deaths,
-                assists           = d_assists,
-                is_premium        = premium,
-                is_admin          = is_admin(uid),
-                global_rank       = d_rank,
-                league            = "DUO",
-                map_stats         = [],
-                recent            = [],
-                leaderboard       = lb_data,
-                quals_stats       = None,
-                mvp_count         = d_mvp_count,
-                is_verified       = is_verified_check(uid),
-                duo_stats         = None,
-                avatar_bytes      = avatar_bytes,
-                active_frame      = active_frame,
-                active_banner     = active_banner,
-                active_background = active_background,
-            )
-            try:
-                await bot.delete_message(callback.message.chat.id, callback.message.message_id)
-            except Exception:
-                pass
-            d_games = d_wins + d_losses
-            d_wr    = round(d_wins / d_games * 100, 1) if d_games > 0 else 0.0
-            d_kd    = round(d_kills / d_deaths, 2) if d_deaths > 0 else float(d_kills)
-            caption = (
-                f"🤝 <b>{p[1]}</b>{crown}  |  2vs2 ELO: <b>{d_elo}</b>  |  Lvl <b>{lvl}</b>\n"
-                f"🏆 {d_wins}W · ❌ {d_losses}L · 📈 {d_wr}%  |  K/D: {d_kd}  |  Rank #{d_rank}"
-            )
-            await bot.send_photo(callback.message.chat.id, BufferedInputFile(img_buf.read() if hasattr(img_buf, "read") else img_buf, "profile.png"),
-                           caption=caption, reply_markup=kb.as_markup(), parse_mode="HTML")
-            await safe_answer(callback.id)
-            return
-        except Exception as e:
-            print(f"[card_profile Duo ERROR] {type(e).__name__}: {e}")
-            await send_error_log("card_profile (Duo)", e)
-
-    # fallback text
-    d_games = d_wins + d_losses
-    d_wr    = round(d_wins / d_games * 100, 1) if d_games > 0 else 0.0
-    d_kd    = round(d_kills / d_deaths, 2) if d_deaths > 0 else float(d_kills)
-    text = (
-        f"🤝 <b>{p[1]}</b> - 2vs2 профиль\n\n"
-        f"📊 2vs2 ELO: <b>{d_elo}</b>  |  Lvl <b>{lvl}</b>\n"
-        f"🏆 {d_wins}W · ❌ {d_losses}L · 📈 {d_wr}%\n"
-        f"🔫 K: {d_kills} · 💀 D: {d_deaths} · 🤝 A: {d_assists} · K/D: {d_kd}"
-    )
-    await callback.message.edit_text(text, reply_markup=kb.as_markup(), parse_mode="HTML")
-    await safe_answer(callback.id)
-
-
-# ==================== ТОП (меню выбора) ====================
-@router.callback_query(F.data == "top")
-async def cb_top(callback: CallbackQuery):
-    uid = callback.from_user.id
-    kb = InlineKeyboardBuilder()
-    kb.add(
-        types.InlineKeyboardButton(text="📊 Default - Топ по ELO",      callback_data="top_default"),
-        types.InlineKeyboardButton(text="⭐ Quals - Топ квалификации",  callback_data="top_quals"),
-        types.InlineKeyboardButton(text="🤝 2v2 - Топ Duo ELO",         callback_data="top_duo"),
-        types.InlineKeyboardButton(text="🏆 Топ сезона",                callback_data="top_season"),
-    )
-    kb.button(text="🔙 Назад", callback_data="back")
-    try:
-        await callback.message.edit_text("🏆 <b>Выберите таблицу лидеров:</b>", reply_markup=kb.as_markup(), parse_mode="HTML")
-    except Exception:
-        try:
-            await bot.delete_message(callback.message.chat.id, callback.message.message_id)
-        except Exception:
-            pass
-        await bot.send_message(callback.message.chat.id, "🏆 <b>Выберите таблицу лидеров:</b>",
-                         reply_markup=kb.as_markup(), parse_mode="HTML")
-    await safe_answer(callback.id)
-
-
-@router.callback_query(F.data == "top_default")
-async def cb_top_default(callback: CallbackQuery):
-    uid = callback.from_user.id
-    priv_table   = get_user_table(uid)
-    priv_display = get_user_private_display(uid)
-    players = get_all_players(priv_table)
-    kb = InlineKeyboardBuilder()
-    kb.add(
-        types.InlineKeyboardButton(text="⭐ Quals топ", callback_data="top_quals"),
-        types.InlineKeyboardButton(text="🔙 Назад",     callback_data="back"),
-    )
-    if not players:
-        await callback.message.edit_text(f"🏆 <b>ТОП {priv_display}</b>\n\nИгроков нет.", reply_markup=kb.as_markup(), parse_mode="HTML")
-        await safe_answer(callback.id)
-        return
-    if CARDS_ENABLED:
-        try:
-            lb_players = []
-            for i, p in enumerate(players[:10], 1):
-                uid2, name, elo, wins, losses, kills, deaths, coins, banned, warns = p
-                kd  = round(kills / deaths, 2) if deaths > 0 else float(kills)
-                lvl = get_faceit_level(elo)
-                lb_players.append({
-                    "rank": i, "name": name, "elo": elo, "wins": wins,
-                    "losses": losses, "kd": kd, "level": lvl, "uid": uid2,
-                    "is_premium": has_active_premium(uid2), "is_admin": is_admin(uid2),
-                    "is_verified": is_verified_check(uid2),
-                })
-            avatars = {}
-            for _p2 in players[:10]:
-                _av = await get_user_avatar(_p2[0])
-                if _av:
-                    avatars[_p2[0]] = _av
-            img_buf = generate_leaderboard_card(
-                lb_players, title=f"📊 {priv_display} DEFAULT - TOP ELO", avatars=avatars
-            )
-            try:
-                await bot.delete_message(callback.message.chat.id, callback.message.message_id)
-            except Exception:
-                pass
-            await bot.send_photo(callback.message.chat.id, BufferedInputFile(img_buf.read() if hasattr(img_buf, "read") else img_buf, "profile.png"),
-                           caption="🏆 <b>ТОП ИГРОКОВ ПО ELO</b>",
-                           reply_markup=kb.as_markup(), parse_mode="HTML")
-            await safe_answer(callback.id)
-            return
-        except Exception as e:
-            print(f"[card_top_default] error: {e}")
-    # fallback text
-    text   = f"🏆 <b>ТОП {priv_display} ПО ELO</b>\n\n"
-    medals = {1: "🥇", 2: "🥈", 3: "🥉"}
-    for i, p in enumerate(players[:10], 1):
-        uid2, name, elo, wins, losses, kills, deaths, coins, banned, warns = p
-        games   = wins + losses
-        winrate = round(wins / games * 100, 1) if games > 0 else 0
-        kd      = round(kills / deaths, 2) if deaths > 0 else kills
-        lvl     = get_faceit_level(elo)
-        prem    = " 👑" if has_active_premium(uid2) else ""
-        text   += f"{medals.get(i, f'{i}.')} <b>{name}</b>{prem} [Lvl {lvl}]\n   ELO: {elo} | {wins}W/{losses}L ({winrate}%) | K/D: {kd}\n\n"
-    try:
-        await callback.message.edit_text(text, reply_markup=kb.as_markup(), parse_mode="HTML")
-    except Exception:
-        try:
-            await bot.delete_message(callback.message.chat.id, callback.message.message_id)
-        except Exception:
-            pass
-        await bot.send_message(callback.message.chat.id, text, reply_markup=kb.as_markup(), parse_mode="HTML")
-    await safe_answer(callback.id)
-
-
-@router.callback_query(F.data == "top_quals")
-async def cb_top_quals(callback: CallbackQuery):
-    uid = callback.from_user.id
-    priv_table   = get_user_table(uid)
-    priv_display = get_user_private_display(uid)
-    players = get_quals_players(priv_table)
-    kb = InlineKeyboardBuilder()
-    kb.add(
-        types.InlineKeyboardButton(text="📊 Default топ", callback_data="top_default"),
-        types.InlineKeyboardButton(text="🔙 Назад",        callback_data="back"),
-    )
-    if not players:
-        await bot.edit_message_text(
-            f"⭐ <b>QUALS ТОП {priv_display}</b>\n\nНет игроков с доступом к Quals.",
-            chat_id=callback.message.chat.id, message_id=callback.message.message_id, reply_markup=kb.as_markup(), parse_mode="HTML"
-        )
-        await safe_answer(callback.id)
-        return
-    if CARDS_ENABLED:
-        try:
-            lb_players = []
-            for i, row in enumerate(players[:10], 1):
-                uid2, name, qelo, qw, ql, qk, qd, qa = row
-                qkd = round(qk / qd, 2) if qd > 0 else float(qk)
-                lvl = get_faceit_level(qelo or 1000)
-                lb_players.append({
-                    "rank": i, "name": name, "elo": qelo or 1000,
-                    "wins": qw or 0, "losses": ql or 0, "kd": qkd, "level": lvl, "uid": uid2,
-                    "is_premium": has_active_premium(uid2), "is_admin": is_admin(uid2),
-                    "is_verified": is_verified_check(uid2),
-                })
-            q_avatars = {}
-            for _qrow in players[:10]:
-                _qav = await get_user_avatar(_qrow[0])
-                if _qav:
-                    q_avatars[_qrow[0]] = _qav
-            img_buf = generate_leaderboard_card(
-                lb_players, title=f"⭐ {priv_display} QUALS - TOP ELO", avatars=q_avatars
-            )
-            try:
-                await bot.delete_message(callback.message.chat.id, callback.message.message_id)
-            except Exception:
-                pass
-            await bot.send_photo(callback.message.chat.id, BufferedInputFile(img_buf.read() if hasattr(img_buf, "read") else img_buf, "profile.png"),
-                           caption="⭐ <b>QUALS ТОП ИГРОКОВ</b>",
-                           reply_markup=kb.as_markup(), parse_mode="HTML")
-            await safe_answer(callback.id)
-            return
-        except Exception as e:
-            print(f"[card_top_quals] error: {e}")
-    # fallback text
-    text   = f"⭐ <b>QUALS ТОП {priv_display}</b>\n\n"
-    medals = {1: "🥇", 2: "🥈", 3: "🥉"}
-    for i, row in enumerate(players[:10], 1):
-        uid2, name, qelo, qw, ql, qk, qd, qa = row
-        games   = (qw or 0) + (ql or 0)
-        winrate = round((qw or 0) / games * 100, 1) if games > 0 else 0
-        kd      = round((qk or 0) / (qd or 1), 2)
-        prem    = " 👑" if has_active_premium(uid2) else ""
-        text   += f"{medals.get(i, f'{i}.')} <b>{name}</b>{prem}\n   Q.ELO: {qelo or 1000} | {qw}W/{ql}L ({winrate}%) | K/D: {kd}\n\n"
-    try:
-        await callback.message.edit_text(text, reply_markup=kb.as_markup(), parse_mode="HTML")
-    except Exception:
-        try:
-            await bot.delete_message(callback.message.chat.id, callback.message.message_id)
-        except Exception:
-            pass
-        await bot.send_message(callback.message.chat.id, text, reply_markup=kb.as_markup(), parse_mode="HTML")
-    await safe_answer(callback.id)
-
-
-@router.callback_query(F.data == "top_duo")
-async def cb_top_duo(callback: CallbackQuery):
-    uid = callback.from_user.id
-    priv_table   = get_user_table(uid)
-    priv_display = get_user_private_display(uid)
-    players = get_duo_players(priv_table)
-    kb = InlineKeyboardBuilder()
-    kb.add(
-        types.InlineKeyboardButton(text="📊 Default топ", callback_data="top_default"),
-        types.InlineKeyboardButton(text="⭐ Quals топ",   callback_data="top_quals"),
-        types.InlineKeyboardButton(text="🔙 Назад",        callback_data="back"),
-    )
-    if not players:
-        try:
-            await bot.edit_message_text(
-                f"🤝 <b>2v2 ТОП {priv_display}</b>\n\nЕщё нет 2v2 матчей. Сыграй первым!",
-                chat_id=callback.message.chat.id, message_id=callback.message.message_id, reply_markup=kb.as_markup(), parse_mode="HTML"
-            )
-        except Exception:
-            try:
-                await bot.delete_message(callback.message.chat.id, callback.message.message_id)
-            except Exception:
-                pass
-            await bot.send_message(
-                callback.message.chat.id,
-                f"🤝 <b>2v2 ТОП {priv_display}</b>\n\nЕщё нет 2v2 матчей. Сыграй первым!",
-                reply_markup=kb.as_markup(), parse_mode="HTML"
-            )
-        await safe_answer(callback.id)
-        return
-    if CARDS_ENABLED:
-        try:
-            lb_players = []
-            for i, row in enumerate(players[:10], 1):
-                uid2, name, deo, dw, dl, dk, dd, da = row
-                dkd = round(dk / dd, 2) if dd > 0 else float(dk)
-                lvl = get_faceit_level(deo or 1000)
-                lb_players.append({
-                    "rank": i, "name": name, "elo": deo or 1000,
-                    "wins": dw or 0, "losses": dl or 0, "kd": dkd, "level": lvl, "uid": uid2,
-                    "is_premium": has_active_premium(uid2), "is_admin": is_admin(uid2),
-                    "is_verified": is_verified_check(uid2),
-                })
-            d_avatars = {}
-            for _drow in players[:10]:
-                _dav = await get_user_avatar(_drow[0])
-                if _dav:
-                    d_avatars[_drow[0]] = _dav
-            img_buf = generate_leaderboard_card(
-                lb_players, title=f"🤝 {priv_display} 2v2 - TOP DUO ELO", avatars=d_avatars
-            )
-            try:
-                await bot.delete_message(callback.message.chat.id, callback.message.message_id)
-            except Exception:
-                pass
-            await bot.send_photo(callback.message.chat.id, BufferedInputFile(img_buf.read() if hasattr(img_buf, "read") else img_buf, "profile.png"),
-                           caption="🤝 <b>2v2 ТОП ИГРОКОВ</b>",
-                           reply_markup=kb.as_markup(), parse_mode="HTML")
-            await safe_answer(callback.id)
-            return
-        except Exception as e:
-            print(f"[card_top_duo] error: {e}")
-    # fallback text
-    text   = f"🤝 <b>2v2 ТОП {priv_display}</b>\n\n"
-    medals = {1: "🥇", 2: "🥈", 3: "🥉"}
-    for i, row in enumerate(players[:10], 1):
-        uid2, name, deo, dw, dl, dk, dd, da = row
-        games   = (dw or 0) + (dl or 0)
-        winrate = round((dw or 0) / games * 100, 1) if games > 0 else 0
-        kd      = round((dk or 0) / (dd or 1), 2)
-        prem    = " 👑" if has_active_premium(uid2) else ""
-        text   += f"{medals.get(i, f'{i}.')} <b>{name}</b>{prem}\n   2v2 ELO: {deo or 1000} | {dw}W/{dl}L ({winrate}%) | K/D: {kd}\n\n"
-    try:
-        await callback.message.edit_text(text, reply_markup=kb.as_markup(), parse_mode="HTML")
-    except Exception:
-        try:
-            await bot.delete_message(callback.message.chat.id, callback.message.message_id)
-        except Exception:
-            pass
-        await bot.send_message(callback.message.chat.id, text, reply_markup=kb.as_markup(), parse_mode="HTML")
-    await safe_answer(callback.id)
-
-
-# ==================== О СЕЗОНЕ ====================
-@router.callback_query(F.data == "season_info")
-async def cb_season_info(callback: CallbackQuery):
-    uid = callback.from_user.id
-    season = get_current_season()
-    if season:
-        sid, snum, sname, started_at = season
-        dt_start = datetime.datetime.fromtimestamp(started_at, tz=MSK).strftime("%d.%m.%Y")
-        season_line = f"📅 Текущий сезон: <b>{sname}</b>\n🗓 Начат: <b>{dt_start}</b>\n\n"
-    else:
-        season_line = ""
-
-    prizes = [
-        (f"{_prem_tag(PREMIUM_GOLD_EMOJI_ID, '🥇')} 1 место", 250000),
-        (f"{_prem_tag(PREMIUM_SILVER_EMOJI_ID, '🥈')} 2 место", 200000),
-        (f"{_prem_tag(PREMIUM_BRONZE_EMOJI_ID, '🥉')} 3 место", 150000),
-        ("4️⃣ 4 место",  100000),
-        ("5️⃣ 5 место",   80000),
-        ("6️⃣ 6 место",   60000),
-        ("7️⃣ 7 место",   50000),
-        ("8️⃣ 8 место",   40000),
-        ("9️⃣ 9 место",   40000),
-        ("🔟 10 место",  30000),
-    ]
-    prizes_text = "\n".join(f"{label} - <b>{amt:,} голды</b>".replace(",", " ") for label, amt in prizes)
-
-    text = (
-        f"🏅 <b>О СЕЗОНЕ</b>\n\n"
-        f"{season_line}"
-        f"🏆 По итогам сезона топ-10 игроков по ELO получат призы из фонда <b>1 000 000 голды</b>:\n\n"
-        f"{prizes_text}\n\n"
-        f"💡 <i>Призы выдаются администратором после завершения сезона.</i>"
-    )
-    kb = InlineKeyboardBuilder()
-    kb.button(text="🔙 Назад", callback_data="back")
-    try:
-        await callback.message.edit_text(text, reply_markup=kb.as_markup(), parse_mode="HTML")
-    except Exception:
-        try:
-            await bot.delete_message(callback.message.chat.id, callback.message.message_id)
-        except Exception:
-            pass
-        await bot.send_message(callback.message.chat.id, text, reply_markup=kb.as_markup(), parse_mode="HTML")
-    await safe_answer(callback.id)
-
-
-# ==================== НАЗАД ====================
-@router.callback_query(F.data == "back")
-async def cb_back(callback: CallbackQuery):
-    uid = callback.from_user.id
-    try:
-        # Если сообщение - текст, редактируем его
-        await callback.message.edit_text(main_menu_text(uid), reply_markup=main_menu(uid), parse_mode="HTML")
-    except Exception:
-        # Если сообщение - фото (карточка профиля/топа), удаляем и шлём новое
-        try:
-            await bot.delete_message(callback.message.chat.id, callback.message.message_id)
-        except Exception:
-            pass
-        await bot.send_message(callback.message.chat.id, main_menu_text(uid),
-                         reply_markup=main_menu(uid), parse_mode="HTML")
-    await safe_answer(callback.id)
-
-
-# ==================== ЛОББИ ====================
-def get_duo_elo_for_player(uid, table="players"):
-    """Явно запрашивает duo_elo по имени колонки, без привязки к индексу SELECT *."""
-    try:
-        conn = _db()
-        cur = conn.cursor()
-        cur.execute(f"SELECT duo_elo FROM {table} WHERE user_id=%s", (uid,))
-        row = cur.fetchone()
-        conn.close()
-        return row[0] if row and row[0] is not None else 1000
-    except Exception:
-        return 1000
-
-def get_quals_elo_for_player(uid, table="players"):
-    """Явно запрашивает quals_elo по имени колонки, без привязки к индексу SELECT *."""
-    try:
-        conn = _db()
-        cur = conn.cursor()
-        cur.execute(f"SELECT quals_elo FROM {table} WHERE user_id=%s", (uid,))
-        row = cur.fetchone()
-        conn.close()
-        return row[0] if row and row[0] is not None else 1000
-    except Exception:
-        return 1000
-
-def build_lobby_text(lobby_id):
-    lobby = active_lobbies.get(lobby_id)
-    if not lobby:
-        return ""
-    parts = lobby_id.split("_")
-    # Format: private_league_device_slot
-    if len(parts) >= 4:
-        private_key, league, device, slot = parts[0], parts[1], parts[2], parts[3]
-    else:
-        private_key, league, device, slot = "fade", parts[0], parts[1], parts[2]
-    priv_cfg  = PRIVATE_CONFIG.get(private_key, PRIVATE_CONFIG["fade"])
-    priv_label = f"{priv_cfg['emoji']} {priv_cfg['display']}"
-    text = (
-        f"🎮 <b>Лобби #{slot} ({priv_label} / {league.upper()}/{device.upper()})</b>\n"
-        f"👥 Игроков: {len(lobby['players'])}/{_lobby_max_size(league)}\n\n"
-    )
-    priv_table_name = priv_cfg["table"]
-    for i, pid in enumerate(lobby["players"], 1):
-        p = get_player_from_table(pid, priv_table_name) or get_player(pid)
-        if p:
-            icon = "🤖" if p[13] else "👤"
-            prem = " 👑" if (not p[13] and has_active_premium(pid)) else ""
-            display_elo = _resolve_display_elo(pid, p, priv_table_name, league)
-            text += f"{i}. {icon} {p[1]}{prem} [Lvl {get_faceit_level(display_elo)} | {display_elo} ELO]\n"
-        else:
-            text += f"{i}. {pid}\n"
-    return text
-
-def build_lobby_kb(lobby_id, uid):
-    parts = lobby_id.split("_")
-    # Format: private_league_device_slot
-    league = parts[1] if len(parts) >= 4 else parts[0]
-    kb = InlineKeyboardBuilder()
-    lobby = active_lobbies.get(lobby_id)
-    # Скрываем кнопку выхода во время фазы принятия
-    if not lobby or lobby.get("status") != "accepting":
-        kb.button(text="🚪 Выйти из лобби", callback_data=f"leave_{lobby_id}")
-    kb.button(text="🔙 К списку", callback_data=f"lobby_{league}")
-    kb.adjust(2)
-    return kb
-
-async def broadcast_lobby_update(lobby_id, exclude_uid=None):
-    lobby = active_lobbies.get(lobby_id)
-    if not lobby:
-        return
-    text = build_lobby_text(lobby_id)
-    for pid, (cid, mid) in list(lobby_player_messages.get(lobby_id, {}).items()):
-        if pid == exclude_uid or pid not in lobby.get("players", []):
-            continue
-        try:
-            await bot.edit_message_text(text, chat_id=cid, message_id=mid, reply_markup=build_lobby_kb(lobby_id, pid))
-        except Exception:
-            pass
-
-
-@router.callback_query(F.data == "find")
-async def cb_find(callback: CallbackQuery):
-    uid = callback.from_user.id
-    err = check_blocked(uid)
-    if err:
-        await safe_answer(callback.id, "⚠️ Доступ ограничен", show_alert=True)
-        return
-    kb = InlineKeyboardBuilder()
-    kb.add(
-        types.InlineKeyboardButton(text="🎮 Default", callback_data="lobby_default"),
-        types.InlineKeyboardButton(text="⭐ Quals", callback_data="lobby_quals"),
-        types.InlineKeyboardButton(text="🤝 2v2 (Duo)", callback_data="lobby_duo"),
-        types.InlineKeyboardButton(text="🔙 Назад", callback_data="back"),
-    )
-    kb.adjust(2)
-    await callback.message.edit_text("🎮 Выбери лигу:", reply_markup=kb.as_markup())
-    await safe_answer(callback.id)
-
-
-@router.callback_query(lambda c: c.data.startswith("lobby_") and len(c.data.split("_")) == 2)
-async def cb_lobby(callback: CallbackQuery):
-    uid = callback.from_user.id
-    league = callback.data.split("_")[1]
-    private_key  = get_user_private(uid)
-    priv_display = get_user_private_display(uid)
-    if league == "quals" and not has_quals_access(uid):
-        await safe_answer(callback.id, "⭐ Доступ к QUALS закрыт!", show_alert=True)
-        return
-    max_size = _lobby_max_size(league)
-    text = f"🎮 <b>ЛОББИ {priv_display} - {league.upper()}</b>\n\nPC и Mobile могут играть вместе\n\n"
-    kb = InlineKeyboardBuilder()
-    for slot in range(1, 6):
-        m_cnt = len(active_lobbies.get(f"{private_key}_{league}_mobile_{slot}", {}).get("players", []))
-        p_cnt = len(active_lobbies.get(f"{private_key}_{league}_pc_{slot}", {}).get("players", []))
-        text += f"Лобби #{slot}: Mobile({m_cnt}/{max_size}) | PC({p_cnt}/{max_size})\n"
-    for slot in range(1, 6):
-        m_cnt = len(active_lobbies.get(f"{private_key}_{league}_mobile_{slot}", {}).get("players", []))
-        p_cnt = len(active_lobbies.get(f"{private_key}_{league}_pc_{slot}", {}).get("players", []))
-        kb.add(
-            types.InlineKeyboardButton(text=f"📱 Mobile #{slot}  ({m_cnt}/{max_size})", callback_data=f"join_{private_key}_{league}_mobile_{slot}"),
-            types.InlineKeyboardButton(text=f"💻 PC #{slot}  ({p_cnt}/{max_size})", callback_data=f"join_{private_key}_{league}_pc_{slot}"),
-        )
-    kb.button(text="🔙 Назад", callback_data="find")
-    kb.adjust(2)
-    await callback.message.edit_text(text, reply_markup=kb.as_markup())
-    await safe_answer(callback.id)
-
-
-@router.callback_query(F.data.startswith("join_"))
-async def cb_join(callback: CallbackQuery):
-    try:
-        parts = callback.data.split("_")
-        if len(parts) < 5:
-            await safe_answer(callback.id, "❌ Ошибка формата")
-            return
-        private_key, league, device, slot = parts[1], parts[2], parts[3], int(parts[4])
-        uid = callback.from_user.id
-        if callback.from_user.username:
-            update_tg_username(uid, callback.from_user.username)
-        err = check_blocked(uid)
-        if err:
-            await safe_answer(callback.id, "⚠️ Доступ ограничен", show_alert=True)
-            return
-        if league == "quals" and not has_quals_access(uid):
-            await safe_answer(callback.id, "⭐ Доступ к QUALS закрыт!", show_alert=True)
-            return
-        if not is_registered(uid):
-            await safe_answer(callback.id, "❌ Вы не зарегистрированы! Напишите /start")
-            return
-        if is_muted_check(uid):
-            mins = get_mute_remaining(uid) // 60
-            await safe_answer(callback.id, f"🔇 Вы замучены! Осталось: {mins} мин.", show_alert=True)
-            return
-        lobby_id = f"{private_key}_{league}_{device}_{slot}"
-        old = user_lobby.get(uid)
-        if old and old in active_lobbies and uid in active_lobbies[old].get("players", []):
-            active_lobbies[old]["players"].remove(uid)
-            lobby_player_messages.get(old, {}).pop(uid, None)
-            if not active_lobbies[old]["players"]:
-                del active_lobbies[old]
-                lobby_player_messages.pop(old, None)
-            else:
-                broadcast_lobby_update(old)
-            user_lobby.pop(uid, None)
-        if lobby_id not in active_lobbies:
-            active_lobbies[lobby_id] = {"players": [], "league": league, "device": device, "slot": slot, "status": "waiting", "private": private_key}
-        lobby = active_lobbies[lobby_id]
-        if lobby["status"] != "waiting":
-            await safe_answer(callback.id, "❌ Лобби уже в игре!", show_alert=True)
-            return
-        if len(lobby["players"]) >= _lobby_max_size(league):
-            await safe_answer(callback.id, "❌ Лобби полное!", show_alert=True)
-            return
-        if uid in lobby["players"]:
-            await safe_answer(callback.id, "✅ Вы уже в этом лобби!")
-            return
-        party_obj = get_party_of(uid)
-        party_leader = party_obj["leader"] if party_obj else None
-
-        # Проверка: QUALS - только соло, пати запрещено
-        if league == "quals" and party_obj and len(party_obj["members"]) > 1:
-            await safe_answer(callback.id, "⭐ В QUALS лигу нельзя заходить с пати! Выйдите из пати и попробуйте снова.", show_alert=True)
-            return
-
-        # Проверка: если в пати есть участники с другой приваткой - предупредить
-        if party_obj and len(party_obj["members"]) > 1:
-            different_priv_members = []
-            for m in party_obj["members"]:
-                if m != uid and get_user_private(m) != private_key:
-                    mp = get_player(m)
-                    mname = mp[1] if mp else str(m)
-                    different_priv_members.append(mname)
-            if different_priv_members:
-                await safe_answer(callback.id, f"⚠️ Члены пати играют в другой приватке! Попросите их сменить приватку: {', '.join(different_priv_members)}", show_alert=True)
-                return
-
-        # Пати больше не тянет участников автоматически - каждый заходит сам
-        lobby["players"].append(uid)
-        user_lobby[uid] = lobby_id
-        if lobby_player_messages.get(lobby_id) is None:
-            lobby_player_messages[lobby_id] = {}
-        text = build_lobby_text(lobby_id)
-        kb = build_lobby_kb(lobby_id, uid)
-        try:
-            await callback.message.edit_text(text, reply_markup=kb.as_markup())
-            lobby_player_messages[lobby_id][uid] = (callback.message.chat.id, callback.message.message_id)
-        except Exception:
-            pass
-        await safe_answer(callback.id, f"✅ Вы вошли в лобби #{slot}!")
-        broadcast_lobby_update(lobby_id, exclude_uid=uid)
-        if len(lobby["players"]) >= _lobby_max_size(league):
-            start_accept_phase(lobby_id)
-    except Exception as e:
-        print(f"Join error: {e}")
-        await safe_answer(callback.id, "❌ Ошибка")
-
-
-@router.callback_query(F.data.startswith("leave_"))
-async def cb_leave(callback: CallbackQuery):
-    uid = callback.from_user.id
-    lobby_id = callback.data.split("leave_", 1)[1]
-    lobby = active_lobbies.get(lobby_id)
-    if lobby and lobby.get("status") == "accepting":
-        await safe_answer(callback.id, "❌ Нельзя выйти во время принятия матча!", show_alert=True)
-        return
-    if lobby and uid in lobby.get("players", []):
-        lobby["players"].remove(uid)
-        lobby_player_messages.get(lobby_id, {}).pop(uid, None)
-        if not lobby["players"]:
-            del active_lobbies[lobby_id]
-            lobby_player_messages.pop(lobby_id, None)
-        else:
-            broadcast_lobby_update(lobby_id)
-        user_lobby.pop(uid, None)
-        await safe_answer(callback.id, "✅ Вы вышли из лобби")
-        await callback.message.edit_text(main_menu_text(uid), reply_markup=main_menu(uid), parse_mode="HTML")
-    else:
-        # Игрок не найден в лобби (лобби удалено или игрок уже вышел)
-        # Всё равно чистим зависший user_lobby
-        user_lobby.pop(uid, None)
-        await safe_answer(callback.id, "❌ Лобби недоступно")
-        try:
-            await callback.message.edit_text(main_menu_text(uid), reply_markup=main_menu(uid), parse_mode="HTML")
-        except Exception:
-            pass
-
-
-# ==================== ФАЗА ПРИНЯТИЯ ====================
-def build_accept_text(lobby_id):
-    lobby = active_lobbies.get(lobby_id)
-    if not lobby:
-        return ""
-    accepted = lobby.get("accepted", [])
-    real_players = [u for u in lobby["players"] if not is_bot_player(u)]
-    text = "🔔 <b>Матч найден! Статус принятия:</b>\n\n"
-    for u in real_players:
-        p = get_player_in_lobby(u, lobby)
-        name = p[1] if p else str(u)
-        prem = " 👑" if has_active_premium(u) else ""
-        icon = "✅" if u in accepted else "⏳"
-        text += f"{icon} {name}{prem}\n"
-    accepted_cnt = len([u for u in accepted if not is_bot_player(u)])
-    text += f"\n<b>{accepted_cnt}/{len(real_players)}</b> приняли"
-    return text
-
-async def update_accept_status(lobby_id):
-    msgs = accept_status_messages.get(lobby_id, {})
-    if not msgs:
-        return
-    text = build_accept_text(lobby_id)
-    for uid, (cid, mid) in list(msgs.items()):
-        try:
-            await bot.edit_message_text(text, chat_id=cid, message_id=mid)
-        except Exception:
-            pass
-
-async def delete_accept_status(lobby_id):
-    msgs = accept_status_messages.pop(lobby_id, {})
-    for uid, (cid, mid) in msgs.items():
-        try:
-            await bot.delete_message(cid, mid)
-        except Exception:
-            pass
-
-async def delete_match_found(lobby_id):
-    msgs = match_found_messages.pop(lobby_id, {})
-    for uid, (cid, mid) in msgs.items():
-        try:
-            await bot.delete_message(cid, mid)
-        except Exception:
-            pass
-
-async def delete_ban_status(lobby_id):
-    msgs = ban_status_messages.pop(lobby_id, {})
-    for uid, (cid, mid) in msgs.items():
-        try:
-            await bot.delete_message(cid, mid)
-        except Exception:
-            pass
-
-async def start_accept_phase(lobby_id):
-    lobby = active_lobbies.get(lobby_id)
-    if not lobby:
-        return
-    lobby["status"] = "accepting"
-    lobby["accepted"] = []
-    delete_lobby_messages(lobby_id)
-    accept_status_messages[lobby_id] = {}
-    match_found_messages[lobby_id] = {}
-    for uid in lobby["players"]:
-        if is_bot_player(uid):
-            lobby["accepted"].append(uid)
-            continue
-        try:
-            kb = InlineKeyboardBuilder()
-            kb.button(text="✅ Принять матч", callback_data=f"accept_{lobby_id}")
-            sent = await bot.send_message(
-                uid,
-                f"🔔 <b>Матч найден!</b>\n\n"
-                f"🏷 Лига: {format_league(lobby.get('league','default'))}\n📱 Устройство: {lobby.get('device','').upper()}\n\n"
-                f"⏱ У вас <b>{ACCEPT_TIMEOUT} секунд</b> чтобы принять.\nПри непринятии - предупреждение ⚠️",
-                reply_markup=kb.as_markup(),
-            )
-            match_found_messages[lobby_id][uid] = (sent.chat.id, sent.message_id)
-        except Exception:
-            pass
-    for uid in lobby["players"]:
-        if is_bot_player(uid):
-            continue
-        try:
-            text = build_accept_text(lobby_id)
-            sent = await bot.send_message(uid, text)
-            accept_status_messages[lobby_id][uid] = (sent.chat.id, sent.message_id)
-        except Exception:
-            pass
-
-    async def check_accept():
-        await asyncio.sleep(ACCEPT_TIMEOUT)  # converted from time.sleep
-        lobby2 = active_lobbies.get(lobby_id)
-        if not lobby2 or lobby2["status"] != "accepting":
-            return
-        not_accepted = [u for u in lobby2["players"] if u not in lobby2.get("accepted", []) and not is_bot_player(u)]
-        delete_accept_status(lobby_id)
-        delete_match_found(lobby_id)
-        if not not_accepted:
-            lobby2["status"] = "pre_mapban"
-            asyncio.create_task(start_map_ban_phase(lobby_id,))
-            return
-        for uid in not_accepted:
-            warns = add_warn_to_player(uid)
-            lobby2["players"].remove(uid)
-            user_lobby.pop(uid, None)
-            lobby_player_messages.get(lobby_id, {}).pop(uid, None)
-            accept_status_messages.get(lobby_id, {}).pop(uid, None)
-            try:
-                if warns >= 3:
-                    until = apply_mute(uid, hours=2)
-                    dt = fmt_dt(until)
-                    # Сбрасываем счётчик варнов после авто-мута
-                    conn_r = _db(); cur_r = conn_r.cursor()
-                    cur_r.execute("UPDATE players SET warns=0 WHERE user_id=%s", (uid,))
-                    conn_r.commit(); conn_r.close()
-                    prow = get_player(uid)
-                    pname = prow[1] if prow else str(uid)
-                    await bot.send_message(uid,
-                        f"⚠️ <b>Варн {warns}/3</b> за непринятие матча.\n"
-                        f"🔇 Система выдала мут на 2 часа (до {dt}).\n"
-                        f"⚠️ Счётчик варнов сброшен.\n❌ Вы исключены из лобби.",
-                        parse_mode="HTML")
-                    send_punishment_log(
-                        f"🔇 <b>Авто-мут (система)</b>\n"
-                        f"👤 Игрок: {tg_link(uid, pname)}\n"
-                        f"📝 Причина: 3 варна за непринятие матча\n"
-                        f"⏰ До: {dt}\n"
-                        f"⚠️ Варны сброшены до 0"
-                    )  # system auto-action, no admin uid - keep plain log
-                else:
-                    await bot.send_message(uid, f"⚠️ Варн {warns}/3 за непринятие матча.\n❌ Вы исключены из лобби.")
-                    try:
-                        prow2 = get_player(uid)
-                        pname2 = prow2[1] if prow2 else str(uid)
-                        send_punishment_log(
-                            f"⚠️ <b>Авто-варн (непринятие матча)</b>\n"
-                            f"👤 Игрок: {tg_link(uid, pname2)}\n"
-                            f"⚠️ Варны: {warns}/3\n"
-                            f"📝 Причина: не принял матч за {ACCEPT_TIMEOUT} сек"
-                        )
-                    except Exception:
-                        pass
-            except Exception:
-                pass
-        _max_sz = _lobby_max_size(lobby2.get("league", "default"))
-        if len(lobby2["players"]) >= _max_sz:
-            lobby2["status"] = "pre_mapban"
-            asyncio.create_task(start_map_ban_phase(lobby_id,))
-        elif not lobby2["players"]:
-            lobby_player_messages.pop(lobby_id, None)
-            ban_status_messages.pop(lobby_id, None)
-            del active_lobbies[lobby_id]
-        else:
-            lobby2["status"] = "waiting"
-            lobby2.pop("accepted", None)
-            if lobby_player_messages.get(lobby_id) is None:
-                lobby_player_messages[lobby_id] = {}
-            lobby_text = build_lobby_text(lobby_id)
-            cnt = len(lobby2["players"])
-            for uid in lobby2["players"]:
-                if is_bot_player(uid):
-                    continue
-                try:
-                    await bot.send_message(
-                        uid,
-                        f"⚠️ Игрок не принял матч и исключён.\n"
-                        f"Вы остаётесь в очереди ({cnt}/{_max_sz}).",
-                    )
-                except Exception:
-                    pass
-                try:
-                    kb = build_lobby_kb(lobby_id, uid)
-                    sent = await bot.send_message(uid, lobby_text, reply_markup=kb.as_markup())
-                    lobby_player_messages[lobby_id][uid] = (sent.chat.id, sent.message_id)
-                except Exception:
-                    pass
-
-    asyncio.create_task(check_accept())
-
-
-@router.callback_query(F.data.startswith("accept_"))
-async def cb_accept(callback: CallbackQuery):
-    uid = callback.from_user.id
-    lobby_id = callback.data.split("accept_", 1)[1]
-    lobby = active_lobbies.get(lobby_id)
-    if not lobby or lobby["status"] not in ("accepting",):
-        await safe_answer(callback.id, "❌ Матч уже недоступен")
-        return
-    if uid not in lobby.get("accepted", []):
-        lobby["accepted"].append(uid)
-    await safe_answer(callback.id, "✅ Принято!")
-    try:
-        await bot.delete_message(callback.message.chat.id, callback.message.message_id)
-    except Exception:
-        try:
-            await bot.edit_message_reply_markup(callback.message.chat.id, callback.message.message_id, reply_markup=None)
-        except Exception:
-            pass
-    update_accept_status(lobby_id)
-    if len(lobby["accepted"]) >= len(lobby["players"]) and lobby["status"] == "accepting":
-        lobby["status"] = "pre_mapban"
-        delete_accept_status(lobby_id)
-        delete_match_found(lobby_id)
-        asyncio.create_task(start_map_ban_phase(lobby_id,))
-
-
-# ==================== БАН КАРТ ====================
-def build_ban_status_text(lobby_id):
-    lobby = active_lobbies.get(lobby_id)
-    if not lobby:
-        return ""
-    ct_p = get_player_in_lobby(lobby.get("ct_captain"), lobby) if lobby.get("ct_captain") else None
-    t_p  = get_player_in_lobby(lobby.get("t_captain"),  lobby) if lobby.get("t_captain")  else None
-    ct_name = ct_p[1] if ct_p else "CT капитан"
-    t_name  = t_p[1]  if t_p  else "T капитан"
-    bans = lobby.get("map_bans", [])
-    remaining = lobby.get("maps_remaining", [])
-    turn = lobby.get("ban_turn", "ct")
-    lines = [f"🗺 <b>Бан карт</b>", "", f"💙 CT: <b>{ct_name}</b>", f"🧡 T: <b>{t_name}</b>", ""]
-    if bans:
-        lines.append("🚫 <b>Забанено:</b>")
-        for b in bans:
-            lines.append(f"  {'💙' if b['team']=='ct' else '🧡'} {b['map']}")
-        lines.append("")
-    if remaining:
-        lines.append("✅ <b>Остались:</b>")
-        for m in remaining:
-            lines.append(f"  - {m}")
-        lines.append("")
-        turn_name = ct_name if turn == "ct" else t_name
-        lines.append(f"⏳ Ход: {'💙' if turn=='ct' else '🧡'} <b>{turn_name}</b>")
-    else:
-        lines.append(f"🗺 <b>Карта выбрана: {lobby.get('map_name', '?')}</b>")
-    return "\n".join(lines)
-
-async def send_ban_status_to_all(lobby_id):
-    lobby = active_lobbies.get(lobby_id)
-    if not lobby:
-        return
-    text = build_ban_status_text(lobby_id)
-    if ban_status_messages.get(lobby_id) is None:
-        ban_status_messages[lobby_id] = {}
-    for uid in lobby["players"]:
-        if is_bot_player(uid):
-            continue
-        existing = ban_status_messages[lobby_id].get(uid)
-        if existing:
-            cid, mid = existing
-            try:
-                await bot.edit_message_text(text, chat_id=cid, message_id=mid)
-                continue
-            except Exception:
-                pass
-        try:
-            sent = await bot.send_message(uid, text)
-            ban_status_messages[lobby_id][uid] = (sent.chat.id, sent.message_id)
-        except Exception:
-            pass
-
-async def delete_lobby_messages(lobby_id):
-    msgs = lobby_player_messages.pop(lobby_id, {})
-    for uid, (cid, mid) in msgs.items():
-        try:
-            await bot.delete_message(cid, mid)
-        except Exception:
-            pass
-
-BAN_TURN_TIMEOUT = 40    # секунды на бан карты для живого капитана
-DRAFT_TURN_TIMEOUT = 45  # секунды на выбор игрока в драфте
-
-def _assign_preliminary_teams_for_captain(players, team_sz):
-    """Preliminary team split for captain selection.
-    Spreads distinct party groups across CT/T so 2 parties don't end up in the same team.
-    """
-    player_set = set(players)
-    placed = set()
-    party_groups = []
-    solos = []
-    for uid in players:
-        if uid in placed:
-            continue
-        party = get_party_of(uid)
-        if party and len(party["members"]) > 1:
-            grp = [m for m in party["members"] if m in player_set and m not in placed]
-            if len(grp) > 1:
-                party_groups.append(grp)
-                for m in grp:
-                    placed.add(m)
-                continue
-        solos.append(uid)
-        placed.add(uid)
-
-    random.shuffle(solos)
-    ct_team, t_team = [], []
-
-    # Alternate parties between CT and T to avoid both parties landing in one team
-    for i, grp in enumerate(party_groups):
-        dest = ct_team if i % 2 == 0 else t_team
-        other = t_team if dest is ct_team else ct_team
-        if len(dest) + len(grp) <= team_sz:
-            dest.extend(grp)
-        elif len(other) + len(grp) <= team_sz:
-            other.extend(grp)
-        else:
-            for m in grp:
-                if len(ct_team) < team_sz:
-                    ct_team.append(m)
-                elif len(t_team) < team_sz:
-                    t_team.append(m)
-
-    for uid in solos:
-        if len(ct_team) < team_sz:
-            ct_team.append(uid)
-        elif len(t_team) < team_sz:
-            t_team.append(uid)
-
-    return ct_team, t_team
-
-
-async def start_map_ban_phase(lobby_id):
-    try:
-        _start_map_ban_phase_inner(lobby_id)
-    except Exception as _exc:
-        print(f"[start_map_ban_phase] ОШИБКА lobby={lobby_id}: {_exc}")
-        import traceback; traceback.print_exc()
-
-async def _start_map_ban_phase_inner(lobby_id):
-    lobby = active_lobbies.get(lobby_id)
-    if not lobby:
-        print(f"[mapban] lobby {lobby_id} не найдено")
-        return
-    if lobby["status"] not in ("accepting", "pre_mapban"):
-        print(f"[mapban] lobby {lobby_id} неверный статус: {lobby['status']}")
-        return
-
-    league = lobby.get("league", "default")
-    team_sz = _lobby_team_size(league)
-
-    print(f"[mapban] lobby={lobby_id} league={league} team_sz={team_sz} players={len(lobby['players'])}")
-
-    lobby["status"] = "mapban"
-    lobby["maps_remaining"] = _get_lobby_maps(lobby)
-    lobby["map_bans"] = []
-    lobby["ban_turn"] = "ct"
-    lobby["ban_count"] = 0
-    players = lobby["players"]
-    max_sz = _lobby_max_size(league)
-
-    print(f"[mapban] карты: {lobby['maps_remaining']}")
-
-    delete_match_found(lobby_id)
-    delete_accept_status(lobby_id)
-    delete_lobby_messages(lobby_id)
-
-    # Группируем игроков так, чтобы участники одной пати стояли рядом -
-    # это гарантирует что пати не окажется разбита по разным половинам при сплите.
-    async def _group_by_party(player_list):
-        placed = set()
-        grouped = []
-        player_set = set(player_list)
-        for uid in player_list:
-            if uid in placed:
-                continue
-            party_obj = get_party_of(uid)
-            if party_obj and len(party_obj["members"]) > 1:
-                grp = [m for m in party_obj["members"] if m in player_set and m not in placed]
-                grouped.extend(grp)
-                for m in grp:
-                    placed.add(m)
-            else:
-                grouped.append(uid)
-                placed.add(uid)
-        return grouped
-
-    ct_team, t_team = _assign_preliminary_teams_for_captain(players, team_sz)
-    lobby["ct_captain"] = pick_captain(ct_team)
-    lobby["t_captain"]  = pick_captain(t_team)
-
-    print(f"[mapban] ct_cap={lobby['ct_captain']} t_cap={lobby['t_captain']}")
-
-    # Сообщение всем игрокам о старте фазы бана (с отслеживанием для последующего удаления)
-    lobby["ban_announce_msgs"] = {}
-    for _uid in players:
-        if is_bot_player(_uid):
-            continue
-        try:
-            _sent = await bot.send_message(
-                _uid,
-                "🗺 <b>Фаза бана карт началась!</b>\nОжидайте хода капитана...",
-                parse_mode="HTML",
-            )
-            lobby["ban_announce_msgs"][_uid] = (_sent.chat.id, _sent.message_id)
-        except Exception:
-            pass
-
-    send_ban_status_to_all(lobby_id)
-    _do_ban_turn(lobby_id)
-
-
-async def _do_ban_turn(lobby_id):
-    lobby = active_lobbies.get(lobby_id)
-    if not lobby or lobby["status"] != "mapban":
-        print(f"[_do_ban_turn] пропуск: lobby={lobby_id} статус={lobby.get('status') if lobby else 'нет'}")
-        return
-
-    turn      = lobby["ban_turn"]
-    ban_count = lobby.get("ban_count", 0)  # снимок - для защиты от повторного срабатывания таймера
-    captain_uid = lobby["ct_captain"] if turn == "ct" else lobby["t_captain"]
-
-    print(f"[_do_ban_turn] lobby={lobby_id} turn={turn} captain={captain_uid} ban_count={ban_count} remaining={lobby.get('maps_remaining')}")
-
-    # Если капитан не определён - авто-баним через 1 сек
-    if captain_uid is None:
-        async def _auto_ban_null():
-            await asyncio.sleep(1)  # converted from time.sleep
-            lobby2 = active_lobbies.get(lobby_id)
-            if not lobby2 or lobby2["status"] != "mapban" or not lobby2.get("maps_remaining"):
-                return
-            _apply_ban(lobby_id, -1, random.choice(lobby2["maps_remaining"]))
-        asyncio.create_task(_auto_ban_null())
-        return
-
-    if is_bot_player(captain_uid):
-        async def bot_auto_ban():
-            await asyncio.sleep(random.uniform(3, 5))  # converted from time.sleep
-            lobby2 = active_lobbies.get(lobby_id)
-            if not lobby2 or lobby2["status"] != "mapban" or not lobby2.get("maps_remaining"):
-                return
-            # Проверяем что ход всё ещё за нами по счётчику
-            if lobby2.get("ban_count", 0) != ban_count:
-                return
-            _apply_ban(lobby_id, captain_uid, random.choice(lobby2["maps_remaining"]))
-        asyncio.create_task(bot_auto_ban())
-    else:
-        _send_ban_keyboard(lobby_id, captain_uid)
-        # AFK-таймер: сравниваем ban_count, а не ban_turn - иначе 2-й ход того же капитана ложно срабатывает
-        async def captain_afk_timeout():
-            await asyncio.sleep(BAN_TURN_TIMEOUT)  # converted from time.sleep
-            lobby2 = active_lobbies.get(lobby_id)
-            if not lobby2 or lobby2["status"] != "mapban":
-                return
-            if lobby2.get("ban_count", 0) != ban_count:
-                return  # ход уже прошёл - капитан успел забанить
-            remaining2 = lobby2.get("maps_remaining", [])
-            if not remaining2:
-                return
-            chosen = random.choice(remaining2)
-            try:
-                await bot.send_message(
-                    captain_uid,
-                    f"⏰ Время вышло ({BAN_TURN_TIMEOUT} сек)! Карта <b>{chosen}</b> забанена автоматически.",
-                    parse_mode="HTML",
-                )
-            except Exception:
-                pass
-            _apply_ban(lobby_id, captain_uid, chosen)
-        asyncio.create_task(captain_afk_timeout())
-
-async def _send_ban_keyboard(lobby_id, captain_uid):
-    lobby = active_lobbies.get(lobby_id)
-    if not lobby:
-        return
-    turn = lobby["ban_turn"]
-    kb = InlineKeyboardBuilder()
-    for m in lobby["maps_remaining"]:
-        kb.button(text=f"❌ {m}", callback_data=f"banmap_{lobby_id}_{m}")
-    try:
-        sent = await bot.send_message(
-            captain_uid,
-            f"{'💙' if turn=='ct' else '🧡'} <b>Твой ход - забань карту:</b>",
-            reply_markup=kb.as_markup(),
-        )
-        ban_turn_messages[lobby_id] = (sent.chat.id, sent.message_id)
-    except Exception as e:
-        print(f"Ban keyboard error: {e}")
-
-def _apply_ban(lobby_id, banner_uid, map_name):
-    lobby = active_lobbies.get(lobby_id)
-    if not lobby or lobby["status"] != "mapban":
-        return
-    if map_name not in lobby["maps_remaining"]:
-        return
-    turn = lobby["ban_turn"]
-    lobby["maps_remaining"].remove(map_name)
-    lobby["map_bans"].append({"team": turn, "map": map_name})
-    lobby["ban_count"] += 1
-    if len(lobby["maps_remaining"]) == 1:
-        lobby["map_name"] = lobby["maps_remaining"][0]
-        send_ban_status_to_all(lobby_id)
-        asyncio.create_task((lambda: asyncio.get_event_loop().call_later(2, start_draft_phase, lobby_id))()); # delayed
-    else:
-        lobby["ban_turn"] = "t" if turn == "ct" else "ct"
-        send_ban_status_to_all(lobby_id)
-        _do_ban_turn(lobby_id)
-
-
-@router.callback_query(F.data.startswith("banmap_"))
-async def cb_ban_map(callback: CallbackQuery):
-    uid = callback.from_user.id
-    raw = callback.data[len("banmap_"):]
-    raw_parts = raw.split("_")
-    map_name = raw_parts[-1]
-    lobby_id = "_".join(raw_parts[:-1])
-    lobby = active_lobbies.get(lobby_id)
-    if not lobby or lobby["status"] != "mapban":
-        await safe_answer(callback.id, "❌ Фаза бана уже завершена")
-        return
-    turn = lobby["ban_turn"]
-    expected_cap = lobby["ct_captain"] if turn == "ct" else lobby["t_captain"]
-    if uid != expected_cap:
-        await safe_answer(callback.id, "❌ Сейчас не ваш ход!", show_alert=True)
-        return
-    if map_name not in lobby["maps_remaining"]:
-        await safe_answer(callback.id, "❌ Карта уже забанена")
-        return
-    await safe_answer(callback.id, f"✅ {map_name} забанена!")
-    try:
-        await bot.delete_message(callback.message.chat.id, callback.message.message_id)
-    except Exception:
-        pass
-    ban_turn_messages.pop(lobby_id, None)
-    _apply_ban(lobby_id, uid, map_name)
-
-
-# ==================== ДРАФТ ИГРОКОВ ====================
-
-def _player_draft_label(uid, lobby):
-    """Short one-line label for a draft pick button: Name [ELO | KD]."""
-    priv_table = PRIVATE_CONFIG.get(lobby.get("private", "fade"), PRIVATE_CONFIG["fade"])["table"]
-    league = lobby.get("league", "default")
-    p = get_player_from_table(uid, priv_table) or get_player(uid)
-    if not p:
-        return str(uid)
-    elo = _resolve_display_elo(uid, p, priv_table, league)
-    lvl = get_faceit_level(elo)
-    kills = p[8] if len(p) > 8 else 0
-    deaths = p[9] if len(p) > 9 else 1
-    kd = round(kills / max(deaths, 1), 2)
-    return f"{p[1]} [Lv{lvl} | {elo} ELO | K/D {kd}]"
-
-
-def _build_draft_units(lobby):
-    """
-    Return (units, ct_auto_uids, t_auto_uids).
-
-    units: list of pick-units, each unit is a list of UIDs.
-           A unit is a solo player OR an entire non-captain party group.
-    ct_auto_uids: UIDs that auto-join CT (captain's own party members).
-    t_auto_uids:  UIDs that auto-join T  (captain's own party members).
-    """
-    players = lobby["players"]
-    player_set = set(players)
-    ct_captain = lobby.get("ct_captain")
-    t_captain  = lobby.get("t_captain")
-
-    auto_assigned = set()
-    if ct_captain:
-        auto_assigned.add(ct_captain)
-    if t_captain:
-        auto_assigned.add(t_captain)
-
-    ct_auto, t_auto = set(), set()
-    for cap, auto_set in ((ct_captain, ct_auto), (t_captain, t_auto)):
-        if not cap:
-            continue
-        party = get_party_of(cap)
-        if party and len(party["members"]) > 1:
-            for m in party["members"]:
-                if m in player_set and m != cap:
-                    auto_set.add(m)
-                    auto_assigned.add(m)
-
-    # Build pick units from the remaining (non-auto-assigned) players
-    available = [u for u in players if u not in auto_assigned]
-    placed = set()
-    units = []
-    for uid in available:
-        if uid in placed:
-            continue
-        party = get_party_of(uid)
-        if party and len(party["members"]) > 1:
-            grp = [m for m in party["members"] if m in player_set and m not in auto_assigned and m not in placed]
-            if len(grp) > 1:
-                units.append(grp)
-                for m in grp:
-                    placed.add(m)
-                continue
-        units.append([uid])
-        placed.add(uid)
-
-    return units, ct_auto, t_auto
-
-
-def _build_draft_status_text(lobby_id):
-    lobby = active_lobbies.get(lobby_id)
-    if not lobby:
-        return ""
-    draft = lobby.get("draft", {})
-    ct_cap_uid = lobby.get("ct_captain")
-    t_cap_uid  = lobby.get("t_captain")
-    priv_table = PRIVATE_CONFIG.get(lobby.get("private", "fade"), PRIVATE_CONFIG["fade"])["table"]
-
-    async def pname(uid):
-        p = get_player_from_table(uid, priv_table) or get_player(uid)
-        return p[1] if p else str(uid)
-
-    ct_team = draft.get("ct_team", [])
-    t_team  = draft.get("t_team",  [])
-    ct_lines = "\n".join(f"  {'👑 ' if u == ct_cap_uid else ''}{pname(u)}" for u in ct_team)
-    t_lines  = "\n".join(f"  {'👑 ' if u == t_cap_uid  else ''}{pname(u)}" for u in t_team)
-
-    turn = draft.get("turn", "ct")
-    turn_cap  = ct_cap_uid if turn == "ct" else t_cap_uid
-    turn_name = pname(turn_cap) if turn_cap else "?"
-
-    units = draft.get("units", [])
-    avail_parts = []
-    for unit in units:
-        if len(unit) == 1:
-            avail_parts.append(f"  - {pname(unit[0])}")
-        else:
-            avail_parts.append(f"  - {'  +  '.join(pname(u) for u in unit)} (пати)")
-    avail_text = "\n".join(avail_parts) if avail_parts else "  -"
-
-    text = (
-        f"👥 <b>Выбор игроков</b>\n\n"
-        f"💙 <b>CT ({len(ct_team)})</b>:\n{ct_lines or '  (пусто)'}\n\n"
-        f"🧡 <b>T ({len(t_team)})</b>:\n{t_lines or '  (пусто)'}\n\n"
-    )
-    if units:
-        text += f"📋 <b>Доступны:</b>\n{avail_text}\n\n"
-        text += f"⏳ Ход: {'💙' if turn == 'ct' else '🧡'} <b>{turn_name}</b>"
-    else:
-        text += "✅ Выбор завершён!"
-    return text
-
-
-async def _send_draft_status_to_all(lobby_id):
-    lobby = active_lobbies.get(lobby_id)
-    if not lobby:
-        return
-    text = _build_draft_status_text(lobby_id)
-    if "draft_status_msgs" not in lobby:
-        lobby["draft_status_msgs"] = {}
-    for uid in lobby["players"]:
-        if is_bot_player(uid):
-            continue
-        existing = lobby["draft_status_msgs"].get(uid)
-        if existing:
-            cid, mid = existing
-            try:
-                await bot.edit_message_text(text, chat_id=cid, message_id=mid, parse_mode="HTML")
-                continue
-            except Exception:
-                pass
-        try:
-            sent = await bot.send_message(uid, text, parse_mode="HTML")
-            lobby["draft_status_msgs"][uid] = (sent.chat.id, sent.message_id)
-        except Exception:
-            pass
-
-
-async def start_draft_phase(lobby_id):
-    """Begin captain-pick draft after map ban."""
-    try:
-        _start_draft_phase_inner(lobby_id)
-    except Exception as exc:
-        print(f"[start_draft_phase] ОШИБКА lobby={lobby_id}: {exc}")
-        import traceback; traceback.print_exc()
-        # Fallback: just launch the match normally
-        asyncio.create_task(launch_match(lobby_id))
-
-
-async def _start_draft_phase_inner(lobby_id):
-    lobby = active_lobbies.get(lobby_id)
-    if not lobby:
-        return
-    if lobby.get("status") not in ("mapban",):
-        return
-
-    # ── Чистим сообщения фазы бана ──────────────────────────────────────────
-    # Статус-сообщения бана (у всех игроков)
-    delete_ban_status(lobby_id)
-    # Клавиатура бана (у текущего капитана)
-    _ban_kb = ban_turn_messages.pop(lobby_id, None)
-    if _ban_kb:
-        try:
-            await bot.delete_message(_ban_kb[0], _ban_kb[1])
-        except Exception:
-            pass
-    # Анонс начала фазы бана (у всех игроков)
-    for _uid, (_cid, _mid) in list(lobby.pop("ban_announce_msgs", {}).items()):
-        try:
-            await bot.delete_message(_cid, _mid)
-        except Exception:
-            pass
-    # ────────────────────────────────────────────────────────────────────────
-
-    lobby["status"] = "draft"
-
-    players = lobby["players"]
-    league  = lobby.get("league", "default")
-    team_sz = _lobby_team_size(league)
-
-    ct_captain = lobby.get("ct_captain")
-    t_captain  = lobby.get("t_captain")
-
-    units, ct_auto, t_auto = _build_draft_units(lobby)
-
-    ct_team = ([ct_captain] if ct_captain else []) + list(ct_auto)
-    t_team  = ([t_captain]  if t_captain  else []) + list(t_auto)
-
-    ct_needs = team_sz - len(ct_team)
-    t_needs  = team_sz - len(t_team)
-
-    # The team that already has fewer members picks first (catch-up)
-    if len(ct_team) <= len(t_team):
-        first_turn = "ct"
-    else:
-        first_turn = "t"
-
-    lobby["draft"] = {
-        "units":      units,
-        "ct_team":    ct_team,
-        "t_team":     t_team,
-        "ct_needs":   ct_needs,
-        "t_needs":    t_needs,
-        "turn":       first_turn,
-        "turn_count": 0,
-        "lock":       threading.Lock(),   # guards concurrent pick application
-        "finished":   False,              # idempotency guard for _finish_draft
-    }
-    lobby["draft_status_msgs"] = {}
-    lobby["draft_kb_msgs"]     = {}
-
-    # Inform all players
-    priv_table = PRIVATE_CONFIG.get(lobby.get("private", "fade"), PRIVATE_CONFIG["fade"])["table"]
-
-    async def pname(uid):
-        p = get_player_from_table(uid, priv_table) or get_player(uid)
-        return p[1] if p else str(uid)
-
-    ct_cap_name = pname(ct_captain) if ct_captain else "?"
-    t_cap_name  = pname(t_captain)  if t_captain  else "?"
-
-    lobby["draft_announce_msgs"] = {}
-    for uid in players:
-        if is_bot_player(uid):
-            continue
-        try:
-            _dsent = await bot.send_message(
-                uid,
-                f"👥 <b>Фаза выбора игроков!</b>\n"
-                f"🗺 Карта: <b>{lobby.get('map_name', '?')}</b>\n\n"
-                f"💙 CT капитан: <b>{ct_cap_name}</b>\n"
-                f"🧡 T  капитан: <b>{t_cap_name}</b>\n\n"
-                f"Капитаны по очереди выбирают состав.",
-                parse_mode="HTML",
-            )
-            lobby["draft_announce_msgs"][uid] = (_dsent.chat.id, _dsent.message_id)
-        except Exception:
-            pass
-
-    _do_draft_turn(lobby_id)
-
-
-async def _send_draft_pick_keyboard(lobby_id, captain_uid, turn):
-    lobby = active_lobbies.get(lobby_id)
-    if not lobby:
-        return
-    draft = lobby.get("draft", {})
-    units = draft.get("units", [])
-    priv_table = PRIVATE_CONFIG.get(lobby.get("private", "fade"), PRIVATE_CONFIG["fade"])["table"]
-    league     = lobby.get("league", "default")
-
-    turn_count = draft.get("turn_count", 0)
-    kb = InlineKeyboardBuilder()
-    for i, unit in enumerate(units):
-        if len(unit) == 1:
-            label = _player_draft_label(unit[0], lobby)
-        else:
-            # Party group
-            parts_l = []
-            elos = []
-            for uid2 in unit:
-                p = get_player_from_table(uid2, priv_table) or get_player(uid2)
-                if p:
-                    e = _resolve_display_elo(uid2, p, priv_table, league)
-                    elos.append(e)
-                    parts_l.append(p[1])
-                else:
-                    parts_l.append(str(uid2))
-            avg_elo = round(sum(elos) / len(elos)) if elos else 1000
-            label = f"👥 {' + '.join(parts_l)} [ELO ср. {avg_elo}]"
-        # Embed turn_count nonce so stale keyboards from previous turns are rejected
-        kb.button(
-            f"✅ {label}",
-            callback_data=f"draftpick_{lobby_id}_{turn_count}_{i}",
-        )
-
-    try:
-        sent = await bot.send_message(
-            captain_uid,
-            f"{'💙' if turn == 'ct' else '🧡'} <b>Твой ход - выбери игрока:</b>",
-            reply_markup=kb.as_markup(),
-            parse_mode="HTML",
-        )
-        lobby["draft_kb_msgs"][captain_uid] = (sent.chat.id, sent.message_id)
-    except Exception as e:
-        print(f"[draft keyboard error] {e}")
-
-
-async def _do_draft_turn(lobby_id):
-    lobby = active_lobbies.get(lobby_id)
-    if not lobby or lobby.get("status") != "draft":
-        return
-
-    draft     = lobby.get("draft", {})
-    units     = draft.get("units", [])
-    ct_needs  = draft.get("ct_needs", 0)
-    t_needs   = draft.get("t_needs",  0)
-
-    # Nothing left to draft
-    if not units or (ct_needs <= 0 and t_needs <= 0):
-        _finish_draft(lobby_id)
-        return
-
-    turn        = draft.get("turn", "ct")
-    captain_uid = lobby.get("ct_captain") if turn == "ct" else lobby.get("t_captain")
-
-    _send_draft_status_to_all(lobby_id)
-
-    # --- Bot captain: auto-pick best unit by avg ELO ---
-    if captain_uid and is_bot_player(captain_uid):
-        async def _bot_pick():
-            await asyncio.sleep(random.uniform(2, 4))  # converted from time.sleep
-            l2 = active_lobbies.get(lobby_id)
-            if not l2 or l2.get("status") != "draft":
-                return
-            d2 = l2.get("draft", {})
-            u2 = d2.get("units", [])
-            if not u2:
-                return
-            priv_t = PRIVATE_CONFIG.get(l2.get("private","fade"), PRIVATE_CONFIG["fade"])["table"]
-            league2 = l2.get("league", "default")
-
-            def _unit_avg_elo(unit):
-                s = 0
-                for uid3 in unit:
-                    p3 = get_player_from_table(uid3, priv_t) or get_player(uid3)
-                    s += _resolve_display_elo(uid3, p3, priv_t, league2) if p3 else 1000
-                return s / len(unit)
-
-            best = max(u2, key=_unit_avg_elo)
-            _apply_draft_pick(lobby_id, d2.get("turn", turn), best)
-        asyncio.create_task(_bot_pick())
-
-    # --- Human captain: send keyboard + AFK timer ---
-    elif captain_uid:
-        _send_draft_pick_keyboard(lobby_id, captain_uid, turn)
-        snap_count = draft.get("turn_count", 0)
-
-        async def _afk_timeout(snap=snap_count, cap=captain_uid, t=turn):
-            await asyncio.sleep(DRAFT_TURN_TIMEOUT)  # converted from time.sleep
-            l2 = active_lobbies.get(lobby_id)
-            if not l2 or l2.get("status") != "draft":
-                return
-            d2 = l2.get("draft", {})
-            if d2.get("turn_count", 0) != snap:
-                return  # someone already picked
-            u2 = d2.get("units", [])
-            if not u2:
-                return
-            chosen = random.choice(u2)
-            try:
-                await bot.send_message(cap, f"⏰ Время вышло ({DRAFT_TURN_TIMEOUT} сек)! Игрок выбран автоматически.")
-            except Exception:
-                pass
-            _apply_draft_pick(lobby_id, d2.get("turn", t), chosen)
-        asyncio.create_task(_afk_timeout())
-
-    # --- No captain: auto-fill ---
-    else:
-        if units:
-            _apply_draft_pick(lobby_id, turn, units[0])
-
-
-async def _apply_draft_pick(lobby_id, team, unit):
-    """Register a pick, advance the draft. Thread-safe via per-draft lock."""
-    lobby = active_lobbies.get(lobby_id)
-    if not lobby or lobby.get("status") != "draft":
-        return
-
-    draft = lobby.get("draft", {})
-    lock  = draft.get("lock")
-
-    # Acquire the per-draft lock (non-blocking: second concurrent pick loses)
-    if lock is not None:
-        acquired = lock.acquire(blocking=False)
-        if not acquired:
-            return  # another thread is mid-pick; discard this one
-    try:
-        # Re-validate state under lock
-        if not lobby or lobby.get("status") != "draft":
-            return
-        if draft.get("finished"):
-            return
-
-        unit_set = set(unit)
-
-        # Verify the unit still exists (concurrent AFK + callback race)
-        current_units = draft.get("units", [])
-        if not any(set(u) == unit_set for u in current_units):
-            return  # already picked by another thread
-
-        # Remove chosen unit
-        draft["units"] = [u for u in current_units if set(u) != unit_set]
-
-        # Add to team
-        if team == "ct":
-            draft["ct_team"].extend(unit)
-            draft["ct_needs"] = draft.get("ct_needs", 0) - len(unit)
-        else:
-            draft["t_team"].extend(unit)
-            draft["t_needs"] = draft.get("t_needs", 0) - len(unit)
-
-        draft["turn_count"] = draft.get("turn_count", 0) + 1
-
-        # Delete the pick keyboard for the captain who just picked
-        cap_uid = lobby.get("ct_captain") if team == "ct" else lobby.get("t_captain")
-        kb_msg  = lobby.get("draft_kb_msgs", {}).pop(cap_uid, None)
-
-        remaining_units = draft["units"]
-        ct_needs = draft.get("ct_needs", 0)
-        t_needs  = draft.get("t_needs",  0)
-
-        do_finish = not remaining_units or (ct_needs <= 0 and t_needs <= 0)
-
-        if not do_finish:
-            # Give the next turn to whichever team needs MORE players (catch-up).
-            # This handles the case where a party unit was just picked: the team
-            # that received multiple players in one pick may now be ahead, so the
-            # opposing team keeps picking until team sizes are equal again.
-            if ct_needs > t_needs:
-                next_turn = "ct"
-            elif t_needs > ct_needs:
-                next_turn = "t"
-            else:
-                # Teams need the same amount - normal alternation
-                next_turn = "t" if team == "ct" else "ct"
-            # Safety guard: skip any team that is already full
-            if next_turn == "ct" and ct_needs <= 0:
-                next_turn = "t"
-            elif next_turn == "t" and t_needs <= 0:
-                next_turn = "ct"
-            draft["turn"] = next_turn
-
-    finally:
-        if lock is not None:
-            lock.release()
-
-    # Perform side-effects outside the lock
-    if kb_msg:
-        try:
-            await bot.delete_message(kb_msg[0], kb_msg[1])
-        except Exception:
-            pass
-
-    if do_finish:
-        _finish_draft(lobby_id)
-    else:
-        _do_draft_turn(lobby_id)
-
-
-async def _finish_draft(lobby_id):
-    """All picks done - send result, then launch the match. Idempotent."""
-    lobby = active_lobbies.get(lobby_id)
-    if not lobby:
-        return
-
-    draft = lobby.get("draft", {})
-    # Guard against double-call from concurrent threads
-    if draft.get("finished"):
-        return
-    draft["finished"] = True
-    ct_team = list(draft.get("ct_team", []))
-    t_team  = list(draft.get("t_team",  []))
-
-    # Overflow safety: put leftover units anywhere they fit
-    league  = lobby.get("league", "default")
-    team_sz = _lobby_team_size(league)
-    for unit in draft.get("units", []):
-        for uid in unit:
-            if len(ct_team) < team_sz:
-                ct_team.append(uid)
-            elif len(t_team) < team_sz:
-                t_team.append(uid)
-
-    # Store final teams so launch_match uses them
-    lobby["draft_ct_team"] = ct_team
-    lobby["draft_t_team"]  = t_team
-
-    # Delete live-status messages
-    for uid, (cid, mid) in list(lobby.get("draft_status_msgs", {}).items()):
-        try:
-            await bot.delete_message(cid, mid)
-        except Exception:
-            pass
-    lobby["draft_status_msgs"] = {}
-
-    # Announce final rosters
-    priv_table = PRIVATE_CONFIG.get(lobby.get("private", "fade"), PRIVATE_CONFIG["fade"])["table"]
-
-    async def pname(uid):
-        p = get_player_from_table(uid, priv_table) or get_player(uid)
-        return p[1] if p else str(uid)
-
-    ct_lines = "\n".join(f"  {pname(u)}" for u in ct_team)
-    t_lines  = "\n".join(f"  {pname(u)}" for u in t_team)
-
-    lobby["draft_result_msgs"] = {}
-    for uid in lobby["players"]:
-        if is_bot_player(uid):
-            continue
-        try:
-            _drsent = await bot.send_message(
-                uid,
-                f"✅ <b>Команды выбраны!</b>\n\n"
-                f"💙 <b>CT:</b>\n{ct_lines}\n\n"
-                f"🧡 <b>T:</b>\n{t_lines}\n\n"
-                f"🗺 Карта: <b>{lobby.get('map_name', '?')}</b>",
-                parse_mode="HTML",
-            )
-            lobby["draft_result_msgs"][uid] = (_drsent.chat.id, _drsent.message_id)
-        except Exception:
-            pass
-
-    lobby["status"] = "pre_launch"
-    async def _delayed_launch():
-        await asyncio.sleep(2)
-        await launch_match(lobby_id)
-    asyncio.create_task(_delayed_launch())
-
-
-@router.callback_query(F.data.startswith("draftpick_"))
-async def cb_draft_pick(callback: CallbackQuery):
-    uid = callback.from_user.id
-    raw = callback.data[len("draftpick_"):]
-    # Format: draftpick_{lobby_id}_{turn_count}_{unit_index}
-    # lobby_id contains underscores → rsplit from right for the last 2 tokens
-    parts = raw.rsplit("_", 2)
-    if len(parts) < 3:
-        await safe_answer(callback.id, "❌ Ошибка формата")
-        return
-    lobby_id = parts[0]
-    try:
-        nonce    = int(parts[1])   # turn_count at the time keyboard was sent
-        unit_idx = int(parts[2])
-    except ValueError:
-        await safe_answer(callback.id, "❌ Ошибка")
-        return
-
-    lobby = active_lobbies.get(lobby_id)
-    if not lobby or lobby.get("status") != "draft":
-        await safe_answer(callback.id, "❌ Фаза выбора уже завершена")
-        return
-
-    draft   = lobby.get("draft", {})
-    turn    = draft.get("turn", "ct")
-    cap_uid = lobby.get("ct_captain") if turn == "ct" else lobby.get("t_captain")
-
-    if uid != cap_uid:
-        await safe_answer(callback.id, "❌ Сейчас не ваш ход!", show_alert=True)
-        return
-
-    # Reject stale keyboard from a previous turn
-    if nonce != draft.get("turn_count", 0):
-        await safe_answer(callback.id, "⏰ Эта клавиатура устарела - ход уже был сделан")
-        return
-
-    units = draft.get("units", [])
-    if unit_idx >= len(units):
-        await safe_answer(callback.id, "❌ Игрок уже был выбран - список обновился")
-        return
-
-    chosen = units[unit_idx]
-    await safe_answer(callback.id, "✅ Выбрано!")
-
-    try:
-        await bot.delete_message(callback.message.chat.id, callback.message.message_id)
-    except Exception:
-        pass
-    lobby.get("draft_kb_msgs", {}).pop(uid, None)
-
-    _apply_draft_pick(lobby_id, turn, chosen)
-
-
-# ==================== ЗАПУСК МАТЧА ====================
-def _resolve_display_elo(uid, p, priv_table, league):
-    """Возвращает правильный ELO в зависимости от лиги (quals_elo для quals, duo_elo для duo, elo для остальных)."""
-    if p and p[13]:  # бот - всегда p[4]
-        return p[4]
-    if league == "quals":
-        return get_quals_elo_for_player(uid, priv_table or "players")
-    if league == "duo":
-        return get_duo_elo_for_player(uid, priv_table or "players")
-    return p[4] if p else 1000
-
-def pline(uid, priv_table=None, league=None):
-    """Строчка игрока без ссылки (для обычных мест)."""
-    p = (get_player_from_table(uid, priv_table) or get_player(uid)) if priv_table else get_player(uid)
-    if p:
-        icon = "🤖" if p[13] else "👤"
-        prem = " 👑" if (not p[13] and has_active_premium(uid)) else ""
-        elo  = _resolve_display_elo(uid, p, priv_table, league)
-        return f"{icon} {p[1]}{prem} [Lvl {get_faceit_level(elo)} | {elo} ELO]"
-    return str(uid)
-
-def pline_link(uid, priv_table=None, league=None):
-    """Строчка игрока с кликабельным именем - ведёт на TG-профиль (без превью ссылки)."""
-    p = (get_player_from_table(uid, priv_table) or get_player(uid)) if priv_table else get_player(uid)
-    if p:
-        icon = "🤖" if p[13] else "👤"
-        prem = " 👑" if (not p[13] and has_active_premium(uid)) else ""
-        name = p[1]
-        if not p[13]:  # Не бот
-            name_linked = tg_link(uid, name)
-        else:
-            name_linked = name
-        elo = _resolve_display_elo(uid, p, priv_table, league)
-        return f"{icon} {name_linked}{prem} [Lvl {get_faceit_level(elo)} | {elo} ELO]"
-    return str(uid)
-
-async def launch_match(lobby_id):
-    try:
-        _launch_match_inner(lobby_id)
-    except Exception as _lm_exc:
-        print(f"[launch_match] КРИТИЧЕСКАЯ ОШИБКА lobby={lobby_id}: {_lm_exc}")
-        import traceback; traceback.print_exc()
-        # Notify admins so the crash is not silent
-        try:
-            for _aid in ADMIN_IDS_LIST:
-                await bot.send_message(_aid, f"🚨 <b>launch_match ОШИБКА</b>\nЛобби: <code>{lobby_id}</code>\nОшибка: {_lm_exc}", parse_mode="HTML")
-        except Exception:
-            pass
-
-async def _launch_match_inner(lobby_id):
-    lobby = active_lobbies.get(lobby_id)
-    if not lobby or lobby["status"] not in (
-        "accepting", "waiting", "mapban", "pre_mapban", "draft", "pre_launch"
-    ):
-        return
-    lobby["status"] = "active"
-    if not lobby.get("map_name"):
-        lobby["map_name"] = random.choice(MAPS)
-    match_id = get_next_match_id()
-    match_code = generate_match_code()
-    lobby["match_id"] = match_id
-    lobby["match_code"] = match_code
-    lobby["ACreenshots_count"] = 0
-    lobby["reg_taken_by"] = None
-    match_key = f"match_{match_id}"
-    lobby["match_key"] = match_key
-
-    players = list(lobby["players"])
-
-    ct_cap = lobby.get("ct_captain")
-    t_cap  = lobby.get("t_captain")
-
-    _team_sz = _lobby_team_size(lobby.get("league", "default"))
-
-    # If the draft phase already determined teams, use them directly
-    if lobby.get("draft_ct_team") and lobby.get("draft_t_team"):
-        team_ct = list(lobby["draft_ct_team"])
-        team_t  = list(lobby["draft_t_team"])
-        # Safety: add any player not yet placed
-        all_placed = set(team_ct + team_t)
-        for u in players:
-            if u not in all_placed:
-                if len(team_ct) < _team_sz:
-                    team_ct.append(u)
-                else:
-                    team_t.append(u)
-    else:
-        # ---- Fallback: original auto-assignment (no draft phase) ----
-        placed, party_groups, solo_players = set(), [], []
-        for uid2 in players:
-            if uid2 in placed:
-                continue
-            p_obj = get_party_of(uid2)
-            if p_obj and len(p_obj["members"]) > 1:
-                grp = [m for m in p_obj["members"] if m in players and m not in placed]
-                if grp:
-                    party_groups.append(grp)
-                    for m in grp:
-                        placed.add(m)
-            else:
-                solo_players.append(uid2)
-                placed.add(uid2)
-
-        random.shuffle(party_groups)
-        random.shuffle(solo_players)
-
-        team_ct, team_t = [], []
-
-        if ct_cap and ct_cap in players:
-            team_ct.append(ct_cap)
-            for grp in party_groups:
-                if ct_cap in grp:
-                    for m in grp:
-                        if m != ct_cap and m not in team_ct:
-                            team_ct.append(m)
-                    break
-        if t_cap and t_cap in players and t_cap not in team_ct:
-            team_t.append(t_cap)
-            for grp in party_groups:
-                if t_cap in grp:
-                    for m in grp:
-                        if m != t_cap and m not in team_t and m not in team_ct:
-                            team_t.append(m)
-                    break
-
-        already_placed = set(team_ct + team_t)
-
-        for grp in party_groups:
-            if all(m in already_placed for m in grp):
-                continue
-            remaining_grp = [m for m in grp if m not in already_placed]
-            if not remaining_grp:
-                continue
-            if len(team_ct) + len(remaining_grp) <= _team_sz:
-                team_ct.extend(remaining_grp)
-            elif len(team_t) + len(remaining_grp) <= _team_sz:
-                team_t.extend(remaining_grp)
-            else:
-                ct_free = _team_sz - len(team_ct)
-                t_free  = _team_sz - len(team_t)
-                if ct_free >= t_free:
-                    team_ct.extend(remaining_grp)
-                else:
-                    team_t.extend(remaining_grp)
-            for m in remaining_grp:
-                already_placed.add(m)
-
-        for uid2 in solo_players:
-            if uid2 in already_placed:
-                continue
-            if len(team_ct) < _team_sz:
-                team_ct.append(uid2)
-            else:
-                team_t.append(uid2)
-
-        # Гарантируем ровно 5v5
-        all_placed_set = set(team_ct + team_t)
-        unplaced = [u for u in players if u not in all_placed_set]
-        for u in unplaced:
-            if len(team_ct) < _team_sz:
-                team_ct.append(u)
-            else:
-                team_t.append(u)
-
-        # Перебалансируем если нужно, не разбивая пати
-        def _party_safe_move(src, dst, max_sz):
-            while len(src) > max_sz and len(dst) < max_sz:
-                moved = False
-                for candidate in reversed(src):
-                    p_obj = get_party_of(candidate)
-                    if p_obj and len(p_obj["members"]) > 1:
-                        party_in_src = [m for m in p_obj["members"] if m in src]
-                        if len(party_in_src) > 1:
-                            continue
-                    src.remove(candidate)
-                    dst.insert(0, candidate)
-                    moved = True
-                    break
-                if not moved:
-                    break
-
-        _party_safe_move(team_ct, team_t, _team_sz)
-        _party_safe_move(team_t, team_ct, _team_sz)
-
-    lobby["team_ct"] = team_ct
-    lobby["team_t"]  = team_t
-
-    ct_captain_uid = lobby.get("ct_captain")
-    if ct_captain_uid and not is_bot_player(ct_captain_uid) and ct_captain_uid in team_ct:
-        host_uid = ct_captain_uid
-    else:
-        host_uid = next((u for u in team_ct if not is_bot_player(u)), None)
-    _launch_priv_table = PRIVATE_CONFIG.get(lobby.get("private", "fade"), PRIVATE_CONFIG["fade"])["table"]
-    host_p    = (get_player_from_table(host_uid, _launch_priv_table) or get_player(host_uid)) if host_uid else None
-    host_game_id = host_p[2] if host_p else "-"
-    host_name    = host_p[1] if host_p else "-"
-    lobby["host_uid"]     = host_uid
-    lobby["host_game_id"] = host_game_id
-
-    _launch_league = lobby.get("league", "default")
-
-    async def admin_pline(idx, u):
-        p = get_player_from_table(u, _launch_priv_table) or get_player(u)
-        num = NUMBER_EMOJI[idx] if idx < len(NUMBER_EMOJI) else f"{idx+1}."
-        if p:
-            icon = "🤖" if p[13] else ""
-            prem = " 👑" if (not p[13] and has_active_premium(u)) else ""
-            elo  = _resolve_display_elo(u, p, _launch_priv_table, _launch_league)
-            return f"{num} {icon}{p[1]}{prem} | ID: <code>{u}</code> | ELO: {elo}"
-        return f"{num} <code>{u}</code>"
-
-    ct_lines = "\n".join([admin_pline(i, u) for i, u in enumerate(team_ct)])
-    t_lines  = "\n".join([admin_pline(i, u) for i, u in enumerate(team_t)])
-    _adm_priv_cfg   = PRIVATE_CONFIG.get(lobby.get("private", "fade"), PRIVATE_CONFIG["fade"])
-    _adm_priv_label = f"{_adm_priv_cfg['emoji']} {_adm_priv_cfg['display']}"
-    match_text = (
-        f"🎮 <b>МАТЧ #{match_code} НАЧАЛСЯ</b>\n\n"
-        f"🏠 Приватка: <b>{_adm_priv_label}</b>\n"
-        f"🏷 Лига: {format_league(lobby.get('league','default'))}\n📱 Устройство: {lobby.get('device','').upper()}\n"
-        f"🗺 Карта: <b>{lobby.get('map_name','?')}</b>\n"
-        f"👑 Хост: <b>{host_name}</b> | Game ID: <code>{host_game_id}</code>\n\n"
-        f"💙 <b>Команда CT</b>\n{ct_lines}\n\n"
-        f"🧡 <b>Команда T</b>\n{t_lines}"
-    )
-
-    if ADMIN_CHAT_ID:
-        kb_admin = _build_admin_match_kb(match_key, match_code, 0)
-        thread_id = None
-        # Пытаемся создать ветку форума
-        try:
-            topic = bot.create_forum_topic(ADMIN_CHAT_ID, f"MATCH #{match_code}")
-            thread_id = topic.message_thread_id
-            print(f"✅ Ветка создана: MATCH #{match_code}, thread_id={thread_id}")
-        except Exception as e:
-            print(f"❌ create_forum_topic ОШИБКА (ADMIN_CHAT_ID={ADMIN_CHAT_ID}): {e}")
-            # Уведомляем всех админов в личку об ошибке
-            for aid in ADMIN_IDS_LIST:
-                try:
-                    await bot.send_message(aid, f"⚠️ Не удалось создать ветку для MATCH #{match_code}.\nОшибка: {e}\n\nПроверьте что бот - администратор группы с правом управления темами.")
-                except Exception:
-                    pass
-
-        lobby["admin_thread_id"] = thread_id
-        try:
-            send_kw = {"reply_markup": kb_admin, "parse_mode": "HTML"}
-            if thread_id:
-                send_kw["message_thread_id"] = thread_id
-            sent = await bot.send_message(ADMIN_CHAT_ID, match_text, **send_kw)
-            lobby["admin_msg_id"] = sent.message_id
-            try:
-                await bot.pin_chat_message(ADMIN_CHAT_ID, sent.message_id, disable_notification=True)
-            except Exception:
-                pass
-        except Exception as e:
-            print(f"Admin send_message error: {e}")
-
-    for uid in players:
-        if is_bot_player(uid):
-            continue
-        team = "💙 CT" if uid in team_ct else "🧡 T"
-        # Используем pline_link для кликабельных ников (tg:// - нет превью)
-        _p_priv_cfg  = PRIVATE_CONFIG.get(lobby.get("private", "fade"), PRIVATE_CONFIG["fade"])
-        _p_priv_label = f"{_p_priv_cfg['emoji']} {_p_priv_cfg['display']}"
-        player_text = (
-            f"🎮 <b>МАТЧ #{match_code} НАЧАЛСЯ!</b>\n\n"
-            f"🏠 Приватка: <b>{_p_priv_label}</b>\n"
-            f"🗺 Карта: <b>{lobby['map_name']}</b>\n"
-            f"👥 Ваша команда: <b>{team}</b>\n"
-            f"👑 Хост: <b>{host_name}</b>\n"
-            f"🎮 Game ID хоста: <code>{host_game_id}</code>\n\n"
-            f"💙 <b>Команда CT</b>\n"
-            + "\n".join([f"  {i+1}. {pline_link(u, _launch_priv_table, _launch_league)}" for i, u in enumerate(team_ct)])
-            + f"\n\n🧡 <b>Команда T</b>\n"
-            + "\n".join([f"  {i+1}. {pline_link(u, _launch_priv_table, _launch_league)}" for i, u in enumerate(team_t)])
-            + f"\n\n📸 После матча нажми кнопку и отправь скриншот результатов."
-        )
-        kb_player = InlineKeyboardBuilder()
-        kb_player.button(text="📸 Отправить результаты", callback_data=f"send_result_{match_key}")
-        try:
-            # disable_web_page_preview=True чтобы tg:// ссылки не давали превью
-            sent_pm = await bot.send_message(uid, player_text, reply_markup=kb_player.as_markup(), disable_web_page_preview=True)
-            awaiting_ACreenshot[uid] = match_key
-            if "player_start_msgs" not in lobby:
-                lobby["player_start_msgs"] = {}
-            lobby["player_start_msgs"][uid] = sent_pm.message_id
-        except Exception:
-            pass
-
-    running_matches[match_key] = lobby
-    # Сохраняем матч в БД при старте (статус 'active')
-    # Retry up to 3 times with a short pause; notify admin on persistent failure
-    _db_saved = False
-    for _db_attempt in range(3):
-        try:
-            save_match_start(lobby)
-            _db_saved = True
-            break
-        except Exception as _db_e:
-            print(f"[save_match_start] попытка {_db_attempt+1}/3 ошибка: {_db_e}")
-            if _db_attempt < 2:
-                await asyncio.sleep(1)  # converted from time.sleep
-    if not _db_saved:
-        try:
-            for _aid in ADMIN_IDS_LIST:
-                await bot.send_message(
-                    _aid,
-                    f"🚨 <b>Матч не сохранён в БД!</b>\n"
-                    f"Матч: <code>{match_code}</code>\n"
-                    f"Lobby: <code>{lobby_id}</code>\n"
-                    f"Проверьте подключение к базе данных.",
-                    parse_mode="HTML",
-                )
-        except Exception:
-            pass
-    parts = lobby_id.split("_")
-    if len(parts) >= 4:
-        # Format: private_league_device_slot
-        private_r, league_r, device_r, slot_r = parts[0], parts[1], parts[2], parts[3]
-        active_lobbies[lobby_id] = {"players": [], "league": league_r, "device": device_r, "slot": slot_r, "status": "waiting", "private": private_r}
-    elif len(parts) >= 3:
-        league_r, device_r, slot_r = parts[0], parts[1], parts[2]
-        active_lobbies[lobby_id] = {"players": [], "league": league_r, "device": device_r, "slot": slot_r, "status": "waiting", "private": "fade"}
-    else:
-        active_lobbies.pop(lobby_id, None)
-
-    lobby_player_messages.pop(lobby_id, None)
-    delete_ban_status(lobby_id)
-    delete_accept_status(lobby_id)
-    delete_match_found(lobby_id)
-    # Удаляем анонс черновика и сообщение о выбранных командах
-    for _uid, (_cid, _mid) in list(lobby.get("draft_announce_msgs", {}).items()):
-        try:
-            await bot.delete_message(_cid, _mid)
-        except Exception:
-            pass
-    for _uid, (_cid, _mid) in list(lobby.get("draft_result_msgs", {}).items()):
-        try:
-            await bot.delete_message(_cid, _mid)
-        except Exception:
-            pass
-    for uid in players:
-        user_lobby.pop(uid, None)
-
-
-def _build_admin_match_kb(match_key, match_code, ACreenshots_count, taken_by=None):
-    kb = InlineKeyboardBuilder()
-    if taken_by:
-        p = get_player(taken_by)
-        name = p[1] if p else str(taken_by)
-        kb.add(
-            types.InlineKeyboardButton(text=f"🔒 Регистрирует: {name} - ЗАНЯТО", callback_data="match_noop"),
-            types.InlineKeyboardButton(text="🔓 Освободить регистрацию", callback_data=f"reg_abandon|{match_key}"),
-        )
-    else:
-        kb.add(types.InlineKeyboardButton(
-            text=f"✅ Взять регистрацию #{match_code} ({ACreenshots_count}📸)",
-            callback_data=f"reg_match|{match_key}",
-        ))
-    kb.add(
-        types.InlineKeyboardButton(text="❌ Отменить матч",  callback_data=f"cancel_match|{match_key}"),
-        types.InlineKeyboardButton(text="🔄 Перерегать",     callback_data=f"reregister_match|{match_key}"),
-    )
-    return kb
-
-
-@router.callback_query(F.data == "match_noop")
-async def cb_match_noop(callback: CallbackQuery):
-    """Заглушка для неактивных кнопок в карточке матча."""
-    await safe_answer(callback.id, "🔒 Матч уже взят в работу", show_alert=False)
-
-
-# ==================== СКРИНШОТЫ ====================
-@router.callback_query(F.data.startswith("send_result_"))
-async def cb_send_result(callback: CallbackQuery):
-    uid = callback.from_user.id
-    match_key = callback.data.split("send_result_", 1)[1]
-    lobby = running_matches.get(match_key)
-    if not lobby or lobby.get("status") != "active":
-        await safe_answer(callback.id, "❌ Матч уже завершён", show_alert=True)
-        return
-    awaiting_ACreenshot[uid] = match_key
-    await safe_answer(callback.id)
-    try:
-        await bot.edit_message_reply_markup(callback.message.chat.id, callback.message.message_id, reply_markup=None)
-    except Exception:
-        pass
-    sent_prompt = await bot.send_message(uid, "📸 <b>Отправь скриншот прямо в этот чат</b>\n\nПрикрепи фото или документ:", parse_mode="HTML")
-    # Сохраняем ID чтобы удалить после получения скриншота
-    if "ACreenshot_prompt_msgs" not in (running_matches.get(awaiting_ACreenshot.get(uid)) or {}):
-        lobby2 = running_matches.get(match_key)
-        if lobby2 is not None:
-            if "ACreenshot_prompt_msgs" not in lobby2:
-                lobby2["ACreenshot_prompt_msgs"] = {}
-            lobby2["ACreenshot_prompt_msgs"][uid] = sent_prompt.message_id
-
-
-@router.message(F.content_type.in_({"photo","document"}))
-async def handle_player_ACreenshot(message: Message):
-    # converted to async in post-pass
-    pass_async_marker = True; 
-    uid = message.from_user.id
-    # Принимаем скриншоты только из личных сообщений бота
-    if message.chat.type != "private":
-        return
-    # Если пользователь в процессе создания тикета - передаём туда
-    if uid in ticket_flow and ticket_flow[uid].get("step") == "evidence":
-        ticket_step_evidence(message)
-        return
-    if not is_registered(uid) or is_bot_player(uid):
-        return
-    match_key = awaiting_ACreenshot.get(uid)
-    if not match_key:
-        return
-    lobby = running_matches.get(match_key)
-    if not lobby or lobby.get("status") != "active":
-        awaiting_ACreenshot.pop(uid, None)
-        return
-    awaiting_ACreenshot.pop(uid, None)
-    # Удаляем сообщение "Отправь скриншот прямо в этот чат"
-    prompt_mid = lobby.get("ACreenshot_prompt_msgs", {}).pop(uid, None)
-    if prompt_mid:
-        try:
-            await bot.delete_message(uid, prompt_mid)
-        except Exception:
-            pass
-    # Удаляем сообщение "МАТЧ НАЧАЛСЯ / команды" у этого игрока
-    start_mid = lobby.get("player_start_msgs", {}).pop(uid, None)
-    if start_mid:
-        try:
-            await bot.delete_message(uid, start_mid)
-        except Exception:
-            pass
-    p = get_player_in_lobby(uid, lobby)
-    name = p[1] if p else str(uid)
-    match_id = lobby.get("match_id", "?")
-    lobby["ACreenshots_count"] = lobby.get("ACreenshots_count", 0) + 1
-    AC = lobby["ACreenshots_count"]
-    match_code = lobby.get("match_code", str(match_id))
-    # Обновляем счётчик скриншотов в unregistered_matches
-    try:
-        _um_conn = _db()
-        _um_cur  = _um_conn.cursor()
-        _um_cur.execute(
-            "UPDATE unregistered_matches SET ACreenshots_count=%s WHERE match_id=%s",
-            (AC, match_id),
-        )
-        _um_conn.commit()
-        _um_conn.close()
-    except Exception as _um_e:
-        print(f"[handle_player_ACreenshot] unregistered_matches update: {_um_e}")
-    if ADMIN_CHAT_ID:
-        try:
-            caption = f"📸 {name} ({uid}) - Match #{match_code}"
-            thread_id = lobby.get("admin_thread_id")
-            kw = {"caption": caption}
-            if thread_id:
-                kw["message_thread_id"] = thread_id
-            elif lobby.get("admin_msg_id"):
-                kw["reply_to_message_id"] = lobby["admin_msg_id"]
-            if message.photo:
-                await bot.send_photo(ADMIN_CHAT_ID, message.photo[-1].file_id, **kw)
-            elif message.document:
-                await bot.send_document(ADMIN_CHAT_ID, message.document.file_id, **kw)
-            if lobby.get("admin_msg_id"):
-                new_kb = _build_admin_match_kb(match_key, match_code, AC, lobby.get("reg_taken_by"))
-                edit_kw = {"reply_markup": new_kb}
-                if thread_id:
-                    edit_kw["message_thread_id"] = thread_id
-                try:
-                    await bot.edit_message_reply_markup(ADMIN_CHAT_ID, lobby["admin_msg_id"], **edit_kw)
-                except Exception:
-                    pass
-        except Exception as e:
-            print(f"ACreenshot error: {e}")
-    try:
-        _AC_max = _lobby_max_size(lobby.get("league", "default"))
-        bot.reply_to(message, f"✅ Скриншот принят! Всего: {AC}/{_AC_max}")
-    except Exception:
-        pass
-
-
-# ==================== РЕГИСТРАЦИЯ РЕЗУЛЬТАТОВ ====================
-match_registration = {}
-ai_reg_pending    = {}   # uid -> {match_key, step, photo_bytes, ai_result, reply_chat_id, reply_thread_id}
-
-
-# ==================== AI SCREENSHOT HELPERS ====================
-
-def _call_openai_vision(image_bytes: bytes) -> dict:
-    """Отправляет скрин в GPT-4o Vision, возвращает dict с результатами матча."""
-    if not OPENAI_API_KEY:
-        raise RuntimeError("OPENAI_API_KEY не задан")
-    b64 = base64.b64encode(image_bytes).decode()
-    payload = json.dumps({
-        "model": "gpt-4o",
-        "messages": [{
-            "role": "user",
-            "content": [
-                {
-                    "type": "image_url",
-                    "image_url": {"url": f"data:image/jpeg;base64,{b64}"}
-                },
-                {
-                    "type": "text",
-                    "text": (
-                        "Это скриншот итоговой статистики матча (CS-подобная игра: Warface, Stand Off 2 и т.п.).\n"
-                        "На скрине две команды: СПЕЦНАЗ/CT и ТЕРРОРИСТЫ/T.\n"
-                        "Столбцы таблицы: ИМЯ (никнейм), У (убийства/kills), П (смерти/deaths), С (помощи/assists). Иногда порядок: У П С или K D A.\n"
-                        "Победившая команда обозначена словом 'ПОБЕДА'.\n\n"
-                        "Верни ТОЛЬКО валидный JSON без пояснений и без markdown:\n"
-                        "{\n"
-                        "  \"winner\": \"ct\" или \"t\",\n"
-                        "  \"score_ct\": число,\n"
-                        "  \"score_t\": число,\n"
-                        "  \"ct_players\": [{\"name\": \"ник\", \"kills\": N, \"deaths\": N, \"assists\": N}],\n"
-                        "  \"t_players\":  [{\"name\": \"ник\", \"kills\": N, \"deaths\": N, \"assists\": N}]\n"
-                        "}"
-                    )
-                }
-            ]
-        }],
-        "max_tokens": 1200,
-    }).encode("utf-8")
-
-    req = urllib.request.Request(
-        "https://api.openai.com/v1/chat/completions",
-        data=payload,
-        headers={
-            "Content-Type": "application/json",
-            "Authorization": f"Bearer {OPENAI_API_KEY}",
-        },
-    )
-    with urllib.request.urlopen(req, timeout=40) as resp:
-        data = json.loads(resp.read())
-    raw = data["choices"][0]["message"]["content"].strip()
-    m = re.search(r'\{.*\}', raw, re.DOTALL)
-    return json.loads(m.group() if m else raw)
-
-
-def _fuzzy_match_nick(nick: str, player_rows: list):
-    """Пытается сопоставить ник со скрина с uid зарегистрированного игрока.
-    player_rows: список строк (uid, username, game_id, ...)
-    Возвращает uid или None.
-    """
-    def clean(s: str) -> str:
-        s = (s or "").lower().strip()
-        s = re.sub(r'^\[.*?\]\s*', '', s)   # убираем клан-тег [VV] [winx]
-        return s
-
-    nick_c = clean(nick)
-    if not nick_c:
-        return None
-
-    for p in player_rows:
-        uid, username, game_id = p[0], p[1] if len(p) > 1 else "", p[2] if len(p) > 2 else ""
-        for candidate in (game_id, username):
-            cand_c = clean(candidate)
-            if not cand_c:
-                continue
-            if nick_c == cand_c:
-                return uid
-            if nick_c in cand_c or cand_c in nick_c:
-                if len(min(nick_c, cand_c, key=len)) >= 3:
-                    return uid
-    return None
-
-
-def _format_ai_preview(lobby, ai_result: dict, mapped: dict) -> str:
-    """Форматирует превью AI-результата для показа админу."""
-    winner = ai_result.get("winner", "ct")
-    sc = ai_result.get("score_ct", "?")
-    st = ai_result.get("score_t", "?")
-    winner_label = "💙 CT (СПЕЦНАЗ)" if winner == "ct" else "🧡 T (ТЕРРОРИСТЫ)"
-    lines = [
-        f"🤖 <b>AI-анализ скрина</b>\n",
-        f"🏆 Победитель: <b>{winner_label}</b>",
-        f"📊 Счёт: <b>{sc}:{st}</b>\n",
-    ]
-    for team_key, emoji, players in (("ct", "💙", ai_result.get("ct_players", [])),
-                                     ("t",  "🧡", ai_result.get("t_players",  []))):
-        lines.append(f"{emoji} {'CT' if team_key == 'ct' else 'T'}:")
-        for pl in players:
-            name = pl.get("name", "?")
-            uid = mapped.get(name)
-            if uid:
-                p = get_player(uid)
-                reg_name = p[1] if p else str(uid)
-                match_flag = f"✅ {reg_name}"
-            else:
-                match_flag = f"❓ <i>{name}</i> - не найден → 0/0/10"
-            lines.append(f"  {match_flag} | {pl.get('kills',0)}/{pl.get('deaths',0)}/{pl.get('assists',0)}")
-        lines.append("")
-    return "\n".join(lines)
-
-
-async def reg_send(uid, text, **kwargs):
-    data = match_registration.get(uid, {})
-    chat_id   = data.get("reply_chat_id", uid)
-    thread_id = data.get("reply_thread_id")
-    if thread_id:
-        kwargs["message_thread_id"] = thread_id
-    try:
-        await bot.send_message(chat_id, text, **kwargs)
-    except Exception as _e:
-        print(f"[reg_send error] chat_id={chat_id} thread_id={thread_id}: {_e}")
-        try:
-            await bot.send_message(uid, text, **kwargs)
-        except Exception as _e2:
-            print(f"[reg_send fallback error] uid={uid}: {_e2}")
-
-
-@router.callback_query(F.data.startswith("reg_match|"))
-async def cb_reg_match(callback: CallbackQuery):
-    uid = callback.from_user.id
-    if not is_game_reg_check(uid):
-        await safe_answer(callback.id, "❌ Нет доступа")
-        return
-    match_key = callback.data.split("|", 1)[1]
-    lobby = running_matches.get(match_key)
-    if not lobby or lobby.get("status") != "active":
-        await safe_answer(callback.id, "❌ Матч не найден или завершён", show_alert=True)
-        return
-
-    # ── Защита от двойного взятия (атомарная проверка + lock) ──────────────
-    taken = lobby.get("reg_taken_by")
-    if taken and taken != uid:
-        p = get_player(taken)
-        await safe_answer(callback.id, f"🔒 Уже взято: {p[1] if p else taken}", show_alert=True)
-        return
-    # Проверяем, не ведёт ли этот же матч кто-то через match_registration
-    for _adm, _rdata in list(match_registration.items()):
-        if _rdata.get("match_key") == match_key and _adm != uid:
-            _ap = get_player(_adm)
-            await safe_answer(callback.id, f"🔒 {_ap[1] if _ap else _adm} уже регистрирует этот матч", show_alert=True)
-            return
-    # Блокируем - сначала записываем, потом отвечаем (чтобы вторая попытка сразу видела блок)
-    lobby["reg_taken_by"] = uid
-    match_id   = lobby.get("match_id", "?")
-    match_code = lobby.get("match_code", str(match_id))
-    AC = lobby.get("ACreenshots_count", 0)
-    try:
-        new_kb = _build_admin_match_kb(match_key, match_code, AC, taken_by=uid)
-        # Не передаём message_thread_id в edit_message_reply_markup - он там не нужен
-        await bot.edit_message_reply_markup(callback.message.chat.id, callback.message.message_id, reply_markup=new_kb)
-    except Exception:
-        pass
-    await safe_answer(callback.id, "✅ Регистрация захвачена! Кнопка (Освободить) появилась в чате матча.")
-
-    # Уведомление в ветку: "Администратор X начал обработку матча"
-    admin_p = get_player(uid)
-    admin_name = admin_p[1] if admin_p else str(uid)
-    thread_id = lobby.get("admin_thread_id")
-    try:
-        kw_notify = {"parse_mode": "HTML"}
-        if thread_id:
-            kw_notify["message_thread_id"] = thread_id
-        await bot.send_message(
-            ADMIN_CHAT_ID,
-            f"📝 Администратор <b>{admin_name}</b> начал обработку матча #{match_code}",
-            **kw_notify,
-        )
-    except Exception:
-        pass
-
-    # Уведомляем всех игроков матча в личку
-    all_match_players = list(lobby.get("team_ct", [])) + list(lobby.get("team_t", []))
-    for player_uid in all_match_players:
-        if is_bot_player(player_uid):
-            continue
-        try:
-            await bot.send_message(
-                player_uid,
-                f"📋 Администратор <b>{admin_name}</b> начал регистрацию матча <b>#{match_code}</b>",
-                parse_mode="HTML",
-            )
-        except Exception:
-            pass
-
-    _reg_priv_table_names = PRIVATE_CONFIG.get(lobby.get("private", "fade"), PRIVATE_CONFIG["fade"])["table"]
-    async def pln(uid2):
-        p = get_player_from_table(uid2, _reg_priv_table_names) or get_player(uid2)
-        return f"{p[1]} - <code>{uid2}</code>" if p else str(uid2)
-    ct_list = "\n".join([pln(u) for u in lobby.get("team_ct", [])])
-    t_list  = "\n".join([pln(u) for u in lobby.get("team_t",  [])])
-    # Если есть ветка форума - регистрируем в ней, иначе - в личку админу
-    admin_thread_id = lobby.get("admin_thread_id")
-    if admin_thread_id:
-        reply_chat_id   = ADMIN_CHAT_ID
-        reply_thread_id = admin_thread_id
-    else:
-        reply_chat_id   = uid          # личка администратора
-        reply_thread_id = None
-    _reg_priv_cfg   = PRIVATE_CONFIG.get(lobby.get("private", "fade"), PRIVATE_CONFIG["fade"])
-    _reg_priv_label = f"{_reg_priv_cfg['emoji']} {_reg_priv_cfg['display']}"
-    match_info = (
-        f"📋 <b>Регистрация матча #{match_code}</b>\n\n"
-        f"🏠 Приватка: <b>{_reg_priv_label}</b>\n"
-        f"🏷 Лига: {format_league(lobby.get('league','default'))} | 📱 {lobby.get('device','').upper()}\n\n"
-        f"💙 <b>CT</b>\n{ct_list}\n\n🧡 <b>T</b>\n{t_list}\n\n"
-        f"━━━━━━━━━━━━━━━━\n\n"
-        f"Выбери способ регистрации:"
-    )
-    match_registration[uid] = {
-        "match_key": match_key,
-        "step": "choose_method",
-        "reply_chat_id": reply_chat_id,
-        "reply_thread_id": reply_thread_id,
-        "ct_list_raw": ct_list,
-        "t_list_raw":  t_list,
-    }
-    choice_kb = InlineKeyboardBuilder()
-    choice_kb.add(
-        types.InlineKeyboardButton(text="🤖 По скрину (AI)", callback_data=f"reg_ai_photo|{match_key}"),
-        types.InlineKeyboardButton(text="📝 Вручную",         callback_data=f"reg_manual|{match_key}"),
-    )
-    send_kw = {"parse_mode": "HTML", "reply_markup": choice_kb}
-    if reply_thread_id:
-        send_kw["message_thread_id"] = reply_thread_id
-    await bot.send_message(reply_chat_id, match_info, **send_kw)
-
-
-@router.callback_query(F.data.startswith("reg_manual|"))
-async def cb_reg_manual(callback: CallbackQuery):
-    """Ручная регистрация - запускает стандартный Шаг 1/3."""
-    uid = callback.from_user.id
-    if not is_game_reg_check(uid):
-        await safe_answer(callback.id, "❌ Нет доступа")
-        return
-    match_key = callback.data.split("|", 1)[1]
-    data = match_registration.get(uid, {})
-    if data.get("match_key") != match_key:
-        await safe_answer(callback.id, "❌ Нет активной регистрации")
-        return
-    data["step"] = "ACore"
-    match_registration[uid] = data
-    await safe_answer(callback.id)
-    try:
-        await bot.edit_message_reply_markup(callback.message.chat.id, callback.message.message_id, reply_markup=None)
-    except Exception:
-        pass
-    reply_chat_id   = data.get("reply_chat_id", uid)
-    reply_thread_id = data.get("reply_thread_id")
-    send_kw = {"parse_mode": "HTML"}
-    if reply_thread_id:
-        send_kw["message_thread_id"] = reply_thread_id
-    await bot.send_message(
-        reply_chat_id,
-        "<b>Шаг 1/3</b> - Введи счёт матча:\nФормат: <code>13:11</code>",
-        **send_kw,
-    )
-
-
-@router.callback_query(F.data.startswith("reg_ai_photo|"))
-async def cb_reg_ai_photo(callback: CallbackQuery):
-    """Начало AI-регистрации - просим прислать скрин в ЛС."""
-    uid = callback.from_user.id
-    if not is_game_reg_check(uid):
-        await safe_answer(callback.id, "❌ Нет доступа")
-        return
-    if not OPENAI_API_KEY:
-        await safe_answer(callback.id, "❌ OPENAI_API_KEY не задан - используй ручной режим", show_alert=True)
-        return
-    match_key = callback.data.split("|", 1)[1]
-    data = match_registration.get(uid, {})
-    if data.get("match_key") != match_key:
-        await safe_answer(callback.id, "❌ Нет активной регистрации")
-        return
-    await safe_answer(callback.id)
-    try:
-        await bot.edit_message_reply_markup(callback.message.chat.id, callback.message.message_id, reply_markup=None)
-    except Exception:
-        pass
-    ai_reg_pending[uid] = {
-        "match_key":      match_key,
-        "step":           "awaiting_photo",
-        "reply_chat_id":  data.get("reply_chat_id", uid),
-        "reply_thread_id": data.get("reply_thread_id"),
-    }
-    try:
-        await bot.send_message(
-            uid,
-            "📸 <b>AI-регистрация</b>\n\n"
-            "Отправь скрин финальной статистики матча <b>в этот чат</b> (ЛС с ботом).\n"
-            "Нейросеть сама определит победителя, счёт и K/D/A каждого игрока.",
-            parse_mode="HTML",
-        )
-    except Exception:
-        pass
-
-
-@router.message(lambda m: m.from_user.id in ai_reg_pending
-                   and ai_reg_pending[m.from_user.id].get("step") == "awaiting_photo"
-                   and m.chat.type == "private", F.photo)
-async def handle_ai_reg_photo(message: Message):
-    """Получаем скрин, анализируем через GPT-4o, показываем превью."""
-    uid = message.from_user.id
-    pending = ai_reg_pending.get(uid, {})
-    match_key = pending.get("match_key")
-    lobby = running_matches.get(match_key)
-
-    if not lobby or lobby.get("status") != "active":
-        await bot.send_message(uid, "❌ Матч не найден или уже завершён.", parse_mode="HTML")
-        ai_reg_pending.pop(uid, None)
-        return
-
-    # Скачиваем фото в память
-    try:
-        file_id = message.photo[-1].file_id
-        file_info = await bot.get_file(file_id)
-        image_bytes = await bot.download_file(file_info.file_path)
-    except Exception as _e:
-        await bot.send_message(uid, f"❌ Не удалось скачать фото: {_e}")
-        return
-
-    await bot.send_message(uid, "⏳ Анализирую скрин через нейросеть...", parse_mode="HTML")
-
-    # Вызываем GPT-4o Vision в отдельном потоке чтобы не блокировать поллинг
-    async def _analyze():
-        try:
-            ai_result = _call_openai_vision(image_bytes)
-        except Exception as _e:
-            await bot.send_message(uid, f"❌ Ошибка AI: {_e}\n\nПопробуй ещё раз или используй ручной режим.")
-            return
-
-        # Собираем всех игроков матча для fuzzy-match
-        ct_uids = lobby.get("team_ct", [])
-        t_uids  = lobby.get("team_t",  [])
-        all_uids = ct_uids + t_uids
-        all_players = []
-        for _u in all_uids:
-            p = get_player(_u)
-            if p:
-                all_players.append(p)
-
-        # Матчим ники
-        mapped = {}   # ник_со_скрина -> uid
-        for pl in ai_result.get("ct_players", []) + ai_result.get("t_players", []):
-            name = pl.get("name", "")
-            if name:
-                uid_found = _fuzzy_match_nick(name, all_players)
-                mapped[name] = uid_found
-
-        # Проверяем, нашли ли хоть кого-то
-        found_any = any(v is not None for v in mapped.values())
-        if not found_any:
-            # Идём к администрации
-            reply_chat_id   = pending.get("reply_chat_id", uid)
-            reply_thread_id = pending.get("reply_thread_id")
-            send_kw = {"parse_mode": "HTML"}
-            if reply_thread_id:
-                send_kw["message_thread_id"] = reply_thread_id
-            match_code = lobby.get("match_code", match_key)
-            await bot.send_message(
-                reply_chat_id,
-                f"⚠️ <b>AI не смог определить ники игроков</b> для матча #{match_code}.\n"
-                f"Пожалуйста, зарегистрируйте матч вручную.",
-                **send_kw,
-            )
-            await bot.send_message(uid, "⚠️ AI не распознал ни одного ника. Используй ручную регистрацию.")
-            ai_reg_pending.pop(uid, None)
-            return
-
-        # Сохраняем для последующего Accept/Redo
-        ai_reg_pending[uid]["step"]       = "review"
-        ai_reg_pending[uid]["ai_result"]  = ai_result
-        ai_reg_pending[uid]["mapped"]     = mapped
-        ai_reg_pending[uid]["image_bytes"] = image_bytes
-
-        preview = _format_ai_preview(lobby, ai_result, mapped)
-        kb = InlineKeyboardBuilder()
-        kb.add(
-            types.InlineKeyboardButton(text="✅ Принять и зарегистрировать", callback_data=f"ai_reg_accept|{match_key}"),
-            types.InlineKeyboardButton(text="🔄 Перегнать (AI ещё раз)",     callback_data=f"ai_reg_redo|{match_key}"),
-            types.InlineKeyboardButton(text="📝 Зарегистрировать вручную",   callback_data=f"ai_reg_manual|{match_key}"),
-        )
-        # Отправляем превью в ветку матча (или ЛС если нет ветки)
-        reply_chat_id   = pending.get("reply_chat_id", uid)
-        reply_thread_id = pending.get("reply_thread_id")
-        send_kw = {"parse_mode": "HTML", "reply_markup": kb}
-        if reply_thread_id:
-            send_kw["message_thread_id"] = reply_thread_id
-        await bot.send_message(reply_chat_id, preview, **send_kw)
-
-    asyncio.create_task(_analyze())
-
-
-@router.callback_query(F.data.startswith("ai_reg_accept|"))
-async def cb_ai_reg_accept(callback: CallbackQuery):
-    """Админ принял AI-результат - финализируем матч."""
-    uid = callback.from_user.id
-    if not is_game_reg_check(uid):
-        await safe_answer(callback.id, "❌ Нет доступа")
-        return
-    match_key = callback.data.split("|", 1)[1]
-    pending = ai_reg_pending.pop(uid, {})
-    if pending.get("match_key") != match_key:
-        await safe_answer(callback.id, "❌ Данные не найдены")
-        return
-
-    ai_result = pending.get("ai_result", {})
-    lobby = running_matches.get(match_key)
-    if not lobby:
-        await safe_answer(callback.id, "❌ Матч не найден")
-        return
-
-    winner   = ai_result.get("winner", "ct")
-    score_ct = ai_result.get("score_ct", 0)
-    score_t  = ai_result.get("score_t",  0)
-    ACore_w  = score_ct if winner == "ct" else score_t
-    ACore_l  = score_t  if winner == "ct" else score_ct
-    mapped   = pending.get("mapped", {})
-
-    # Строим kills_data: uid -> {kills, deaths, assists}
-    kills_data = {}
-    ct_uids = lobby.get("team_ct", [])
-    t_uids  = lobby.get("team_t",  [])
-
-    for team_key, players_list in (("ct", ai_result.get("ct_players", [])),
-                                   ("t",  ai_result.get("t_players",  []))):
-        team_uids = ct_uids if team_key == "ct" else t_uids
-        for pl in players_list:
-            name = pl.get("name", "")
-            p_uid = mapped.get(name)
-            if p_uid and p_uid in (ct_uids + t_uids):
-                kills_data[p_uid] = {
-                    "kills":   pl.get("kills",   0),
-                    "deaths":  pl.get("deaths",  0),
-                    "assists": pl.get("assists",  0),
-                }
-
-    # Для игроков которых не нашли - ставим 0/10/0 (default miss)
-    for p_uid in ct_uids + t_uids:
-        if not is_bot_player(p_uid) and p_uid not in kills_data:
-            kills_data[p_uid] = {"kills": 0, "deaths": 10, "assists": 0}
-
-    # Инжектируем в match_registration и финализируем
-    reply_chat_id   = pending.get("reply_chat_id", uid)
-    reply_thread_id = pending.get("reply_thread_id")
-    match_registration[uid] = {
-        "match_key":      match_key,
-        "step":           "done",
-        "reply_chat_id":  reply_chat_id,
-        "reply_thread_id": reply_thread_id,
-        "winner":         winner,
-        "ACore_w":        ACore_w,
-        "ACore_l":        ACore_l,
-        "kills_data":     kills_data,
-        "ct_players":     [u for u in ct_uids if not is_bot_player(u)],
-        "t_players":      [u for u in t_uids  if not is_bot_player(u)],
-    }
-    await safe_answer(callback.id, "✅ Регистрируем матч...")
-    try:
-        await bot.edit_message_reply_markup(callback.message.chat.id, callback.message.message_id, reply_markup=None)
-    except Exception:
-        pass
-    try:
-        _finalize_match(uid, match_key)
-    except Exception as _e:
-        await bot.send_message(uid, f"❌ Ошибка при регистрации: {_e}")
-
-
-@router.callback_query(F.data.startswith("ai_reg_redo|"))
-async def cb_ai_reg_redo(callback: CallbackQuery):
-    """Перегнать: просим прислать скрин ещё раз."""
-    uid = callback.from_user.id
-    if not is_game_reg_check(uid):
-        await safe_answer(callback.id, "❌ Нет доступа")
-        return
-    match_key = callback.data.split("|", 1)[1]
-    pending = ai_reg_pending.get(uid, {})
-    if pending.get("match_key") != match_key:
-        await safe_answer(callback.id, "❌ Данные не найдены")
-        return
-
-    # Если есть сохранённый скрин - анализируем его снова
-    image_bytes = pending.get("image_bytes")
-    if image_bytes:
-        ai_reg_pending[uid]["step"] = "awaiting_photo"
-        await safe_answer(callback.id, "🔄 Повторный анализ...")
-        try:
-            await bot.edit_message_reply_markup(callback.message.chat.id, callback.message.message_id, reply_markup=None)
-        except Exception:
-            pass
-        # Создаём фейковый message для повторного анализа - просто запускаем поток
-        lobby = running_matches.get(match_key)
-        async def _redo():
-            try:
-                ai_result = _call_openai_vision(image_bytes)
-            except Exception as _e:
-                await bot.send_message(uid, f"❌ Ошибка AI: {_e}")
-                return
-            ct_uids = lobby.get("team_ct", []) if lobby else []
-            t_uids  = lobby.get("team_t",  []) if lobby else []
-            all_players = [p for u in ct_uids + t_uids for p in [get_player(u)] if p]
-            mapped = {}
-            for pl in ai_result.get("ct_players", []) + ai_result.get("t_players", []):
-                name = pl.get("name", "")
-                if name:
-                    mapped[name] = _fuzzy_match_nick(name, all_players)
-            ai_reg_pending[uid]["step"]       = "review"
-            ai_reg_pending[uid]["ai_result"]  = ai_result
-            ai_reg_pending[uid]["mapped"]     = mapped
-            preview = _format_ai_preview(lobby, ai_result, mapped)
-            kb = InlineKeyboardBuilder()
-            kb.add(
-                types.InlineKeyboardButton(text="✅ Принять и зарегистрировать", callback_data=f"ai_reg_accept|{match_key}"),
-                types.InlineKeyboardButton(text="🔄 Перегнать (AI ещё раз)",     callback_data=f"ai_reg_redo|{match_key}"),
-                types.InlineKeyboardButton(text="📝 Зарегистрировать вручную",   callback_data=f"ai_reg_manual|{match_key}"),
-            )
-            reply_chat_id   = pending.get("reply_chat_id", uid)
-            reply_thread_id = pending.get("reply_thread_id")
-            send_kw = {"parse_mode": "HTML", "reply_markup": kb}
-            if reply_thread_id:
-                send_kw["message_thread_id"] = reply_thread_id
-            await bot.send_message(reply_chat_id, preview, **send_kw)
-        asyncio.create_task(_redo())
-    else:
-        # Нет скрина - просим прислать заново
-        ai_reg_pending[uid]["step"] = "awaiting_photo"
-        await safe_answer(callback.id)
-        try:
-            await bot.edit_message_reply_markup(callback.message.chat.id, callback.message.message_id, reply_markup=None)
-        except Exception:
-            pass
-        await bot.send_message(uid, "📸 Отправь скрин статистики матча в ЛС с ботом.", parse_mode="HTML")
-
-
-@router.callback_query(F.data.startswith("ai_reg_manual|"))
-async def cb_ai_reg_manual(callback: CallbackQuery):
-    """Из AI-режима перешли в ручной - восстанавливаем match_registration."""
-    uid = callback.from_user.id
-    if not is_game_reg_check(uid):
-        await safe_answer(callback.id, "❌ Нет доступа")
-        return
-    match_key = callback.data.split("|", 1)[1]
-    pending = ai_reg_pending.pop(uid, {})
-    if pending.get("match_key") != match_key:
-        await safe_answer(callback.id, "❌ Данные не найдены")
-        return
-    reply_chat_id   = pending.get("reply_chat_id", uid)
-    reply_thread_id = pending.get("reply_thread_id")
-    match_registration[uid] = {
-        "match_key":      match_key,
-        "step":           "ACore",
-        "reply_chat_id":  reply_chat_id,
-        "reply_thread_id": reply_thread_id,
-    }
-    await safe_answer(callback.id)
-    try:
-        await bot.edit_message_reply_markup(callback.message.chat.id, callback.message.message_id, reply_markup=None)
-    except Exception:
-        pass
-    send_kw = {"parse_mode": "HTML"}
-    if reply_thread_id:
-        send_kw["message_thread_id"] = reply_thread_id
-    await bot.send_message(
-        reply_chat_id,
-        "<b>Шаг 1/3</b> - Введи счёт матча:\nФормат: <code>13:11</code>",
-        **send_kw,
-    )
-
-
-@router.callback_query(F.data.startswith("reg_release|"))
-async def cb_reg_release(callback: CallbackQuery):
-    """Force-release: любой game_reg может освободить занятый матч."""
-    uid = callback.from_user.id
-    if not is_game_reg_check(uid):
-        await safe_answer(callback.id, "❌ Нет доступа")
-        return
-    match_key = callback.data.split("|", 1)[1]
-    lobby = running_matches.get(match_key)
-    if not lobby:
-        await safe_answer(callback.id, "❌ Матч не найден")
-        return
-    prev_taker = lobby.get("reg_taken_by")
-    lobby["reg_taken_by"] = None
-    # Очищаем запись match_registration для того, кто реально взял матч
-    for _adm in list(match_registration.keys()):
-        if match_registration[_adm].get("match_key") == match_key:
-            match_registration.pop(_adm, None)
-    match_id   = lobby.get("match_id", "?")
-    match_code = lobby.get("match_code", str(match_id))
-    AC = lobby.get("ACreenshots_count", 0)
-    try:
-        new_kb = _build_admin_match_kb(match_key, match_code, AC, taken_by=None)
-        thread_id = lobby.get("admin_thread_id")
-        edit_kw = {"reply_markup": new_kb}
-        if thread_id:
-            edit_kw["message_thread_id"] = thread_id
-        await bot.edit_message_reply_markup(callback.message.chat.id, callback.message.message_id, **edit_kw)
-    except Exception:
-        pass
-    admin_p = get_player(uid)
-    admin_name = admin_p[1] if admin_p else str(uid)
-    await safe_answer(callback.id, "🔓 Регистрация освобождена")
-    thread_id = lobby.get("admin_thread_id")
-    try:
-        kw = {"parse_mode": "HTML"}
-        if thread_id:
-            kw["message_thread_id"] = thread_id
-        prev_p = get_player(prev_taker) if prev_taker else None
-        prev_name = prev_p[1] if prev_p else str(prev_taker or "?")
-        await bot.send_message(
-            ADMIN_CHAT_ID,
-            f"🔓 <b>{admin_name}</b> освободил регистрацию матча #{match_code} (была у {prev_name})",
-            **kw,
-        )
-    except Exception:
-        pass
-
-
-@router.callback_query(F.data.startswith("reg_abandon|"))
-async def cb_reg_abandon(callback: CallbackQuery):
-    """Регистратор нажал (Освободить) - показываем подтверждение в чате регистрации."""
-    uid = callback.from_user.id
-    if not is_game_reg_check(uid):
-        await safe_answer(callback.id, "❌ Нет доступа")
-        return
-    match_key = callback.data.split("|", 1)[1]
-    lobby = running_matches.get(match_key)
-    if not lobby:
-        await safe_answer(callback.id, "❌ Матч не найден")
-        return
-    taken = lobby.get("reg_taken_by")
-    if taken and taken != uid:
-        await safe_answer(callback.id, "❌ Только тот, кто взял регистрацию, может её освободить", show_alert=True)
-        return
-    match_code = lobby.get("match_code", str(lobby.get("match_id", "?")))
-    await safe_answer(callback.id)
-    kb_confirm = InlineKeyboardBuilder()
-    kb_confirm.add(
-        types.InlineKeyboardButton(text="✅ Да, освободить регистрацию", callback_data=f"reg_abandon_confirm|{match_key}"),
-        types.InlineKeyboardButton(text="❌ Нет, продолжаю регистрацию", callback_data="match_noop"),
-    )
-    # Отправляем подтверждение в чат регистрации (группа/ветка), а не в личку
-    data = match_registration.get(uid, {})
-    reply_chat_id   = data.get("reply_chat_id")
-    reply_thread_id = data.get("reply_thread_id")
-    # Фолбэк: если match_registration не заполнен - берём ветку из лобби
-    if not reply_chat_id:
-        if lobby.get("admin_thread_id") and ADMIN_CHAT_ID:
-            reply_chat_id   = ADMIN_CHAT_ID
-            reply_thread_id = lobby.get("admin_thread_id")
-        else:
-            reply_chat_id   = uid   # крайний фолбэк - лс
-            reply_thread_id = None
-    send_kw = {"parse_mode": "HTML", "reply_markup": kb_confirm}
-    if reply_thread_id:
-        send_kw["message_thread_id"] = reply_thread_id
-    try:
-        await bot.send_message(
-            reply_chat_id,
-            f"⚠️ <b>Отмена регистрации матча #{match_code}</b>\n\n"
-            f"Ты уверен что хочешь освободить регистрацию?\n"
-            f"Матч будет доступен другим game reg.",
-            **send_kw,
-        )
-    except Exception:
-        pass
-
-
-@router.callback_query(F.data.startswith("reg_abandon_confirm|"))
-async def cb_reg_abandon_confirm(callback: CallbackQuery):
-    """Подтверждённый отказ от регистрации."""
-    uid = callback.from_user.id
-    if not is_game_reg_check(uid):
-        await safe_answer(callback.id, "❌ Нет доступа")
-        return
-    match_key = callback.data.split("|", 1)[1]
-    lobby = running_matches.get(match_key)
-    if not lobby:
-        await safe_answer(callback.id, "❌ Матч не найден")
-        return
-    taken = lobby.get("reg_taken_by")
-    if taken and taken != uid:
-        await safe_answer(callback.id, "❌ Только тот, кто взял регистрацию, может её освободить", show_alert=True)
-        return
-    await safe_answer(callback.id, "🚫 Вы отказались от регистрации")
-    # Убираем кнопки подтверждения из сообщения в чате
-    try:
-        await bot.edit_message_reply_markup(callback.message.chat.id, callback.message.message_id, reply_markup=None)
-    except Exception:
-        pass
-    lobby["reg_taken_by"] = None
-    # Очищаем match_registration для регистратора этого матча
-    for _adm in list(match_registration.keys()):
-        if match_registration[_adm].get("match_key") == match_key:
-            match_registration.pop(_adm, None)
-    match_id   = lobby.get("match_id", "?")
-    match_code = lobby.get("match_code", str(match_id))
-    AC = lobby.get("ACreenshots_count", 0)
-    # Обновляем клавиатуру в ADMIN-панели (не в сообщении подтверждения)
-    admin_msg_id   = lobby.get("admin_msg_id")
-    admin_thread_id = lobby.get("admin_thread_id")
-    if admin_msg_id and ADMIN_CHAT_ID:
-        try:
-            new_kb = _build_admin_match_kb(match_key, match_code, AC, taken_by=None)
-            await bot.edit_message_reply_markup(ADMIN_CHAT_ID, admin_msg_id, reply_markup=new_kb)
-        except Exception:
-            pass
-    # Уведомление в ветку
-    admin_p = get_player(uid)
-    admin_name = admin_p[1] if admin_p else str(uid)
-    try:
-        kw_notify = {"parse_mode": "HTML"}
-        if admin_thread_id:
-            kw_notify["message_thread_id"] = admin_thread_id
-        await bot.send_message(
-            ADMIN_CHAT_ID,
-            f"🚫 Администратор <b>{admin_name}</b> отказался от регистрации матча #{match_code}",
-            **kw_notify,
-        )
-    except Exception:
-        pass
-
-
-@router.message(lambda m: (
-    m.from_user.id in match_registration
-    and match_registration[m.from_user.id].get("step") == "ACore"
-    and m.chat.id == match_registration[m.from_user.id].get("reply_chat_id", m.from_user.id)
-))
-async def reg_step_ACore(message: Message):
-    uid = message.from_user.id
-    if not is_game_reg_check(uid):
-        return
-    text = message.text.strip() if message.text else ""
-    m = re.match(r'^(\d+)\s*[:\-]\s*(\d+)$', text)
-    if not m:
-        reg_send(uid, "❌ Неверный формат. Введи счёт: <code>13:11</code>", parse_mode="HTML")
-        return
-    ACore_w, ACore_l = int(m.group(1)), int(m.group(2))
-    match_registration[uid]["ACore_w"] = ACore_w
-    match_registration[uid]["ACore_l"] = ACore_l
-    match_registration[uid]["step"] = "winner"
-    match_key = match_registration[uid]["match_key"]
-    lobby = running_matches.get(match_key)
-    _rs_priv_table  = PRIVATE_CONFIG.get(lobby.get("private", "fade") if lobby else "fade", PRIVATE_CONFIG["fade"])["table"] if lobby else None
-    _rs_league      = lobby.get("league", "default") if lobby else "default"
-    ct_list = "\n".join([f"  {i+1}. {pline(u, _rs_priv_table, _rs_league)}" for i, u in enumerate((lobby.get("team_ct", []) if lobby else []))])
-    t_list  = "\n".join([f"  {i+1}. {pline(u, _rs_priv_table, _rs_league)}" for i, u in enumerate((lobby.get("team_t",  []) if lobby else []))])
-    kb = InlineKeyboardBuilder()
-    kb.add(
-        types.InlineKeyboardButton(text="💙 CT победила", callback_data=f"reg_winner_ct|{match_key}"),
-        types.InlineKeyboardButton(text="🧡 T победила",  callback_data=f"reg_winner_t|{match_key}"),
-    )
-    reply_chat_id   = match_registration[uid].get("reply_chat_id", uid)
-    reply_thread_id = match_registration[uid].get("reply_thread_id")
-    send_kw = {"reply_markup": kb, "parse_mode": "HTML"}
-    if reply_thread_id:
-        send_kw["message_thread_id"] = reply_thread_id
-    await bot.send_message(
-        reply_chat_id,
-        f"<b>Шаг 2/3</b> - Счёт принят: <b>{ACore_w}:{ACore_l}</b>\n\n"
-        f"💙 CT:\n{ct_list}\n\n🧡 T:\n{t_list}\n\n"
-        f"Кто победил?",
-        **send_kw,
-    )
-
-
-@router.callback_query(F.data.startswith("reg_winner_"))
-async def reg_winner(callback: CallbackQuery):
-    uid = callback.from_user.id
-    if not is_game_reg_check(uid):
-        await safe_answer(callback.id, "❌ Нет доступа")
-        return
-    if uid not in match_registration or match_registration[uid].get("step") != "winner":
-        await safe_answer(callback.id, "❌ Нет активной регистрации")
-        return
-    raw = callback.data[len("reg_winner_"):]
-    parts = raw.split("|", 1)
-    winner = parts[0]
-    match_key = parts[1] if len(parts) > 1 else match_registration[uid]["match_key"]
-    match_registration[uid]["winner"] = winner
-    match_registration[uid]["step"] = "all_kills"
-    await safe_answer(callback.id)
-    try:
-        await bot.edit_message_reply_markup(callback.message.chat.id, callback.message.message_id, reply_markup=None)
-    except Exception:
-        pass
-    lobby = running_matches.get(match_key)
-    ct_players = [u for u in (lobby.get("team_ct", []) if lobby else []) if not is_bot_player(u)]
-    t_players  = [u for u in (lobby.get("team_t",  []) if lobby else []) if not is_bot_player(u)]
-    match_registration[uid]["ct_players"] = ct_players
-    match_registration[uid]["t_players"]  = t_players
-    match_registration[uid]["kills_data"] = {}
-    _reg_lobby = running_matches.get(match_key)
-    _reg_priv_table = PRIVATE_CONFIG.get(_reg_lobby.get("private", "fade") if _reg_lobby else "fade", PRIVATE_CONFIG["fade"])["table"]
-    _ask_all_kda(uid, ct_players, t_players, priv_table=_reg_priv_table)
-
-
-def _ask_all_kda(reg_uid, ct_players, t_players, priv_table=None):
-    all_players = ct_players + t_players
-    lines = []
-    for u in all_players:
-        p = (get_player_from_table(u, priv_table) or get_player(u)) if priv_table else get_player(u)
-        name = p[1] if p else str(u)
-        team = "💙 CT" if u in ct_players else "🧡 T"
-        lines.append(f"  {team} {name} - <code>{u}</code>")
-    player_list = "\n".join(lines)
-    all_count = len(all_players)
-    example_parts = [f"{u} 20 5 3" for u in all_players[:3]]
-    example = ", ".join(example_parts)
-    reg_send(
-        reg_uid,
-        f"<b>Шаг 3/3 - Статистика игроков</b>\n\n"
-        f"Список игроков:\n{player_list}\n\n"
-        f"💡 Скопируй ID рядом с ником и введи <b>всех одной строкой</b>:\n"
-        f"<code>ID K A D, ID K A D, ...</code>\n\n"
-        f"🔫 K - киллы  🤝 A - помощи  💀 D - смерти\n\n"
-        f"Пример:\n<code>{example}</code>\n\n"
-        f"⚠️ Между цифрами - пробел, после каждого игрока - запятая\n"
-        f"Нужно ввести всех {all_count} игроков.",
-        parse_mode="HTML",
-    )
-
-
-def _parse_all_kda(text, all_players):
-    known_ids = set(all_players)
-    entries = [e.strip() for e in text.split(",") if e.strip()]
-    if len(entries) != len(all_players):
-        return None, f"❌ Нужно {len(all_players)} записей через запятую, ты ввёл {len(entries)}."
-    result = {}
-    seen_ids = set()
-    for i, entry in enumerate(entries):
-        parts = entry.split()
-        if len(parts) != 4:
-            return None, f"❌ Запись #{i+1}: нужно 4 значения через пробел - <code>ID K A D</code>."
-        try:
-            pid = int(parts[0])
-            k, a, d = int(parts[1]), int(parts[2]), int(parts[3])
-        except ValueError:
-            return None, f"❌ Запись #{i+1}: только цифры."
-        if pid not in known_ids:
-            return None, f"❌ Запись #{i+1}: ID <code>{pid}</code> не найден в этом матче."
-        if pid in seen_ids:
-            return None, f"❌ Запись #{i+1}: ID <code>{pid}</code> уже введён."
-        seen_ids.add(pid)
-        result[pid] = {"kills": k, "assists": a, "deaths": d}
-    return result, None
-
-
-@router.message(lambda m: (
-    m.from_user.id in match_registration
-    and match_registration[m.from_user.id].get("step") == "all_kills"
-    and m.chat.id == match_registration[m.from_user.id].get("reply_chat_id", m.from_user.id)
-))
-async def reg_step_all_kills(message: Message):
-    uid = message.from_user.id
-    if not is_game_reg_check(uid):
-        return
-    data = match_registration[uid]
-    ct_players = data.get("ct_players", [])
-    t_players  = data.get("t_players",  [])
-    all_players = ct_players + t_players
-    parsed, err = _parse_all_kda(message.text.strip() if message.text else "", all_players)
-    if err:
-        reg_send(uid, err, parse_mode="HTML")
-        return
-    data["kills_data"].update(parsed)
-    match_key = data["match_key"]
-    try:
-        _finalize_match(uid, match_key)
-    except Exception as _fe:
-        import traceback
-        tb = traceback.format_exc()
-        print(f"[finalize_match ERROR] {_fe}\n{tb}")
-        reg_send(uid, f"❌ <b>Ошибка при регистрации матча:</b>\n<code>{_fe}</code>", parse_mode="HTML")
-        # Восстанавливаем данные чтобы можно было повторить
-        if uid not in match_registration:
-            match_registration[uid] = data
-            match_registration[uid]["step"] = "all_kills"
-
-
-async def _check_elo_promotions(all_stats: dict, is_quals_match: bool, priv_table: str):
-    """После матча проверяет и выдаёт автоматическое повышение лиги:
-    - Default: elo >= 2000 и нет quals_access → выдаём quals_access, уведомляем
-    - Quals:   quals_elo >= 2000 и нет fpl_access → выдаём fpl_access, уведомляем
-    """
-    try:
-        conn = _db()
-        cur  = conn.cursor()
-        for uid in all_stats:
-            try:
-                if is_quals_match:
-                    cur.execute(
-                        f"SELECT quals_elo, fpl_access FROM {priv_table} WHERE user_id=%s",
-                        (uid,),
-                    )
-                    row = cur.fetchone()
-                    if row and row[0] >= 2000 and not row[1]:
-                        cur.execute(
-                            f"UPDATE {priv_table} SET fpl_access=1 WHERE user_id=%s",
-                            (uid,),
-                        )
-                        conn.commit()
-                        try:
-                            await bot.send_message(
-                                uid,
-                                "🏆 <b>Поздравляем! Вы достигли 2000 ELO в Qualification!</b>\n\n"
-                                "🔓 Вам открыт доступ в <b>FPL</b> — высший уровень игры.",
-                                parse_mode="HTML",
-                            )
-                        except Exception:
-                            pass
-                else:
-                    cur.execute(
-                        f"SELECT elo, quals_access FROM {priv_table} WHERE user_id=%s",
-                        (uid,),
-                    )
-                    row = cur.fetchone()
-                    if row and row[0] >= 2000 and not row[1]:
-                        now = int(time.time())
-                        cur.execute(
-                            f"UPDATE {priv_table} SET quals_access=1, quals_until=%s WHERE user_id=%s",
-                            (now + 30 * 24 * 3600, uid),
-                        )
-                        conn.commit()
-                        try:
-                            await bot.send_message(
-                                uid,
-                                "🎉 <b>Поздравляем! Вы достигли 2000 ELO в Default League!</b>\n\n"
-                                "🔓 Вам открыт доступ в <b>Qualification League</b>.\n"
-                                "Продолжайте расти — следующая цель: 2000 ELO в Quals → FPL!",
-                                parse_mode="HTML",
-                            )
-                        except Exception:
-                            pass
-            except Exception as _pe:
-                print(f"[_check_elo_promotions] uid={uid}: {_pe}")
-        conn.close()
-    except Exception as e:
-        print(f"[_check_elo_promotions] {e}")
-
-
-async def _cleanup_match_messages(lobby):
-    """Удаляет мусорные сообщения после завершения/отмены матча."""
-    # 1. Удаляем "МАТЧ НАЧАЛСЯ!" у каждого игрока в личке
-    for uid, mid in list(lobby.get("player_start_msgs", {}).items()):
-        try:
-            await bot.delete_message(uid, mid)
-        except Exception:
-            pass
-    lobby.pop("player_start_msgs", None)
-
-    # 2. Убираем кнопки с admin-сообщения "МАТЧ НАЧАЛСЯ" (не удаляем - полезно для контекста)
-    admin_msg_id = lobby.get("admin_msg_id")
-    if ADMIN_CHAT_ID and admin_msg_id:
-        try:
-            await bot.edit_message_reply_markup(ADMIN_CHAT_ID, admin_msg_id, reply_markup=None)
-        except Exception:
-            pass
-
-    # 3. Чистим awaiting_ACreenshot для всех игроков этого матча
-    match_key = lobby.get("match_key")
-    for uid in list(lobby.get("team_ct", [])) + list(lobby.get("team_t", [])):
-        if awaiting_ACreenshot.get(uid) == match_key:
-            awaiting_ACreenshot.pop(uid, None)
-
-
-async def _finalize_match(reg_uid, match_key):
-    data = match_registration.pop(reg_uid, {})
-    lobby = running_matches.get(match_key)
-    if not lobby:
-        reg_send(reg_uid, "❌ Матч не найден")
-        return
-    winner   = data.get("winner", "ct")
-    ACore_w  = data.get("ACore_w", 0)
-    ACore_l  = data.get("ACore_l", 0)
-    kills_data = data.get("kills_data", {})
-    team_ct  = lobby.get("team_ct", [])
-    team_t   = lobby.get("team_t",  [])
-    winner_team = team_ct if winner == "ct" else team_t
-    loser_team  = team_t  if winner == "ct" else team_ct
-    all_stats = {}
-    is_quals_match = (lobby.get("league") == "quals")
-    is_duo_match   = (lobby.get("league") == "duo")
-    # Resolve private table for this match
-    private_key = lobby.get("private", "fade")
-    priv_cfg    = PRIVATE_CONFIG.get(private_key, PRIVATE_CONFIG["fade"])
-    priv_table  = priv_cfg["table"]
-    priv_label  = f"{priv_cfg['emoji']} {priv_cfg['display']}"
-    conn = None
-    try:
-        conn = _db()
-        cur = conn.cursor()
-        for _uid in team_ct + team_t:
-            if is_bot_player(_uid):
-                continue
-            won = _uid in winner_team
-            kda = kills_data.get(_uid, {"kills": 0, "deaths": 0, "assists": 0})
-            kills = kda["kills"]
-            if is_duo_match:
-                # 2v2: порог убийств ≥5 вместо 12 (меньше игроков)
-                if won:
-                    elo_change = 25 if kills >= 5 else 17
-                    coins_reward = 15
-                else:
-                    elo_change = -15 if kills >= 5 else -23
-                    coins_reward = 4
-            else:
-                # 5v5 (Default / Quals): ≥12 убийств → +25/−15, иначе +17/−23
-                if won:
-                    elo_change = 25 if kills >= 12 else 17
-                    coins_reward = 15
-                else:
-                    elo_change = -15 if kills >= 12 else -23
-                    coins_reward = 4
-            # Ensure player row exists in priv_table (defensive upsert for cross-private users)
-            if priv_table != "players":
-                _src = get_player(_uid)
-                if _src:
-                    try:
-                        cur.execute(
-                            f"""INSERT INTO {priv_table}
-                                (user_id, username, game_id, device, registered, coins, elo,
-                                 tg_username, is_admin, is_bot)
-                                VALUES (%s, %s, %s, %s, 1, 100, 1000, %s, %s, %s)
-                                ON CONFLICT (user_id) DO NOTHING""",
-                            (_uid, _src[1], _src[2], _src[3],
-                             _src[21] if len(_src) > 21 else "",
-                             _src[11], _src[13]),
-                        )
-                    except Exception as _ue:
-                        print(f"[upsert player in {priv_table}] {_ue}")
-
-            p = get_player_from_table(_uid, priv_table) or get_player(_uid)
-            if p:
-                try:
-                    prem = has_active_premium(_uid)
-                    if prem:
-                        if won:
-                            elo_change = int(elo_change * 1.5)
-                        coins_reward = int(coins_reward * 1.5)
-                except Exception as _pe:
-                    print(f"[premium check error] uid={_uid}: {_pe}")
-
-            if is_duo_match:
-                # 2v2 матч: обновляем только duo-колонки + монеты
-                if won:
-                    cur.execute(
-                        f"UPDATE {priv_table} SET duo_wins=duo_wins+1, "
-                        "duo_elo=GREATEST(0, duo_elo+%s), "
-                        "duo_kills=duo_kills+%s, duo_deaths=duo_deaths+%s, "
-                        "duo_assists=duo_assists+%s, coins=coins+%s WHERE user_id=%s",
-                        (elo_change, kda["kills"], kda["deaths"], kda["assists"], coins_reward, _uid),
-                    )
-                else:
-                    cur.execute(
-                        f"UPDATE {priv_table} SET duo_losses=duo_losses+1, "
-                        "duo_elo=GREATEST(0, duo_elo+%s), "
-                        "duo_kills=duo_kills+%s, duo_deaths=duo_deaths+%s, "
-                        "duo_assists=duo_assists+%s, coins=coins+%s WHERE user_id=%s",
-                        (elo_change, kda["kills"], kda["deaths"], kda["assists"], coins_reward, _uid),
-                    )
-            elif is_quals_match:
-                # Quals матч: обновляем только quals-колонки + монеты
-                if won:
-                    cur.execute(
-                        f"UPDATE {priv_table} SET quals_wins=quals_wins+1, "
-                        "quals_elo=GREATEST(0, quals_elo+%s), "
-                        "quals_kills=quals_kills+%s, quals_deaths=quals_deaths+%s, "
-                        "quals_assists=quals_assists+%s, coins=coins+%s WHERE user_id=%s",
-                        (elo_change, kda["kills"], kda["deaths"], kda["assists"], coins_reward, _uid),
-                    )
-                else:
-                    cur.execute(
-                        f"UPDATE {priv_table} SET quals_losses=quals_losses+1, "
-                        "quals_elo=GREATEST(0, quals_elo+%s), "
-                        "quals_kills=quals_kills+%s, quals_deaths=quals_deaths+%s, "
-                        "quals_assists=quals_assists+%s, coins=coins+%s WHERE user_id=%s",
-                        (elo_change, kda["kills"], kda["deaths"], kda["assists"], coins_reward, _uid),
-                    )
-            else:
-                # Default матч: обновляем только default-колонки + монеты
-                if won:
-                    cur.execute(
-                        f"UPDATE {priv_table} SET wins=wins+1, elo=GREATEST(0, elo+%s), kills=kills+%s, deaths=deaths+%s, assists=assists+%s, coins=coins+%s WHERE user_id=%s",
-                        (elo_change, kda["kills"], kda["deaths"], kda["assists"], coins_reward, _uid),
-                    )
-                else:
-                    cur.execute(
-                        f"UPDATE {priv_table} SET losses=losses+1, elo=GREATEST(0, elo+%s), kills=kills+%s, deaths=deaths+%s, assists=assists+%s, coins=coins+%s WHERE user_id=%s",
-                        (elo_change, kda["kills"], kda["deaths"], kda["assists"], coins_reward, _uid),
-                    )
-            all_stats[_uid] = {**kda, "won": won, "elo_change": elo_change, "coins_reward": coins_reward}
-        conn.commit()
-    except Exception as _dbe:
-        print(f"[_finalize_match DB ERROR] {_dbe}")
-        import traceback; traceback.print_exc()
-        try:
-            if conn:
-                conn.rollback()
-        except Exception:
-            pass
-    finally:
-        try:
-            if conn:
-                conn.close()
-        except Exception:
-            pass
-    # ===== MVP: найти игрока с наибольшим количеством киллов и +1 к счётчику =====
-    mvp_uid = None
-    max_kills_mvp = -1
-    for _uid, s in all_stats.items():
-        if s["kills"] > max_kills_mvp:
-            max_kills_mvp = s["kills"]
-            mvp_uid = _uid
-    if mvp_uid and max_kills_mvp >= 0:
-        try:
-            _mc = _db()
-            _mcc = _mc.cursor()
-            _mcc.execute(f"UPDATE {priv_table} SET mvp_count=mvp_count+1 WHERE user_id=%s", (mvp_uid,))
-            _mc.commit()
-            _mc.close()
-        except Exception as _me:
-            print(f"[mvp_count update] {_me}")
-
-    # Авто-повышение лиги если достигнут порог 2000 ELO
-    _check_elo_promotions(all_stats, is_quals_match, priv_table)
-
-    _cleanup_match_messages(lobby)
-    save_match_to_history(lobby, {"winner": winner, "ACore_w": ACore_w, "ACore_l": ACore_l}, all_stats)
-    # Сохраняем данные для возможного отката при перерегистрации
-    lobby["all_stats"]  = all_stats
-    lobby["priv_table"] = priv_table
-    lobby["mvp_uid"]    = mvp_uid
-    # Оставляем лобби в running_matches со статусом "registered",
-    # чтобы кнопка "🔄 Перерегать" могла найти матч и сбросить регистрацию.
-    lobby["status"] = "registered"
-    match_id = lobby.get("match_id", "?")
-    winner_lines = []
-    loser_lines  = []
-    for uid, s in all_stats.items():
-        p = get_player_from_table(uid, priv_table) or get_player(uid)
-        name = p[1] if p else str(uid)
-        sign = "+" if s["elo_change"] >= 0 else ""
-        line = (
-            f"👤 <b>{name}</b>\n"
-            f"   🔫 Киллы: {s['kills']}  🤝 Помощи: {s['assists']}  💀 Смерти: {s['deaths']}\n"
-            f"   📊 ELO: {sign}{s['elo_change']}  🪙 Коины: +{s['coins_reward']}"
-        )
-        if s["won"]:
-            winner_lines.append(line)
-        else:
-            loser_lines.append(line)
-
-    winner_team_label = "💙 CT" if winner == "ct" else "🧡 T"
-    loser_team_label  = "🧡 T"  if winner == "ct" else "💙 CT"
-
-    match_code = lobby.get("match_code", str(match_id))
-    result_text = (
-        f"🏁 <b>Матч #{match_code} завершён!</b>\n"
-        f"━━━━━━━━━━━━━━━━━━━━\n"
-        f"🏠 Привате: <b>{priv_label}</b>\n"
-        f"🗺 Карта: {lobby.get('map_name', '?')}  |  Счёт: <b>{ACore_w}:{ACore_l}</b>\n"
-        f"🏷 Лига: {format_league(lobby.get('league','default'))}\n"
-        f"🏆 Победитель: <b>{winner_team_label}</b>\n"
-        f"━━━━━━━━━━━━━━━━━━━━\n\n"
-        f"✅ <b>{winner_team_label} - Победа</b>\n"
-        + "\n\n".join(winner_lines)
-        + f"\n\n❌ <b>{loser_team_label} - Поражение</b>\n"
-        + "\n\n".join(loser_lines)
-    )
-    for uid in all_stats:
-        try:
-            await bot.send_message(uid, result_text, parse_mode="HTML")
-        except Exception:
-            pass
-    reg_send(reg_uid, f"✅ Матч #{match_code} зарегистрирован!\n\n{result_text}", parse_mode="HTML")
-
-    # Логируем результат в паблик
-    send_result_log(
-        f"🏁 <b>Матч #{match_code} завершён</b>\n"
-        f"🗺 {lobby.get('map_name','?')} | Счёт: <b>{ACore_w}:{ACore_l}</b>\n"
-        f"🏆 Победитель: <b>{winner_team_label}</b>\n"
-        f"🏷 {format_league(lobby.get('league',''))}/{lobby.get('device','').upper()}"
-    )
-
-    # Отправляем "Матч Зарегистрирован" в ветку + закрываем тему
-    if ADMIN_CHAT_ID and lobby.get("admin_thread_id"):
-        thread_id = lobby["admin_thread_id"]
-        try:
-            # Кнопки для админов остаются (на случай перерегистрации/отмены)
-            kb_done = InlineKeyboardBuilder()
-            kb_done.add(
-                types.InlineKeyboardButton(text="🔄 Перерегать",  callback_data=f"reregister_match|{match_key}"),
-                types.InlineKeyboardButton(text="❌ Отменить",    callback_data=f"cancel_match|{match_key}"),
-            )
-            await bot.send_message(
-                ADMIN_CHAT_ID,
-                f"✅ <b>Матч #{match_code} Зарегистрирован!</b>\n"
-                f"🏆 Победитель: <b>{winner_team_label}</b> | {ACore_w}:{ACore_l}",
-                message_thread_id=thread_id,
-                reply_markup=kb_done.as_markup(),
-                parse_mode="HTML",
-            )
-            bot.close_forum_topic(ADMIN_CHAT_ID, thread_id)
-        except Exception as e:
-            print(f"Close topic error: {e}")
-
-    # Отправляем в чат проверки матчей (настраивается через /setmatchreg)
-    if _dynamic_match_reg_chat_id:
-        try:
-            kb_review = InlineKeyboardBuilder()
-            kb_review.add(
-                types.InlineKeyboardButton(text="🔄 На перерегистрацию", callback_data=f"reregister_match|{match_key}"),
-            )
-            priv_cfg2 = PRIVATE_CONFIG.get(lobby.get("private", "fade"), PRIVATE_CONFIG["fade"])
-            priv_label2 = f"{priv_cfg2['emoji']} {priv_cfg2['display']}"
-            _mreg_kw = {"reply_markup": kb_review, "parse_mode": "HTML"}
-            if _dynamic_match_reg_thread_id:
-                _mreg_kw["message_thread_id"] = _dynamic_match_reg_thread_id
-            await bot.send_message(
-                _dynamic_match_reg_chat_id,
-                f"📋 <b>Матч #{match_code} зарегистрирован</b>\n\n"
-                f"🏠 Привате: <b>{priv_label2}</b>\n"
-                f"🗺 Карта: {lobby.get('map_name', '?')} | Счёт: <b>{ACore_w}:{ACore_l}</b>\n"
-                f"🏷 Лига: {format_league(lobby.get('league','default'))} | 📱 {lobby.get('device','').upper()}\n"
-                f"🏆 Победитель: <b>{winner_team_label}</b>",
-                **_mreg_kw,
-            )
-        except Exception as _rve:
-            print(f"[match_review send] {_rve}")
-
-
-@router.callback_query(F.data.startswith("cancel_match|"))
-async def cb_cancel_match(callback: CallbackQuery):
-    uid = callback.from_user.id
-    if not is_game_reg_check(uid):
-        await safe_answer(callback.id, "❌ Нет доступа")
-        return
-    match_key = callback.data.split("|", 1)[1]
-    lobby = running_matches.get(match_key)
-    if not lobby:
-        # Матч уже завершён, но ветка закрыта и нажали кнопку - ничего не делаем
-        await safe_answer(callback.id, "❌ Матч не найден")
-        return
-    # Запрашиваем причину отмены
-    cancel_flow[uid] = {
-        "match_key": match_key,
-        "chat_id": callback.message.chat.id,
-        "thread_id": getattr(callback.message, "message_thread_id", None),
-        "msg_id": callback.message.message_id,
-    }
-    await safe_answer(callback.id)
-    send_kw = {"parse_mode": "HTML"}
-    thread_id = getattr(callback.message, "message_thread_id", None)
-    if thread_id:
-        send_kw["message_thread_id"] = thread_id
-    match_id   = lobby.get("match_id", "?")
-    match_code = lobby.get("match_code", str(match_id))
-    await bot.send_message(
-        callback.message.chat.id,
-        f"❌ <b>Отмена матча #{match_code}</b>\n\nВведите причину отмены:",
-        **send_kw,
-    )
-
-
-@router.message(lambda m: m.from_user.id in cancel_flow and m.text is not None)
-async def handle_cancel_reason(message: Message):
-    # converted to async in post-pass
-    pass_async_marker = True; 
-    uid = message.from_user.id
-    if not is_game_reg_check(uid):
-        cancel_flow.pop(uid, None)
-        return
-    data = cancel_flow.pop(uid)
-    match_key = data["match_key"]
-    reason = message.text.strip()
-    lobby = running_matches.get(match_key)
-    if not lobby:
-        await bot.send_message(uid, "❌ Матч уже не существует")
-        return
-    match_id   = lobby.get("match_id", "?")
-    match_code = lobby.get("match_code", str(match_id))
-    for puid in lobby.get("team_ct", []) + lobby.get("team_t", []):
-        if is_bot_player(puid):
-            continue
-        try:
-            await bot.send_message(puid, f"❌ <b>Матч #{match_code} отменён администратором.</b>\n\n📝 Причина: {reason}", parse_mode="HTML")
-        except Exception:
-            pass
-    _cleanup_match_messages(lobby)
-    lobby["status"] = "cancelled"
-    lobby["cancel_reason"] = reason
-    # НЕ удаляем из running_matches - оставляем чтобы кнопка (Перерегать) работала
-    # Матч с status='cancelled' не восстанавливается после рестарта (restore_active_matches пропускает его)
-    # Сохраняем отменённый матч в БД
-    try:
-        save_match_cancelled(lobby, reason)
-    except Exception as e:
-        print(f"save_match_cancelled error: {e}")
-
-    thread_id = data.get("thread_id")
-    try:
-        reply_kw = {"parse_mode": "HTML"}
-        if thread_id:
-            reply_kw["message_thread_id"] = thread_id
-        await bot.send_message(
-            data["chat_id"],
-            f"✅ Матч #{match_code} отменён.\n📝 Причина: <b>{reason}</b>",
-            **reply_kw,
-        )
-        if thread_id:
-            bot.close_forum_topic(ADMIN_CHAT_ID, thread_id)
-    except Exception:
-        pass
-
-    # Лог отмены в паблик
-    admin_p = get_player(uid)
-    admin_name = admin_p[1] if admin_p else str(uid)
-    send_punishment_log_priv(uid,
-        f"❌ <b>Матч #{match_code} отменён</b>\n"
-        f"👮 Администратор: {tg_link(uid, admin_name)}\n"
-        f"📝 Причина: <b>{reason}</b>\n"
-        f"🏷 {lobby.get('league','').upper()}/{lobby.get('device','').upper()}"
-    )
-
-    # Отправляем отменённый матч в чат проверки (настраивается через /setmatchreg)
-    if _dynamic_match_reg_chat_id:
-        try:
-            _kb_cancel = InlineKeyboardBuilder()
-            _kb_cancel.button(text="🔄 Перерегать", callback_data=f"reregister_match|{match_key}")
-            _kw_cancel = {"parse_mode": "HTML", "reply_markup": _kb_cancel}
-            if _dynamic_match_reg_thread_id:
-                _kw_cancel["message_thread_id"] = _dynamic_match_reg_thread_id
-            await bot.send_message(
-                _dynamic_match_reg_chat_id,
-                f"❌ <b>Матч #{match_code} отменён</b>\n\n"
-                f"👮 Администратор: <b>{admin_name}</b>\n"
-                f"📝 Причина: <b>{reason}</b>\n"
-                f"🏷 Лига: {format_league(lobby.get('league','default'))} | 📱 {lobby.get('device','').upper()}",
-                **_kw_cancel,
-            )
-        except Exception as _cre:
-            print(f"[cancel match review send] {_cre}")
-
-
-@router.callback_query(F.data.startswith("reregister_match|"))
-async def cb_reregister_match(callback: CallbackQuery):
-    uid = callback.from_user.id
-    if not is_game_reg_check(uid):
-        await safe_answer(callback.id, "❌ Нет доступа")
-        return
-    match_key = callback.data.split("|", 1)[1]
-    lobby = running_matches.get(match_key)
-    if not lobby:
-        await safe_answer(callback.id, "❌ Матч не найден")
-        return
-    was_cancelled = lobby.get("status") == "cancelled"
-    lobby["reg_taken_by"] = None
-    match_registration.pop(uid, None)
-    # Откатываем статистику только если матч был зарегистрирован (не при отмене)
-    if not was_cancelled:
-        rollback_match_stats(lobby)
-    lobby["status"] = "active"
-    match_id   = lobby.get("match_id", "?")
-    match_code = lobby.get("match_code", str(match_id))
-    # Сбрасываем статус в БД
-    try:
-        _rconn = _db()
-        _rcur  = _rconn.cursor()
-        _rcur.execute("UPDATE matches SET status='active' WHERE match_id=%s", (match_id,))
-        _rconn.commit()
-        _rconn.close()
-    except Exception as _re:
-        print(f"[reregister status reset] {_re}")
-
-    if was_cancelled:
-        await safe_answer(callback.id, "🔄 Матч возвращён в очередь регистрации")
-    else:
-        await safe_answer(callback.id, "🔄 Регистрация сброшена, статистика откатана")
-
-    # Переоткрываем тему если была закрыта
-    thread_id = lobby.get("admin_thread_id")
-    if thread_id and ADMIN_CHAT_ID:
-        try:
-            bot.reopen_forum_topic(ADMIN_CHAT_ID, thread_id)
-        except Exception:
-            pass
-        try:
-            AC = lobby.get("ACreenshots_count", 0)
-            new_kb = _build_admin_match_kb(match_key, match_code, AC, taken_by=None)
-            kw = {"parse_mode": "HTML", "reply_markup": new_kb, "message_thread_id": thread_id}
-            await bot.send_message(ADMIN_CHAT_ID, f"🔄 Матч #{match_code} отправлен на перерегистрацию.", **kw)
-        except Exception:
-            pass
-    elif ADMIN_CHAT_ID:
-        # Нет форумной ветки - шлём в общий чат
-        try:
-            AC = lobby.get("ACreenshots_count", 0)
-            new_kb = _build_admin_match_kb(match_key, match_code, AC, taken_by=None)
-            await bot.send_message(
-                ADMIN_CHAT_ID,
-                f"🔄 Матч #{match_code} отправлен на перерегистрацию.",
-                parse_mode="HTML", reply_markup=new_kb,
-            )
-        except Exception:
-            pass
-
-
-@router.callback_query(F.data.startswith("activate_match|"))
-async def cb_activate_match(callback: CallbackQuery):
-    """Подтвердить зарегистрированный матч - сделать его (активным) (принять как есть)."""
-    uid = callback.from_user.id
-    if not is_game_reg_check(uid) and not is_admin(uid):
-        await safe_answer(callback.id, "❌ Нет доступа")
-        return
-    match_key = callback.data.split("|", 1)[1]
-    lobby = running_matches.get(match_key)
-    match_code = lobby.get("match_code", "?") if lobby else "?"
-    admin_p = get_player(uid)
-    admin_name = admin_p[1] if admin_p else str(uid)
-    try:
-        await bot.edit_message_reply_markup(callback.message.chat.id, callback.message.message_id, reply_markup=None)
-    except Exception:
-        pass
-    await safe_answer(callback.id, f"✅ Матч #{match_code} сделан активным")
-    try:
-        await bot.send_message(
-            callback.message.chat.id,
-            f"✅ <b>Матч #{match_code} сделан активным</b>\n👮 Подтвердил: <b>{admin_name}</b>",
-            parse_mode="HTML",
-        )
-    except Exception:
-        pass
-    # Уведомляем в основной admin-чат
-    if ADMIN_CHAT_ID:
-        try:
-            thread_id = lobby.get("admin_thread_id") if lobby else None
-            kw = {"parse_mode": "HTML"}
-            if thread_id:
-                kw["message_thread_id"] = thread_id
-            await bot.send_message(
-                ADMIN_CHAT_ID,
-                f"✅ <b>Матч #{match_code} подтверждён и сделан активным</b>\n👮 {admin_name}",
-                **kw,
-            )
-        except Exception:
-            pass
-
-
-@router.callback_query(F.data == "noop")
-async def cb_noop(callback: CallbackQuery):
-    await safe_answer(callback.id)
-
-
-# ==================== МАГАЗИН ====================
-@router.callback_query(F.data == "shop")
-async def cb_shop(callback: CallbackQuery):
-    uid = callback.from_user.id
-    err = check_blocked(uid)
-    if err:
-        await safe_answer(callback.id, "⚠️ Доступ ограничен", show_alert=True)
-        return
-    try:
-        await bot.delete_message(callback.message.chat.id, callback.message.message_id)
-    except Exception:
-        pass
-    # Баннер "ВСЕ ТОВАРЫ" + одна кнопка "Товары"
-    kb = InlineKeyboardBuilder()
-    kb.button(text="🛒 Товары", callback_data="shop_items")
-    kb.button(text="🔙 Назад", callback_data="back")
-    try:
-        if os.path.isfile(SHOP_BANNER_PATH):
-            with open(SHOP_BANNER_PATH, "rb") as img:
-                await bot.send_photo(callback.message.chat.id, img, reply_markup=kb.as_markup())
-        else:
-            await bot.send_message(callback.message.chat.id, "🛒 <b>МАГАЗИН</b>", reply_markup=kb.as_markup(), parse_mode="HTML")
-    except Exception as e:
-        print(f"[cb_shop] banner error: {e}")
-        await bot.send_message(callback.message.chat.id, "🛒 <b>МАГАЗИН</b>", reply_markup=kb.as_markup(), parse_mode="HTML")
-    await safe_answer(callback.id)
-
-
-@router.callback_query(F.data == "shop_items")
-async def cb_shop_items(callback: CallbackQuery):
-    uid = callback.from_user.id
-    err = check_blocked(uid)
-    if err:
-        await safe_answer(callback.id, "⚠️ Доступ ограничен", show_alert=True)
-        return
-    items = get_shop_items_by_category("goods")
-    p = get_player(uid)
-    coins = p[5] if p else 0
-    kb = InlineKeyboardBuilder()
-    for item_id, name, deAC, price, item_type in items:
-        owned = has_item_in_inventory(uid, item_id)
-        kb.button(text=f"{'✅ ' if owned else ''}{name}", callback_data=f"shop_item_{item_id}")
-    kb.button(text="🔧 Декор (Тех. работы)", callback_data="shop_cat_decor")
-    kb.button(text="🔙 Назад", callback_data="shop")
-    # Удаляем баннер, присылаем панель с товарами
-    try:
-        await bot.delete_message(callback.message.chat.id, callback.message.message_id)
-    except Exception:
-        pass
-    caption = f"💰 Баланс: <b>{coins} AC</b>\n\nВыберите товар:"
-    sent = False
-    try:
-        if os.path.isfile(SHOP_PANEL_PATH):
-            with open(SHOP_PANEL_PATH, "rb") as img:
-                await bot.send_photo(callback.message.chat.id, img, caption=caption, reply_markup=kb.as_markup(), parse_mode="HTML")
-            sent = True
-    except Exception as e:
-        print(f"[cb_shop_items] panel error: {e}")
-    if not sent:
-        await bot.send_message(callback.message.chat.id, f"🛒 <b>ТОВАРЫ</b>\n\n{caption}", reply_markup=kb.as_markup(), parse_mode="HTML")
-    await safe_answer(callback.id)
-
-
-@router.callback_query(F.data.startswith("shop_cat_"))
-async def cb_shop_category(callback: CallbackQuery):
-    uid = callback.from_user.id
-    category = callback.data.split("shop_cat_")[1]
-    # ДЕКОР - технические работы
-    if category == "decor":
-        kb = InlineKeyboardBuilder()
-        kb.button(text="🔙 Назад", callback_data="shop")
-        await bot.edit_message_text(
-            "🔧 <b>Декор - Технические работы</b>\n\n"
-            "⚙️ Раздел временно недоступен.\n"
-            "Приносим извинения за неудобства!",
-            chat_id=callback.message.chat.id, message_id=callback.message.message_id, reply_markup=kb.as_markup(), parse_mode="HTML",
-        )
-        await safe_answer(callback.id)
-        return
-    items = get_shop_items_by_category(category)
-    p = get_player(uid)
-    coins = p[5] if p else 0
-    cat_name = CATEGORY_NAMES.get(category, category)
-    kb = InlineKeyboardBuilder()
-    for item_id, name, deAC, price, item_type in items:
-        owned = has_item_in_inventory(uid, item_id)
-        label = f"{'✅ ' if owned else ''}{name} - {price} AC"
-        kb.button(text=label, callback_data=f"shop_item_{item_id}")
-    kb.button(text="🔙 Назад", callback_data="shop")
-    await bot.edit_message_text(
-        f"{cat_name}\n💰 Баланс: <b>{coins} AC</b>\n\nВыберите товар:",
-        chat_id=callback.message.chat.id, message_id=callback.message.message_id, reply_markup=kb.as_markup(),
-    )
-    await safe_answer(callback.id)
-
-
-@router.callback_query(F.data.startswith("shop_item_"))
-async def cb_shop_item(callback: CallbackQuery):
-    uid = callback.from_user.id
-    item_id = int(callback.data.split("shop_item_")[1])
-    item = get_shop_item_full(item_id)
-    if not item:
-        await safe_answer(callback.id, "❌ Товар не найден")
-        return
-    _, name, deAC, category, price, item_type, price_rub, price_stars, price_crypto = item
-    p = get_player(uid)
-    coins = p[5] if p else 0
-    owned = has_item_in_inventory(uid, item_id)
-    icon = CATEGORY_ICONS.get(category, "")
-    price_lines = []
-    if price and price > 0:
-        price_lines.append(f"💰 Actual Coin: <b>{price} AC</b>")
-    if price_rub and price_rub > 0:
-        price_lines.append(f"💵 Рубли: <b>{price_rub} ₽</b>")
-    if price_stars and price_stars > 0:
-        price_lines.append(f"⭐ Telegram Stars: <b>{price_stars}</b>")
-    if price_crypto and price_crypto > 0:
-        price_lines.append(f"💎 Крипта: <b>${price_crypto:g}</b>")
-    text = (
-        f"{icon} <b>{name}</b>\n\n"
-        f"📝 {deAC}\n"
-        + "\n".join(price_lines) + "\n"
-        f"💳 Ваш баланс: <b>{coins} AC</b>\n"
-        + ("✅ Уже куплено\n" if owned else "")
-    )
-    kb = InlineKeyboardBuilder()
-    can_buy_again = not owned or item_type in {"sticker", "unwarn", "x2coins", "rename"}
-    if can_buy_again:
-        if price and price > 0:
-            kb.button(text=f"💰 Купить за {price} AC", callback_data=f"shop_pay_{item_id}_coins")
-        if price_rub and price_rub > 0:
-            if PAYMENT_PROVIDER_TOKEN:
-                kb.button(text=f"💵 Оплатить {price_rub} ₽", callback_data=f"shop_pay_{item_id}_rub")
-            else:
-                kb.button(text="💵 Рубли (временно недоступно)", callback_data="admin_noop")
-        if price_stars and price_stars > 0:
-            kb.button(text=f"⭐ Оплатить {price_stars} Stars", callback_data=f"shop_pay_{item_id}_stars")
-        if price_crypto and price_crypto > 0:
-            if CRYPTO_PAY_API_TOKEN:
-                kb.button(text=f"💎 Оплатить ${price_crypto:g} криптой", callback_data=f"shop_pay_{item_id}_crypto")
-            else:
-                kb.button(text="💎 Крипта (временно недоступно)", callback_data="admin_noop")
-    kb.button(text="🔙 Назад", callback_data=f"shop_cat_{category}" if category == "decor" else "shop")
-    try:
-        await callback.message.edit_text(text, reply_markup=kb.as_markup(), parse_mode="HTML")
-    except Exception:
-        await bot.send_message(callback.message.chat.id, text, reply_markup=kb.as_markup(), parse_mode="HTML")
-    await safe_answer(callback.id)
-
-
-@router.callback_query(F.data.startswith("shop_pay_"))
-async def cb_shop_pay(callback: CallbackQuery):
-    uid = callback.from_user.id
-    try:
-        _, _, item_id_str, currency = callback.data.split("_", 3)
-    except ValueError:
-        await safe_answer(callback.id, "❌ Ошибка")
-        return
-    item_id = int(item_id_str)
-    item = get_shop_item_full(item_id)
-    if not item:
-        await safe_answer(callback.id, "❌ Товар не найден")
-        return
-    _, name, _deAC, category, price, _item_type, price_rub, price_stars, price_crypto = item
-    if category == "decor":
-        await safe_answer(callback.id, "🔧 Декор временно недоступен (тех. работы)", show_alert=True)
-        return
-
-    if currency == "coins":
-        ok, msg = buy_item(uid, item_id)
-        await safe_answer(callback.id, message[:200], show_alert=not ok)
-        if ok:
-            kb = InlineKeyboardBuilder()
-            kb.button(text="🛒 В магазин", callback_data="shop")
-            try:
-                await callback.message.edit_text(message, reply_markup=kb.as_markup(), parse_mode="HTML")
-            except Exception:
-                await bot.send_message(callback.message.chat.id, message, reply_markup=kb.as_markup(), parse_mode="HTML")
-        return
-
-    if currency == "rub":
-        if not PAYMENT_PROVIDER_TOKEN:
-            await safe_answer(callback.id, "❌ Оплата рублями временно недоступна", show_alert=True)
-            return
-        if not price_rub or price_rub <= 0:
-            await safe_answer(callback.id, "❌ Цена в рублях не задана", show_alert=True)
-            return
-        await safe_answer(callback.id)
-        try:
-            bot.send_invoice(
-                chat_id=uid,
-                title=name,
-                description=f"{name} - Actual FACEIT",
-                invoice_payload=f"item_{item_id}_{uid}",
-                provider_token=PAYMENT_PROVIDER_TOKEN,
-                currency="RUB",
-                prices=[types.LabeledPrice(label=name, amount=int(price_rub) * 100)],
-                start_parameter=f"buy_item_{item_id}",
-            )
-        except Exception as e:
-            await bot.send_message(uid, f"❌ Ошибка создания счёта: {e}")
-        return
-
-    if currency == "stars":
-        if not price_stars or price_stars <= 0:
-            await safe_answer(callback.id, "❌ Цена в Stars не задана", show_alert=True)
-            return
-        await safe_answer(callback.id)
-        try:
-            bot.send_invoice(
-                chat_id=uid,
-                title=name,
-                description=f"{name} - Actual FACEIT",
-                invoice_payload=f"item_{item_id}_{uid}",
-                provider_token="",
-                currency="XTR",
-                prices=[types.LabeledPrice(label=name, amount=int(price_stars))],
-                start_parameter=f"buy_item_{item_id}",
-            )
-        except Exception as e:
-            await bot.send_message(uid, f"❌ Ошибка создания счёта: {e}")
-        return
-
-    if currency == "crypto":
-        if not CRYPTO_PAY_API_TOKEN:
-            await safe_answer(callback.id, "❌ Оплата криптой временно недоступна", show_alert=True)
-            return
-        await safe_answer(callback.id, "⏳ Создаём счёт...")
-        ok, pay_url_or_err, invoice_id = create_item_crypto_invoice(uid, item_id)
-        if not ok:
-            await bot.send_message(uid, pay_url_or_err)
-            return
-        kb = InlineKeyboardBuilder()
-        kb.button(text="💎 Оплатить в @CryptoBot", url=pay_url_or_err)
-        await bot.send_message(
-            uid,
-            f"💎 <b>Счёт создан</b>\n\n"
-            f"Товар: <b>{name}</b> (${price_crypto:g})\n"
-            f"Оплатите по кнопке ниже (USDT / TON / BTC). "
-            f"Товар зачислится автоматически в течение минуты после оплаты.",
-            reply_markup=kb.as_markup(), parse_mode="HTML",
-        )
-        return
-
-    await safe_answer(callback.id, "❌ Неизвестный способ оплаты")
-
-
-# ==================== ИНВЕНТАРЬ ====================
-@router.callback_query(F.data == "inv")
-async def cb_inventory(callback: CallbackQuery):
-    uid = callback.from_user.id
-    err = check_blocked(uid)
-    if err:
-        await safe_answer(callback.id, "⚠️ Доступ ограничен", show_alert=True)
-        return
-    items = get_inventory(uid)
-    if not items:
-        kb = InlineKeyboardBuilder()
-        kb.button(text="🛒 В магазин", callback_data="shop")
-        kb.button(text="🔙 Назад", callback_data="back")
-        await callback.message.edit_text("🎒 <b>Инвентарь пуст</b>", reply_markup=kb.as_markup())
-        await safe_answer(callback.id)
-        return
-    kb = InlineKeyboardBuilder()
-    for inv_id, name, category, item_type, purchased_at, is_activated, shop_id in items:
-        status = "✅ " if is_activated else ""
-        kb.button(text=f"{status}{name}", callback_data=f"inv_item_{inv_id}")
-    kb.button(text="🔙 Назад", callback_data="back")
-    await callback.message.edit_text("🎒 <b>Ваш инвентарь:</b>", reply_markup=kb.as_markup())
-    await safe_answer(callback.id)
-
-
-@router.callback_query(F.data.startswith("inv_item_"))
-async def cb_inv_item(callback: CallbackQuery):
-    uid = callback.from_user.id
-    inv_id = int(callback.data.split("inv_item_")[1])
-    items = get_inventory(uid)
-    item = next((i for i in items if i[0] == inv_id), None)
-    if not item:
-        await safe_answer(callback.id, "❌ Предмет не найден")
-        return
-    inv_id2, name, category, item_type, purchased_at, is_activated, shop_id = item
-    dt = datetime.datetime.fromtimestamp(purchased_at).strftime("%d.%m.%Y") if purchased_at else "?"
-    text = (
-        f"🎒 <b>{name}</b>\n\n"
-        f"Категория: {CATEGORY_NAMES.get(category, category)}\n"
-        f"Куплено: {dt}\n"
-        f"Статус: {'✅ Активировано' if is_activated else '⏳ Не активировано'}"
-    )
-    kb = InlineKeyboardBuilder()
-    _deactivatable = ("frame", "banner", "background")
-    if not is_activated:
-        kb.button(text="⚡ Активировать", callback_data=f"inv_activate_{inv_id}")
-    elif item_type in _deactivatable:
-        kb.button(text="❌ Снять", callback_data=f"inv_deactivate_{inv_id}")
-    kb.button(text="🔙 Назад", callback_data="inv")
-    await callback.message.edit_text(text, reply_markup=kb.as_markup())
-    await safe_answer(callback.id)
-
-
-@router.callback_query(F.data.startswith("inv_activate_"))
-async def cb_inv_activate(callback: CallbackQuery):
-    uid = callback.from_user.id
-    inv_id = int(callback.data.split("inv_activate_")[1])
-    items = get_inventory(uid)
-    item = next((i for i in items if i[0] == inv_id), None)
-    if not item:
-        await safe_answer(callback.id, "❌ Предмет не найден")
-        return
-    inv_id2, name, category, item_type, purchased_at, is_activated, shop_id = item
-    result, msg = activate_inventory_item(inv_id, uid, item_type, name)
-    if result == "rename":
-        rename_flow[uid] = inv_id
-        await safe_answer(callback.id)
-        await bot.send_message(uid, message)
-        return
-    await safe_answer(callback.id, message[:200], show_alert=not result)
-    if result:
-        try:
-            await callback.message.edit_text(message)
-        except Exception:
-            pass
-
-
-@router.callback_query(F.data.startswith("inv_deactivate_"))
-async def cb_inv_deactivate(callback: CallbackQuery):
-    uid = callback.from_user.id
-    inv_id = int(callback.data.split("inv_deactivate_")[1])
-    items = get_inventory(uid)
-    item = next((i for i in items if i[0] == inv_id), None)
-    if not item:
-        await safe_answer(callback.id, "❌ Предмет не найден")
-        return
-    inv_id2, name, category, item_type, purchased_at, is_activated, shop_id = item
-    result, msg = deactivate_inventory_item(inv_id, uid, item_type)
-    await safe_answer(callback.id, message[:200], show_alert=not result)
-    if result:
-        try:
-            await callback.message.edit_text(message)
-        except Exception:
-            pass
-
-
-@router.message(lambda m: m.from_user.id in rename_flow and m.text is not None)
-async def handle_rename(message: Message):
-    # converted to async in post-pass
-    pass_async_marker = True; 
-    uid = message.from_user.id
-    inv_id = rename_flow.pop(uid)
-    new_nick = message.text.strip()
-    if not (2 <= len(new_nick) <= 20):
-        await bot.send_message(uid, "❌ Никнейм 2-20 символов")
-        return
-    if nick_taken(new_nick, exclude_uid=uid):
-        await bot.send_message(uid, "❌ Этот никнейм уже занят!")
-        return
-    conn = _db()
-    cur = conn.cursor()
-    cur.execute("UPDATE players SET username=%s WHERE user_id=%s", (new_nick, uid))
-    cur.execute(
-        "UPDATE inventory SET is_activated=1, activated_at=%s WHERE id=%s",
-        (int(time.time()), inv_id),
-    )
-    conn.commit()
-    conn.close()
-    await bot.send_message(uid, f"✅ Никнейм изменён на <b>{new_nick}</b>!")
-
-
-# ==================== СЛОТЫ ====================
-SLOTS_SYMBOLS = ["🍒", "🍋", "🍊", "🍇", "💎", "7️⃣", "⭐"]
-SLOTS_BETS    = [10, 25, 50, 100, 250, 500]
-
-SLOTS_PAYOUTS = {
-    "7️⃣": 100,  # три семёрки - x100
-    "💎": 10,
-    "⭐": 10,
-    "🍇": 10,
-    "🍒": 10,
-    "🍊": 10,
-    "🍋": 10,
-}
-SLOTS_TRIPLE_ANY = 10  # любая другая тройка - x10
-
-# Веса символов: чем больше вес, тем чаще символ выпадает.
-# Загружаются из БД при старте, изменяются через админ-панель.
-_slots_weights: dict = {s: 1 for s in SLOTS_SYMBOLS}
-
-# Персональная удача: {uid: шанс_форс_победы_в_процентах (0-100)}
-_slots_luck: dict = {}
-
-# Глобальный шанс джекпота 777 (в процентах, float). По умолчанию 0.01%.
-# Хранится в БД, изменяется через админ панель.
-_slots_jackpot_chance: float = 0.01
-
-# Шанс тройки x10 (любой не-777 символ, в процентах, float). По умолчанию 0.5%.
-# Хранится в БД, изменяется через админ панель.
-_slots_x10_chance: float = 0.5
-
-# Словарь: uid -> данные ожидания ввода кастомной ставки
-_slots_custom_bet_pending: dict = {}
-# Словарь: uid -> шаг мульти-шагового ввода удачи {step, target_uid, target_name}
-_slots_luck_flow: dict = {}
-
-
-def _load_slots_weights():
-    """Загружает веса символов, удачу, шанс джекпота и шанс x10 из БД."""
-    global _slots_weights, _slots_luck, _slots_jackpot_chance, _slots_x10_chance
-    try:
-        import json as _json
-        raw = get_setting("slots_weights")
-        if raw:
-            loaded = _json.loads(raw)
-            for s in SLOTS_SYMBOLS:
-                if s in loaded:
-                    _slots_weights[s] = max(1, int(loaded[s]))
-        raw2 = get_setting("slots_luck")
-        if raw2:
-            luck = _json.loads(raw2)
-            _slots_luck = {int(k): max(0, min(100, int(v))) for k, v in luck.items()}
-        raw3 = get_setting("slots_jackpot_chance")
-        if raw3:
-            _slots_jackpot_chance = max(0.0, min(100.0, float(raw3)))
-        raw4 = get_setting("slots_x10_chance")
-        if raw4:
-            _slots_x10_chance = max(0.0, min(100.0, float(raw4)))
-    except Exception as _e:
-        print(f"[load_slots_weights] {_e}")
-
-
-def _save_slots_weights():
-    import json as _json
-    set_setting("slots_weights", _json.dumps(_slots_weights))
-
-
-def _save_slots_luck():
-    import json as _json
-    set_setting("slots_luck", _json.dumps({str(k): v for k, v in _slots_luck.items()}))
-
-
-def _save_slots_jackpot_chance():
-    set_setting("slots_jackpot_chance", str(_slots_jackpot_chance))
-
-
-def _save_slots_x10_chance():
-    set_setting("slots_x10_chance", str(_slots_x10_chance))
-
-
-def _spin_slots(uid: int = None) -> list:
-    """Крутит барабаны.
-    1. Джекпот 777 - отдельный roll с _slots_jackpot_chance % (минимальный).
-    2. Персональная удача игрока - форс тройки любого другого символа.
-    3. Шанс тройки x10 - контролируется _slots_x10_chance %.
-    4. Если ни один шанс не сработал - возвращаем гарантированно не-тройку.
-    """
-    JACKPOT_SYM = "7️⃣"
-    OTHER_SYMS  = [s for s in SLOTS_SYMBOLS if s != JACKPOT_SYM]
-
-    # 1. Глобальный шанс джекпота 777 (минимальный)
-    if _slots_jackpot_chance > 0 and random.random() * 100 < _slots_jackpot_chance:
-        return [JACKPOT_SYM, JACKPOT_SYM, JACKPOT_SYM]
-
-    # 2. Персональная удача - форс тройки из фруктов
-    if uid is not None and uid in _slots_luck:
-        luck_pct = _slots_luck[uid]
-        if luck_pct > 0 and random.randint(1, 100) <= luck_pct:
-            sym = random.choice(OTHER_SYMS)
-            return [sym, sym, sym]
-
-    # 3. Шанс тройки x10 (пониженный)
-    if _slots_x10_chance > 0 and random.random() * 100 < _slots_x10_chance:
-        sym = random.choice(OTHER_SYMS)
-        return [sym, sym, sym]
-
-    # 4. Нет выигрыша - гарантированно не-тройка
-    r1 = random.choice(OTHER_SYMS)
-    r2 = random.choice(OTHER_SYMS)
-    r3 = random.choice(OTHER_SYMS)
-    # Если случайно выпала тройка - меняем последний барабан
-    attempts = 0
-    while r1 == r2 == r3 and attempts < 10:
-        r3 = random.choice(OTHER_SYMS)
-        attempts += 1
-    return [r1, r2, r3]
-
-
-def _slots_total_weight() -> int:
-    return sum(_slots_weights.get(s, 1) for s in SLOTS_SYMBOLS)
-
-
-def _slots_sym_chance(sym: str) -> float:
-    """Вероятность тройки конкретного символа в %."""
-    total = _slots_total_weight()
-    w = _slots_weights.get(sym, 1)
-    return round((w / total) ** 3 * 100, 3)
-
-
-def _calc_slots_win(bet: int, reels: list) -> tuple:
-    a, b, c = reels
-    if a == b == c:
-        mult = SLOTS_PAYOUTS.get(a, SLOTS_TRIPLE_ANY)
-        win = bet * mult
-        return win, f"🎉 <b>ДЖЕКПОТ!</b> Три {a} - выигрыш <b>+{win} AC</b> (x{mult})"
-    if a == b or b == c or a == c:
-        return 0, f"😐 Два одинаковых - ставка потеряна (-{bet} AC)"
-    return 0, f"💨 Мимо - ставка потеряна (-{bet} AC)"
-
-
-def _slots_menu_kb(selected_bet=None):
-    kb = InlineKeyboardBuilder()
-    bet_btns = []
-    for b in SLOTS_BETS:
-        label = f"✅ {b} AC" if b == selected_bet else f"{b} AC"
-        bet_btns.append(types.InlineKeyboardButton(text=label, callback_data=f"slots_bet|{b}"))
-    kb.add(*bet_btns)
-    kb.button(text="✏️ Своя ставка", callback_data="slots_custom_bet")
-    if selected_bet:
-        kb.button(text=f"🎰 Крутить ({selected_bet} AC)", callback_data=f"slots_spin|{selected_bet}")
-    kb.add(
-        types.InlineKeyboardButton(text="📊 Шансы", callback_data="slots_odds"),
-        types.InlineKeyboardButton(text="🔙 Назад", callback_data="back"),
-    )
-    return kb
-
-
-def _slots_menu_text(coins: int, selected_bet=None) -> str:
-    bet_line = f"🎯 Выбрана ставка: <b>{selected_bet} AC</b>\n" if selected_bet else ""
-    jackpot_avg = f"≈1 на {round(100/_slots_jackpot_chance)}" if _slots_jackpot_chance > 0 else "∞"
-    x10_avg = f"≈1 на {round(100/_slots_x10_chance)}" if _slots_x10_chance > 0 else "∞"
-    return (
-        f"🎰 <b>СЛОТЫ</b>\n\n"
-        f"💰 Ваш баланс: <b>{coins} AC</b>\n"
-        f"{bet_line}\n"
-        f"Символы и множители (три одинаковых):\n"
-        f"7️⃣ ×100 - шанс <b>{_slots_jackpot_chance}%</b> ({jackpot_avg} спинов)\n"
-        f"🍒🍋🍊🍇💎⭐ ×10 - шанс <b>{_slots_x10_chance}%</b> ({x10_avg} спинов)\n\n"
-        f"{'Нажмите (Крутить) для старта!' if selected_bet else 'Выберите ставку:'}"
-    )
-
-
-@router.callback_query(F.data == "slots_menu")
-async def cb_slots_menu(callback: CallbackQuery):
-    uid = callback.from_user.id
-    err = check_blocked(uid)
-    if err:
-        await safe_answer(callback.id, "⚠️ Доступ ограничен", show_alert=True)
-        return
-    if not is_registered(uid):
-        await safe_answer(callback.id, "❌ Сначала зарегистрируйтесь /start", show_alert=True)
-        return
-    p = get_player(uid)
-    coins = p[5] if p and len(p) > 5 else 0
-    await safe_answer(callback.id)
-    text = _slots_menu_text(coins)
-    try:
-        await callback.message.edit_text(text, reply_markup=_slots_menu_kb(), parse_mode="HTML")
-    except Exception:
-        await bot.send_message(uid, text, reply_markup=_slots_menu_kb(), parse_mode="HTML")
-
-
-@router.callback_query(F.data == "slots_odds")
-async def cb_slots_odds(callback: CallbackQuery):
-    await safe_answer(callback.id)
-    n = len(SLOTS_SYMBOLS)  # 7
-    total = n ** 3           # 343
-    triples = n              # 7
-    pairs   = n * 3 * (n-1) # 126
-    misses  = total - triples - pairs  # 210
-    # средний множитель за трипл
-    avg_mult = sum(SLOTS_PAYOUTS.values()) / n
-    rtp = round(avg_mult * triples / total * 100, 1)
-    lines = "\n".join(
-        f"  {sym} ×{mult} - шанс {round(1/total*100,2)}%"
-        for sym, mult in SLOTS_PAYOUTS.items()
-    )
-    text = (
-        f"📊 <b>Шансы в слотах</b>\n\n"
-        f"Всего символов: {n}  |  Барабанов: 3\n"
-        f"Всего комбинаций: {total}\n\n"
-        f"🎉 Три одинаковых: {triples}/{total} = <b>{round(triples/total*100,2)}%</b>\n"
-        f"😐 Два одинаковых: {pairs}/{total} = <b>{round(pairs/total*100,1)}%</b>\n"
-        f"💨 Все разные:      {misses}/{total} = <b>{round(misses/total*100,1)}%</b>\n\n"
-        f"<b>Выигрыши при трёх одинаковых:</b>\n{lines}\n\n"
-        f"📈 Средний возврат (RTP): <b>≈{rtp}%</b>\n"
-        f"<i>(на каждые 100 AC ставки в среднем возвращается {rtp} AC)</i>"
-    )
-    kb = InlineKeyboardBuilder()
-    kb.button(text="🔙 Назад к слотам", callback_data="slots_menu")
-    try:
-        await callback.message.edit_text(text, reply_markup=kb.as_markup(), parse_mode="HTML")
-    except Exception:
-        await bot.send_message(callback.from_user.id, text, reply_markup=kb.as_markup(), parse_mode="HTML")
-
-
-@router.callback_query(F.data == "slots_custom_bet")
-async def cb_slots_custom_bet(callback: CallbackQuery):
-    uid = callback.from_user.id
-    if not is_registered(uid):
-        await safe_answer(callback.id, "❌ Сначала зарегистрируйтесь", show_alert=True)
-        return
-    p = get_player(uid)
-    coins = p[5] if p and len(p) > 5 else 0
-    await safe_answer(callback.id)
-    sent = await bot.send_message(
-        uid,
-        f"✏️ <b>Введите свою ставку</b>\n\n"
-        f"💰 Ваш баланс: <b>{coins} AC</b>\n"
-        f"Минимум: <b>1 AC</b>  |  Максимум: <b>{coins} AC</b>\n\n"
-        f"Напишите число:",
-        parse_mode="HTML",
-    )
-    _slots_custom_bet_pending[uid] = {"msg_id": callback.message.message_id, "chat_id": callback.message.chat.id}  # next_step handled by flow dict state
-
-
-async def _handle_slots_custom_bet_input(message):
-    uid = message.from_user.id
-    pending = _slots_custom_bet_pending.pop(uid, None)
-    try:
-        bet = int(message.text.strip())
-    except (ValueError, AttributeError):
-        await bot.send_message(uid, "❌ Введите целое число. Попробуйте ещё раз - нажмите (✏️ Своя ставка).")
-        return
-    p = get_player(uid)
-    coins = p[5] if p and len(p) > 5 else 0
-    if bet < 1:
-        await bot.send_message(uid, "❌ Ставка должна быть минимум 1 AC.")
-        return
-    if bet > coins:
-        await bot.send_message(uid, f"❌ Недостаточно монет! У вас {coins} AC, ставка {bet} AC.")
-        return
-    text = _slots_menu_text(coins, selected_bet=bet)
-    kb = _slots_menu_kb(selected_bet=bet)
-    if pending:
-        try:
-            await bot.edit_message_text(text, pending["chat_id"], pending["msg_id"],
-                                  reply_markup=kb.as_markup(), parse_mode="HTML")
-            return
-        except Exception:
-            pass
-    await bot.send_message(uid, text, reply_markup=kb.as_markup(), parse_mode="HTML")
-
-
-@router.callback_query(F.data.startswith("slots_bet|"))
-async def cb_slots_bet(callback: CallbackQuery):
-    uid = callback.from_user.id
-    if not is_registered(uid):
-        await safe_answer(callback.id, "❌ Сначала зарегистрируйтесь", show_alert=True)
-        return
-    bet = int(callback.data.split("|", 1)[1])
-    p = get_player(uid)
-    coins = p[5] if p and len(p) > 5 else 0
-    if bet > coins:
-        await safe_answer(callback.id, f"❌ Недостаточно монет! У вас {coins} AC", show_alert=True)
-        return
-    await safe_answer(callback.id)
-    text = _slots_menu_text(coins, selected_bet=bet)
-    try:
-        await callback.message.edit_text(text, reply_markup=_slots_menu_kb(bet), parse_mode="HTML")
-    except Exception:
-        pass
-
-
-@router.callback_query(F.data.startswith("slots_spin|"))
-async def cb_slots_spin(callback: CallbackQuery):
-    uid = callback.from_user.id
-    err = check_blocked(uid)
-    if err:
-        await safe_answer(callback.id, "⚠️ Доступ ограничен", show_alert=True)
-        return
-    if not is_registered(uid):
-        await safe_answer(callback.id, "❌ Сначала зарегистрируйтесь", show_alert=True)
-        return
-    bet = int(callback.data.split("|", 1)[1])
-    p = get_player(uid)
-    coins = p[5] if p and len(p) > 5 else 0
-    if coins < bet:
-        await safe_answer(callback.id, f"❌ Недостаточно монет! У вас {coins} AC, нужно {bet} AC", show_alert=True)
-        return
-    # Списываем ставку
-    try:
-        conn = _db(); cur = conn.cursor()
-        cur.execute("UPDATE players SET coins=GREATEST(0, coins-%s) WHERE user_id=%s", (bet, uid))
-        conn.commit(); conn.close()
-    except Exception as _se:
-        print(f"[slots debit] {_se}")
-        await safe_answer(callback.id, "❌ Ошибка, попробуй ещё раз", show_alert=True)
-        return
-    reels = _spin_slots(uid=uid)
-    win, result_text = _calc_slots_win(bet, reels)
-    if win > 0:
-        try:
-            conn2 = _db(); cur2 = conn2.cursor()
-            cur2.execute("UPDATE players SET coins=coins+%s WHERE user_id=%s", (win, uid))
-            conn2.commit(); conn2.close()
-        except Exception as _se2:
-            print(f"[slots credit] {_se2}")
-    new_coins = coins - bet + win
-    reels_str = "  ".join(reels)
-    text = (
-        f"🎰 <b>СЛОТЫ</b>\n\n"
-        f"╔══════════════╗\n"
-        f"║   {reels_str}   ║\n"
-        f"╚══════════════╝\n\n"
-        f"{result_text}\n\n"
-        f"💰 Баланс: <b>{new_coins} AC</b>"
-    )
-    kb = InlineKeyboardBuilder()
-    kb.add(
-        types.InlineKeyboardButton(text=f"🔄 Ещё раз ({bet} AC)", callback_data=f"slots_spin|{bet}"),
-        types.InlineKeyboardButton(text="✏️ Своя ставка", callback_data="slots_custom_bet"),
-        types.InlineKeyboardButton(text="💰 Сменить ставку", callback_data="slots_menu"),
-        types.InlineKeyboardButton(text="🔙 Главное меню", callback_data="back"),
-    )
-    await safe_answer(callback.id)
-    try:
-        await callback.message.edit_text(text, reply_markup=kb.as_markup(), parse_mode="HTML")
-    except Exception:
-        await bot.send_message(uid, text, reply_markup=kb.as_markup(), parse_mode="HTML")
-
-
-# ==================== АДМИН: НАСТРОЙКИ СЛОТОВ ====================
-
-def _slots_settings_text() -> str:
-    lucky = []
-    for luid, pct in _slots_luck.items():
-        p = get_player(luid)
-        name = p[1] if p else str(luid)
-        lucky.append(f"  👤 {name} (<code>{luid}</code>) - <b>{pct}%</b>")
-    lucky_block = "\n".join(lucky) if lucky else "  <i>нет</i>"
-    jackpot_avg = round(100 / _slots_jackpot_chance) if _slots_jackpot_chance > 0 else "∞"
-    x10_avg = round(100 / _slots_x10_chance) if _slots_x10_chance > 0 else "∞"
-    return (
-        f"🎰 <b>Настройки слотов</b>\n\n"
-        f"7️⃣ <b>Шанс джекпота 777 (×100):</b> <b>{_slots_jackpot_chance}%</b>\n"
-        f"<i>≈1 раз на {jackpot_avg} спинов</i>\n\n"
-        f"🍒 <b>Шанс тройки ×10:</b> <b>{_slots_x10_chance}%</b>\n"
-        f"<i>≈1 раз на {x10_avg} спинов</i>\n\n"
-        f"🍀 <b>Игроки с повышенной удачей (фрукты):</b>\n{lucky_block}\n\n"
-        f"<i>Удача = % шанс форсированной тройки фруктов за спин.\n"
-        f"Джекпот 777 управляется отдельно глобальным шансом.</i>"
-    )
-
-
-def _slots_settings_kb() -> types.InlineKeyboardMarkup:
-    kb = InlineKeyboardBuilder()
-    kb.add(
-        types.InlineKeyboardButton(text="7️⃣ Изменить шанс джекпота 777 (×100)", callback_data="admin_slots_jackpot"),
-        types.InlineKeyboardButton(text="🍒 Изменить шанс тройки ×10",           callback_data="admin_slots_x10"),
-        types.InlineKeyboardButton(text="🍀 Выдать удачу игроку",                callback_data="admin_slots_luck_set"),
-        types.InlineKeyboardButton(text="❌ Убрать удачу игроку",                callback_data="admin_slots_luck_remove"),
-        types.InlineKeyboardButton(text="🔙 Назад",                              callback_data="admin_panel"),
-    )
-    return kb
-
-
-@router.callback_query(F.data == "admin_slots_settings")
-async def cb_admin_slots_settings(callback: CallbackQuery):
-    uid = callback.from_user.id
-    if not is_admin(uid):
-        await safe_answer(callback.id, "❌ Нет доступа")
-        return
-    await safe_answer(callback.id)
-    try:
-        await callback.message.edit_text(_slots_settings_text(), reply_markup=_slots_settings_kb(), parse_mode="HTML")
-    except Exception:
-        await bot.send_message(uid, _slots_settings_text(), reply_markup=_slots_settings_kb(), parse_mode="HTML")
-
-
-@router.callback_query(F.data == "admin_slots_jackpot")
-async def cb_admin_slots_jackpot(callback: CallbackQuery):
-    uid = callback.from_user.id
-    if not is_admin(uid):
-        await safe_answer(callback.id, "❌ Нет доступа")
-        return
-    await safe_answer(callback.id)
-    _slots_luck_flow[uid] = {"step": "jackpot_chance", "action": "jackpot"}
-    await bot.send_message(
-        uid,
-        f"7️⃣ <b>Шанс джекпота 777</b>\n\n"
-        f"Текущий шанс: <b>{_slots_jackpot_chance}%</b>\n"
-        f"<i>(≈1 раз на {round(100/_slots_jackpot_chance) if _slots_jackpot_chance > 0 else '∞'} спинов)</i>\n\n"
-        f"Введите новый шанс в % (например: <code>0.20</code> или <code>1.5</code>):\n"
-        f"<i>Диапазон: 0.01 - 100</i>",
-        parse_mode="HTML",
-    )
-
-
-@router.callback_query(F.data == "admin_slots_x10")
-async def cb_admin_slots_x10(callback: CallbackQuery):
-    uid = callback.from_user.id
-    if not is_admin(uid):
-        await safe_answer(callback.id, "❌ Нет доступа")
-        return
-    await safe_answer(callback.id)
-    _slots_luck_flow[uid] = {"step": "x10_chance", "action": "x10"}
-    x10_avg = round(100 / _slots_x10_chance) if _slots_x10_chance > 0 else "∞"
-    await bot.send_message(
-        uid,
-        f"🍒 <b>Шанс тройки ×10</b>\n\n"
-        f"Текущий шанс: <b>{_slots_x10_chance}%</b>\n"
-        f"<i>(≈1 раз на {x10_avg} спинов)</i>\n\n"
-        f"Введите новый шанс в % (например: <code>2</code> или <code>0.5</code>):\n"
-        f"<i>Диапазон: 0.01 - 100</i>",
-        parse_mode="HTML",
-    )
-
-
-@router.callback_query(F.data.in_({"admin_slots_luck_set", "admin_slots_luck_remove"}))
-async def cb_admin_slots_luck_start(callback: CallbackQuery):
-    uid = callback.from_user.id
-    if not is_admin(uid):
-        await safe_answer(callback.id, "❌ Нет доступа")
-        return
-    action = "set" if callback.data == "admin_slots_luck_set" else "remove"
-    _slots_luck_flow[uid] = {"step": "target", "action": action}
-    await safe_answer(callback.id)
-    if action == "set":
-        await bot.send_message(uid, "🍀 <b>Выдать удачу</b>\n\nВведите Telegram ID или никнейм игрока:", parse_mode="HTML")
-    else:
-        await bot.send_message(uid, "❌ <b>Убрать удачу</b>\n\nВведите Telegram ID или никнейм игрока:", parse_mode="HTML")
-
-
-@router.message(lambda m: m.from_user.id in _slots_luck_flow and m.text is not None)
-async def handle_slots_luck_flow(message: Message):
-    # converted to async in post-pass
-    pass_async_marker = True; 
-    uid = message.from_user.id
-    if not is_admin(uid):
-        _slots_luck_flow.pop(uid, None)
-        return
-    flow = _slots_luck_flow.get(uid)
-    if not flow:
-        return
-    text = message.text.strip()
-
-    async def _find(inp):
-        if inp.isdigit():
-            return get_player(int(inp))
-        conn2 = _db(); cur2 = conn2.cursor()
-        cur2.execute("SELECT * FROM players WHERE username=%s AND is_bot=0", (inp,))
-        row = cur2.fetchone(); conn2.close()
-        return row
-
-    if flow["step"] == "jackpot_chance":
-        try:
-            val = float(text.replace(",", "."))
-            if not 0.01 <= val <= 100:
-                raise ValueError
-        except ValueError:
-            await bot.send_message(uid, "❌ Введите число от 0.01 до 100 (например: <code>0.20</code>):", parse_mode="HTML")
-            return
-        global _slots_jackpot_chance
-        _slots_jackpot_chance = round(val, 4)
-        _slots_luck_flow.pop(uid, None)
-        _save_slots_jackpot_chance()
-        avg = round(100 / _slots_jackpot_chance) if _slots_jackpot_chance > 0 else "∞"
-        await bot.send_message(
-            uid,
-            f"✅ <b>Шанс джекпота обновлён!</b>\n\n"
-            f"7️⃣ Новый шанс: <b>{_slots_jackpot_chance}%</b>\n"
-            f"<i>≈1 раз на {avg} спинов</i>",
-            parse_mode="HTML",
-        )
-        return
-
-    if flow["step"] == "x10_chance":
-        try:
-            val = float(text.replace(",", "."))
-            if not 0.01 <= val <= 100:
-                raise ValueError
-        except ValueError:
-            await bot.send_message(uid, "❌ Введите число от 0.01 до 100 (например: <code>2</code>):", parse_mode="HTML")
-            return
-        global _slots_x10_chance
-        _slots_x10_chance = round(val, 4)
-        _slots_luck_flow.pop(uid, None)
-        _save_slots_x10_chance()
-        avg = round(100 / _slots_x10_chance) if _slots_x10_chance > 0 else "∞"
-        await bot.send_message(
-            uid,
-            f"✅ <b>Шанс тройки ×10 обновлён!</b>\n\n"
-            f"🍒 Новый шанс: <b>{_slots_x10_chance}%</b>\n"
-            f"<i>≈1 раз на {avg} спинов</i>",
-            parse_mode="HTML",
-        )
-        return
-
-    if flow["step"] == "target":
-        p = _find(text)
-        if not p:
-            await bot.send_message(uid, "❌ Игрок не найден. Введите корректный ID или никнейм:")
-            return
-        target_uid  = p[0]
-        target_name = p[1] or str(target_uid)
-        flow["target_uid"]  = target_uid
-        flow["target_name"] = target_name
-
-        if flow["action"] == "remove":
-            _slots_luck_flow.pop(uid, None)
-            removed = _slots_luck.pop(target_uid, None)
-            _save_slots_luck()
-            if removed is not None:
-                await bot.send_message(uid,
-                    f"✅ Удача снята с <b>{target_name}</b> (<code>{target_uid}</code>).",
-                    parse_mode="HTML")
-            else:
-                await bot.send_message(uid,
-                    f"⚠️ У <b>{target_name}</b> не было удачи.", parse_mode="HTML")
-            return
-
-        flow["step"] = "percent"
-        current = _slots_luck.get(target_uid, 0)
-        await bot.send_message(
-            uid,
-            f"🍀 Игрок: <b>{target_name}</b> (<code>{target_uid}</code>)\n"
-            f"Текущая удача: <b>{current}%</b>\n\n"
-            f"Введите новый % шанса победы (1-100):\n"
-            f"<i>Пример: 25 = примерно каждый 4-й спин выигрышный</i>",
-            parse_mode="HTML",
-        )
-
-    elif flow["step"] == "percent":
-        try:
-            pct = int(text)
-            if not 1 <= pct <= 100:
-                raise ValueError
-        except ValueError:
-            await bot.send_message(uid, "❌ Введите целое число от 1 до 100:")
-            return
-        target_uid  = flow["target_uid"]
-        target_name = flow["target_name"]
-        _slots_luck_flow.pop(uid, None)
-        _slots_luck[target_uid] = pct
-        _save_slots_luck()
-        await bot.send_message(
-            uid,
-            f"✅ <b>Удача выдана!</b>\n\n"
-            f"👤 Игрок: <b>{target_name}</b> (<code>{target_uid}</code>)\n"
-            f"🍀 Шанс победы: <b>{pct}%</b> за каждый спин\n\n"
-            f"<i>Игрок не знает об этом - со стороны всё выглядит как обычные слоты.</i>",
-            parse_mode="HTML",
-        )
-
-
-# ==================== ПАТИ ====================
-@router.callback_query(F.data == "party_menu")
-async def cb_party_menu(callback: CallbackQuery):
-    uid = callback.from_user.id
-    err = check_blocked(uid)
-    if err:
-        await safe_answer(callback.id, "⚠️ Доступ ограничен", show_alert=True)
-        return
-    party = get_party_of(uid)
-    if party:
-        members_text = "\n".join([
-            f"  {'👑' if m == party['leader'] else '👤'} {get_player(m)[1] if get_player(m) else m}"
-            for m in party["members"]
-        ])
-        max_size = get_party_max_size(party)
-        text = f"👥 <b>Ваша пати</b> ({len(party['members'])}/{max_size}):\n{members_text}"
-        kb = InlineKeyboardBuilder()
-        if uid == party["leader"]:
-            kb.add(
-                types.InlineKeyboardButton(text="➕ Пригласить", callback_data="party_invite"),
-                types.InlineKeyboardButton(text="🗑 Распустить пати", callback_data="party_disband"),
-            )
-        else:
-            kb.button(text="🚪 Покинуть пати", callback_data="party_leave")
-        kb.button(text="🔙 Назад", callback_data="back")
-    else:
-        text = "👥 У вас нет пати.\nСоздайте пати или примите приглашение."
-        kb = InlineKeyboardBuilder()
-        kb.add(
-            types.InlineKeyboardButton(text="➕ Создать пати", callback_data="party_create"),
-            types.InlineKeyboardButton(text="🔙 Назад", callback_data="back"),
-        )
-    await callback.message.edit_text(text, reply_markup=kb.as_markup())
-    await safe_answer(callback.id)
-
-
-@router.callback_query(F.data == "party_create")
-async def cb_party_create(callback: CallbackQuery):
-    uid = callback.from_user.id
-    if uid in user_party:
-        await safe_answer(callback.id, "❌ Вы уже в пати")
-        return
-    party_id = f"party_{uid}_{int(time.time())}"
-    parties[party_id] = {"leader": uid, "members": [uid]}
-    user_party[uid] = party_id
-    await safe_answer(callback.id, "✅ Пати создана!")
-    kb = InlineKeyboardBuilder()
-    kb.button(text="👥 Управление пати", callback_data="party_menu")
-    await callback.message.edit_text("✅ <b>Пати создана!</b>", reply_markup=kb.as_markup())
-
-
-@router.callback_query(F.data == "party_invite")
-async def cb_party_invite(callback: CallbackQuery):
-    uid = callback.from_user.id
-    party = get_party_of(uid)
-    if not party or party["leader"] != uid:
-        await safe_answer(callback.id, "❌ Нет доступа")
-        return
-    max_size = get_party_max_size(party)
-    if len(party["members"]) >= max_size:
-        await safe_answer(callback.id, f"❌ Пати полная ({max_size} чел.)", show_alert=True)
-        return
-    awaiting_party_invite[uid] = True
-    await safe_answer(callback.id)
-    await bot.send_message(uid, "👤 Введите Telegram ID или никнейм игрока для приглашения:")
-
-
-@router.message(lambda m: m.from_user.id in awaiting_party_invite and m.text is not None)
-async def handle_party_invite(message: Message):
-    # converted to async in post-pass
-    pass_async_marker = True; 
-    uid = message.from_user.id
-    awaiting_party_invite.pop(uid, None)
-    text = message.text.strip()
-    target = None
-    if text.isdigit():
-        target = get_player(int(text))
-    else:
-        conn = _db()
-        cur = conn.cursor()
-        cur.execute("SELECT * FROM players WHERE username=%s AND is_bot=0", (text,))
-        target = cur.fetchone()
-        conn.close()
-    if not target:
-        await bot.send_message(uid, "❌ Игрок не найден")
-        return
-    target_id = target[0]
-    if target_id == uid:
-        await bot.send_message(uid, "❌ Нельзя пригласить себя")
-        return
-    if target_id in user_party:
-        await bot.send_message(uid, "❌ Игрок уже в пати")
-        return
-    party_id = user_party.get(uid)
-    party = get_party_of(uid)
-    if not party:
-        await bot.send_message(uid, "❌ У вас нет пати")
-        return
-    kb = InlineKeyboardBuilder()
-    kb.add(
-        types.InlineKeyboardButton(text="✅ Принять", callback_data=f"party_accept_{party_id}_{uid}"),
-        types.InlineKeyboardButton(text="❌ Отклонить", callback_data="party_decline"),
-    )
-    try:
-        inviter = get_player(uid)
-        await bot.send_message(
-            target_id,
-            f"👥 <b>{inviter[1] if inviter else uid}</b> приглашает вас в пати!\nМакс. размер: {get_party_max_size(party)}",
-            reply_markup=kb.as_markup(),
-        )
-        await bot.send_message(uid, f"✅ Приглашение отправлено игроку <b>{target[1]}</b>!")
-    except Exception:
-        await bot.send_message(uid, "❌ Не удалось отправить приглашение")
-
-
-@router.callback_query(F.data.startswith("party_accept_"))
-async def cb_party_accept(callback: CallbackQuery):
-    uid = callback.from_user.id
-    raw = callback.data[len("party_accept_"):]
-    party_id = "_".join(raw.split("_")[:-1])
-    party = parties.get(party_id)
-    if not party:
-        await safe_answer(callback.id, "❌ Пати не существует")
-        return
-    if uid in user_party:
-        await safe_answer(callback.id, "❌ Вы уже в пати")
-        return
-    max_size = get_party_max_size(party)
-    if len(party["members"]) >= max_size:
-        await safe_answer(callback.id, "❌ Пати уже полная", show_alert=True)
-        return
-    party["members"].append(uid)
-    user_party[uid] = party_id
-    await safe_answer(callback.id, "✅ Вы вступили в пати!")
-    try:
-        await bot.edit_message_reply_markup(callback.message.chat.id, callback.message.message_id, reply_markup=None)
-    except Exception:
-        pass
-    p = get_player(uid)
-    for m in party["members"]:
-        if m == uid:
-            continue
-        try:
-            await bot.send_message(m, f"✅ <b>{p[1] if p else uid}</b> вступил в пати!")
-        except Exception:
-            pass
-
-
-@router.callback_query(F.data == "party_decline")
-async def cb_party_decline(callback: CallbackQuery):
-    await safe_answer(callback.id, "❌ Приглашение отклонено")
-    try:
-        await bot.edit_message_reply_markup(callback.message.chat.id, callback.message.message_id, reply_markup=None)
-    except Exception:
-        pass
-
-
-@router.callback_query(F.data == "party_leave")
-async def cb_party_leave(callback: CallbackQuery):
-    uid = callback.from_user.id
-    party = get_party_of(uid)
-    if not party:
-        await safe_answer(callback.id, "❌ Вы не в пати")
-        return
-    party_id = user_party.pop(uid)
-    party["members"].remove(uid)
-    if not party["members"]:
-        parties.pop(party_id, None)
-    elif party["leader"] == uid:
-        party["leader"] = party["members"][0]
-    await safe_answer(callback.id, "✅ Вы покинули пати")
-    await callback.message.edit_text(main_menu_text(uid), reply_markup=main_menu(uid), parse_mode="HTML")
-
-
-@router.callback_query(F.data == "party_disband")
-async def cb_party_disband(callback: CallbackQuery):
-    uid = callback.from_user.id
-    party = get_party_of(uid)
-    if not party or party["leader"] != uid:
-        await safe_answer(callback.id, "❌ Нет доступа")
-        return
-    party_id = user_party.get(uid)
-    for m in list(party["members"]):
-        user_party.pop(m, None)
-        if m != uid:
-            try:
-                await bot.send_message(m, "👥 Пати распущена лидером.")
-            except Exception:
-                pass
-    parties.pop(party_id, None)
-    await safe_answer(callback.id, "✅ Пати распущена")
-    await callback.message.edit_text(main_menu_text(uid), reply_markup=main_menu(uid), parse_mode="HTML")
-
-
-# ==================== ПОКУПКА МОНЕТ ====================
-@router.callback_query(F.data == "buy_coins")
-async def cb_buy_coins(callback: CallbackQuery):
-    uid = callback.from_user.id
-    err = check_blocked(uid)
-    if err:
-        await safe_answer(callback.id, "⚠️ Доступ ограничен", show_alert=True)
-        return
-    if not is_registered(uid):
-        await safe_answer(callback.id, "❌ Сначала зарегистрируйтесь /start")
-        return
-    p = get_player(uid)
-    coins = p[5] if p else 0
-    packages = get_visible_coin_packages(uid)
-    kb = InlineKeyboardBuilder()
-    for pkg in packages:
-        kb.button(text=f"📦 {pkg['name']}: {pkg['coins']} AC", callback_data=f"buy_pack_{pkg['key']}")
-    kb.button(text="🔙 Назад", callback_data="back")
-    await bot.edit_message_text(
-        f"💳 <b>КУПИТЬ Actual Coin</b>\n💰 Баланс: <b>{coins} AC</b>\n\n"
-        f"Способы оплаты: "
-        f"<tg-emoji emoji-id=\"{STARS_EMOJI_ID}\">⭐</tg-emoji> Stars · "
-        f"<tg-emoji emoji-id=\"{CRYPTO_EMOJI_ID}\">💎</tg-emoji> Крипта\n\n"
-        f"Выберите пакет, затем способ оплаты:",
-        chat_id=callback.message.chat.id, message_id=callback.message.message_id, reply_markup=kb.as_markup(),
-    )
-    await safe_answer(callback.id)
-
-
-@router.callback_query(F.data.startswith("buy_pack_"))
-async def cb_buy_pack(callback: CallbackQuery):
-    uid = callback.from_user.id
-    pkg_key = callback.data.split("buy_pack_")[1]
-    pkg = get_coin_package_by_key(pkg_key, uid)
-    if not pkg:
-        await safe_answer(callback.id, "❌ Пакет не найден")
-        return
-    name, coins_amount, stars, price_label = pkg["name"], pkg["coins"], pkg["stars"], pkg["price_label"]
-    kb = InlineKeyboardBuilder()
-    kb.button(text=f"⭐ Telegram Stars - {stars} ({price_label})", callback_data=f"buy_pkg_{pkg_key}")
-    text_lines = [
-        f"📦 <b>{name}</b>",
-        f"💰 {coins_amount} AC",
-        "",
-        f"<tg-emoji emoji-id=\"{STARS_EMOJI_ID}\">⭐</tg-emoji> Telegram Stars - {stars} ({price_label})",
-    ]
-    if CRYPTO_PAY_API_TOKEN:
-        usd = pkg["usd"]
-        kb.button(text=f"💎 Крипта - ${usd}", callback_data=f"buy_crypto_{pkg_key}")
-        text_lines.append(f"<tg-emoji emoji-id=\"{CRYPTO_EMOJI_ID}\">💎</tg-emoji> Крипта - ${usd}")
-    text_lines.append("")
-    text_lines.append("Выберите способ оплаты:")
-    kb.button(text="🔙 Назад", callback_data="buy_coins")
-    await bot.edit_message_text(
-        "\n".join(text_lines),
-        chat_id=callback.message.chat.id, message_id=callback.message.message_id, reply_markup=kb.as_markup(),
-    )
-    await safe_answer(callback.id)
-
-
-@router.callback_query(F.data.startswith("buy_pkg_"))
-async def cb_buy_package(callback: CallbackQuery):
-    uid = callback.from_user.id
-    pkg_key = callback.data.split("buy_pkg_")[1]
-    pkg = get_coin_package_by_key(pkg_key, uid)
-    if not pkg:
-        await safe_answer(callback.id, "❌ Пакет не найден")
-        return
-    name, coins_amount, stars = pkg["name"], pkg["coins"], pkg["stars"]
-    await safe_answer(callback.id)
-    try:
-        bot.send_invoice(
-            chat_id=uid,
-            title=f"💰 {coins_amount} Actual Coin",
-            description=f"Пакет ({name}): {coins_amount} AC для Actual FACEIT",
-            invoice_payload=f"coins_{pkg_key}_{uid}",
-            provider_token="",
-            currency="XTR",
-            prices=[types.LabeledPrice(label=f"{coins_amount} AC", amount=stars)],
-            start_parameter=f"buy_coins_{pkg_key}",
-        )
-    except Exception as e:
-        await bot.send_message(uid, f"❌ Ошибка создания счёта: {e}")
-
-
-@router.callback_query(F.data.startswith("buy_crypto_"))
-async def cb_buy_crypto(callback: CallbackQuery):
-    uid = callback.from_user.id
-    if not CRYPTO_PAY_API_TOKEN:
-        await safe_answer(callback.id, "❌ Оплата криптой временно недоступна", show_alert=True)
-        return
-    pkg_key = callback.data.split("buy_crypto_")[1]
-    pkg = get_coin_package_by_key(pkg_key, uid)
-    if not pkg:
-        await safe_answer(callback.id, "❌ Пакет не найден")
-        return
-    await safe_answer(callback.id, "⏳ Создаём счёт...")
-    ok, pay_url_or_err, invoice_id = create_crypto_invoice(uid, pkg_key)
-    name, coins_amount = pkg["name"], pkg["coins"]
-    if not ok:
-        await bot.send_message(uid, pay_url_or_err)
-        return
-    kb = InlineKeyboardBuilder()
-    kb.button(text="💎 Оплатить в @CryptoBot", url=pay_url_or_err)
-    await bot.send_message(
-        uid,
-        f"💎 <b>Счёт создан</b>\n\n"
-        f"Пакет: ({name}) - {coins_amount} AC\n"
-        f"Оплатите по кнопке ниже (USDT / TON / BTC). "
-        f"Монеты начислятся автоматически в течение минуты после оплаты.",
-        reply_markup=kb.as_markup(), parse_mode="HTML",
-    )
-
-
-@router.pre_checkout_query(lambda q: True)
-async def pre_checkout(query: types.PreCheckoutQuery):
-    await query.answer(ok=True)
-
-
-@router.message(F.content_type.in_({"successful_payment"}))
-async def successful_payment(message: Message):
-    # converted to async in post-pass
-    pass_async_marker = True; 
-    uid = message.from_user.id
-    payload = message.successful_payment.invoice_payload
-    try:
-        if payload.startswith("coins_"):
-            _, pkg_key, _ = payload.split("_", 2)
-            pkg = get_coin_package_by_key(pkg_key, uid)
-            if not pkg:
-                await bot.send_message(uid, "✅ Оплата получена, но пакет монет более недоступен. Обратитесь в поддержку - монеты будут начислены вручную.")
-                if ADMIN_ID:
-                    await bot.send_message(ADMIN_ID, f"⚠️ Оплата получена, но пакет '{pkg_key}' не найден!\nПользователь: {uid}\nPayload: {payload}")
-                return
-            name, coins_amount, stars = pkg["name"], pkg["coins"], pkg["stars"]
-            add_coins_to_player(uid, coins_amount)
-            p = get_player(uid)
-            await bot.send_message(uid, f"✅ <b>Оплата прошла!</b>\n💰 Начислено: <b>{coins_amount} AC</b>\n💳 Баланс: <b>{p[5] if p else '?'} AC</b>")
-            if ADMIN_ID:
-                await bot.send_message(ADMIN_ID, f"💳 Покупка!\nПользователь: {uid}\nПакет: {name} ({coins_amount} AC)\nОплачено: {stars} Stars")
-        elif payload.startswith("item_"):
-            _, item_id_str, _ = payload.split("_", 2)
-            item_id = int(item_id_str)
-            ok, grant_msg = grant_shop_item(uid, item_id)
-            item = get_shop_item(item_id)
-            currency = message.successful_payment.currency
-            amount_paid = message.successful_payment.total_amount
-            paid_label = f"{amount_paid} XTR" if currency == "XTR" else f"{amount_paid / 100:.2f} {currency}"
-            if ok:
-                await bot.send_message(uid, f"✅ <b>Оплата прошла!</b>\n{grant_msg}", parse_mode="HTML")
-            else:
-                await bot.send_message(uid, f"✅ Оплата получена, но возникла проблема с выдачей товара: {grant_msg}\nОбратитесь в поддержку.")
-            if ADMIN_ID:
-                await bot.send_message(ADMIN_ID, f"💳 Покупка товара!\nПользователь: {uid}\nТовар: {item[1] if item else item_id}\nОплачено: {paid_label}")
-        else:
-            await bot.send_message(uid, "✅ Оплата получена.")
-    except Exception as e:
-        await bot.send_message(uid, f"✅ Оплата получена, но не удалось начислить автоматически. Ошибка: {e}")
-
-
-# ==================== РЕДАКТИРОВАНИЕ СТАТЫ ====================
-STAT_FIELDS = {
-    "kills":   ("kills",   "🔫 Убийства"),
-    "deaths":  ("deaths",  "💀 Смерти"),
-    "assists": ("assists", "🤝 Ассисты"),
-    "wins":    ("wins",    "🏆 Победы"),
-    "losses":  ("losses",  "❌ Поражения"),
-    "coins":   ("coins",   "💰 Монеты"),
-    "elo":     ("elo",     "📊 ELO"),
-}
-
-QUALS_STAT_FIELDS = {
-    "quals_elo":     ("quals_elo",     "⭐ Quals ELO"),
-    "quals_wins":    ("quals_wins",    "🏆 Quals Победы"),
-    "quals_losses":  ("quals_losses",  "❌ Quals Поражения"),
-    "quals_kills":   ("quals_kills",   "🔫 Quals Убийства"),
-    "quals_deaths":  ("quals_deaths",  "💀 Quals Смерти"),
-    "quals_assists": ("quals_assists", "🤝 Quals Ассисты"),
-}
-
-DUO_STAT_FIELDS = {
-    "duo_elo":     ("duo_elo",     "🤝 2v2 ELO"),
-    "duo_wins":    ("duo_wins",    "🏆 2v2 Победы"),
-    "duo_losses":  ("duo_losses",  "❌ 2v2 Поражения"),
-    "duo_kills":   ("duo_kills",   "🔫 2v2 Убийства"),
-    "duo_deaths":  ("duo_deaths",  "💀 2v2 Смерти"),
-    "duo_assists": ("duo_assists", "🤝 2v2 Ассисты"),
-}
-
-@router.callback_query(F.data.startswith("editstatlg_"))
-async def cb_editstat_league(callback: CallbackQuery):
-    uid = callback.from_user.id
-    if not is_admin(uid):
-        await safe_answer(callback.id, "❌ Нет доступа")
-        return
-    parts = callback.data.split("_", 3)
-    league_type = parts[1]
-    target_id   = int(parts[2])
-    p = get_player(target_id)
-    if not p:
-        await safe_answer(callback.id, "❌ Игрок не найден")
-        return
-    await safe_answer(callback.id)
-    if league_type == "quals":
-        fields = QUALS_STAT_FIELDS
-    elif league_type == "duo":
-        fields = DUO_STAT_FIELDS
-    else:
-        fields = STAT_FIELDS
-    kb = InlineKeyboardBuilder()
-    for field_key, (db_f, label) in fields.items():
-        kb.button(text=f"✏️ {label}", callback_data=f"editstat_{field_key}_{target_id}")
-    if league_type == "quals":
-        league_label = "⭐ Quals"
-    elif league_type == "duo":
-        league_label = "🤝 2v2 Duo"
-    else:
-        league_label = "📊 Default"
-    await bot.send_message(uid, f"📈 {league_label} - Стата <b>{p[1]}</b>:", parse_mode="HTML", reply_markup=kb.as_markup())
-
-
-@router.callback_query(F.data.startswith("editstat_"))
-async def cb_editstat_pick(callback: CallbackQuery):
-    uid = callback.from_user.id
-    if not is_admin(uid):
-        await safe_answer(callback.id, "❌ Нет доступа")
-        return
-    parts = callback.data.split("_")
-    if parts[1] == "league":
-        return
-    # Поддержка quals-полей: "editstat_quals_elo_123" → field="quals_elo", target_id=123
-    # Поддержка duo-полей:  "editstat_duo_elo_123"   → field="duo_elo",   target_id=123
-    if parts[1] == "quals" and len(parts) >= 4:
-        field     = f"quals_{parts[2]}"
-        target_id = int(parts[3])
-    elif parts[1] == "duo" and len(parts) >= 4:
-        field     = f"duo_{parts[2]}"
-        target_id = int(parts[3])
-    else:
-        field     = parts[1]
-        target_id = int(parts[2])
-    p = get_player(target_id)
-    if not p:
-        await safe_answer(callback.id, "❌ Игрок не найден")
-        return
-    editstat_flow[uid] = {"field": field, "target_id": target_id}
-    await safe_answer(callback.id)
-    all_fields = {**STAT_FIELDS, **QUALS_STAT_FIELDS, **DUO_STAT_FIELDS}
-    _, label = all_fields.get(field, (field, field))
-    await bot.send_message(uid, f"✏️ Введите новое значение для <b>{label}</b> игрока <b>{p[1]}</b>:", parse_mode="HTML")
-
-
-@router.message(lambda m: m.from_user.id in editstat_flow and m.text is not None)
-async def handle_editstat_flow(message: Message):
-    # converted to async in post-pass
-    pass_async_marker = True; 
-    uid = message.from_user.id
-    if not is_admin(uid):
-        return
-    data = editstat_flow.pop(uid)
-    field = data["field"]
-    target_id = data["target_id"]
-    p = get_player(target_id)
-    if not p:
-        await bot.send_message(uid, "❌ Игрок не найден")
-        return
-    try:
-        value = int(message.text.strip())
-        if value < 0:
-            raise ValueError
-    except ValueError:
-        await bot.send_message(uid, "❌ Введите целое неотрицательное число")
-        return
-    all_fields = {**STAT_FIELDS, **QUALS_STAT_FIELDS, **DUO_STAT_FIELDS}
-    db_field, label = all_fields.get(field, (field, field))
-    conn = _db()
-    cur = conn.cursor()
-    cur.execute(f"UPDATE players SET {db_field}=%s WHERE user_id=%s AND registered=1", (value, target_id))
-    affected = cur.rowcount
-    conn.commit()
-    conn.close()
-    if affected == 0:
-        await bot.send_message(uid, f"❌ Игрок <code>{target_id}</code> не найден в базе (не зарегистрирован).", parse_mode="HTML")
-        return
-    await bot.send_message(uid, f"✅ <b>{label}</b> игрока <b>{p[1]}</b> изменено на <b>{value}</b>!", parse_mode="HTML")
-    try:
-        await bot.send_message(target_id, f"✏️ Администратор изменил вашу статистику (<b>{label}</b>: {value}).", parse_mode="HTML")
-    except Exception:
-        pass
-
-
-# ==================== АДМИН ПАНЕЛЬ ====================
-@router.callback_query(F.data == "admin_panel")
-async def cb_admin_panel(callback: CallbackQuery):
-    uid = callback.from_user.id
-    try:
-        if not is_admin(uid):
-            await safe_answer(callback.id, "❌ Нет доступа")
-            return
-        players = get_all_players()
-        active_count = sum(1 for l in running_matches.values() if l.get("status") == "active")
-        text = (
-            f"⚙️ <b>АДМИН ПАНЕЛЬ</b>\n\n"
-            f"👥 Игроков: <b>{len(players)}</b>\n🎮 Лобби: <b>{len(active_lobbies)}</b>\n"
-            f"🔴 Матчей: <b>{active_count}</b>\n\nВыберите действие:"
-        )
-        kb = InlineKeyboardBuilder()
-
-        def _btn(label, cb, restrict_key=None):
-            if restrict_key and is_admin_restricted(uid, restrict_key):
-                return
-            kb.button(text=label, callback_data=cb)
-
-        kb.button(text="👥 Список игроков", callback_data="admin_players")
-        kb.button(text="🔍 Поиск по нику/ID", callback_data="admin_search")
-        kb.button(text="🔍 Поиск по Game ID", callback_data="admin_search_gameid")
-        _btn("💰 Выдать монеты",        "admin_give_coins",     "give_coins")
-        _btn("📊 Изменить ELO",         "admin_set_elo",        "set_elo")
-        kb.button(text="✏️ Изм. ник игрока", callback_data="admin_change_nick")
-        kb.button(text="🎮 Изм. Game ID игрока", callback_data="admin_change_gid")
-        _btn("📈 Редактировать стату",  "admin_edit_stats",     "edit_stats")
-        _btn("⚠️ Выдать варн",          "admin_warn",           "warn")
-        _btn("➖ Снять варн",           "admin_unwarn",         "warn")
-        _btn("🔇 Мут",                  "admin_mute",           "mute")
-        _btn("🔊 Размутить",            "admin_unmute",         "mute")
-        _btn("🔎 Вызвать на проверку",  "admin_check",          "check")
-        _btn("✅ Снять проверку",       "admin_uncheck",        "check")
-        _btn("🚫 Бан / Разбан",         "admin_ban",            "ban")
-        _btn("👑 Выдать/Снять админку", "admin_give_admin",     "give_admin")
-        _btn("🎮 Роль Гейм Рег",       "admin_give_game_reg",  "give_game_reg")
-        _btn("⭐ Quals доступ",         "admin_quals_access",   "quals_access")
-        _btn("🎁 Выдать предмет",       "admin_give_item",      "give_coins")
-        _btn("🎁 Промокоды",            "admin_promos",         "promos")
-        _btn("🎮 Управление матчами",   "admin_matches",        "matches")
-        _btn("📋 История матчей",       "admin_match_history",  "matches")
-        _btn("📢 Рассылка",             "admin_broadcast",      "broadcast")
-        kb.button(text="🎟 Открытые тикеты", callback_data="admin_tickets")
-        _btn("✅ Синяя галочка",        "admin_give_verified",  "give_verified")
-        _btn("🏆 Управление сезонами",  "admin_seasons",        "seasons")
-        kb.button(text="🎰 Настройки слотов", callback_data="admin_slots_settings")
-        kb.button(text="🔙 Назад", callback_data="back")
-
-        await callback.message.edit_text(text, reply_markup=kb.as_markup(), parse_mode="HTML")
-        await safe_answer(callback.id)
-    except Exception as e:
-        print(f"[cb_admin_panel] Ошибка uid={uid}: {e}")
-        try:
-            await safe_answer(callback.id, "⚠️ Ошибка. Попробуй ещё раз.", show_alert=True)
-        except Exception:
-            pass
-
-
-# ==================== ПРОМОКОДЫ (АДМИН) ====================
-
-def _promo_rewards_summary(rewards: list) -> str:
-    lines = []
-    for i, r in enumerate(rewards, 1):
-        t = r.get("type", "")
-        if t == "coins":
-            lines.append(f"  {i}. 💰 {r.get('value', 0)} AC")
-        elif t == "premium":
-            lines.append(f"  {i}. 👑 Premium {r.get('days', 30)} дн.")
-        elif t == "quals":
-            lines.append(f"  {i}. ⭐ Quals {r.get('days', 30)} дн.")
-    return "\n".join(lines) if lines else "  (пусто)"
-
-async def _send_promo_reward_type_kb(uid, data):
-    """Отправляет клавиатуру выбора типа следующей награды."""
-    existing = _promo_rewards_summary(data.get("rewards", []))
-    kb = InlineKeyboardBuilder()
-    kb.add(
-        types.InlineKeyboardButton(text="💰 Монеты",  callback_data="promo_reward_coins"),
-        types.InlineKeyboardButton(text="👑 Premium", callback_data="promo_reward_premium"),
-        types.InlineKeyboardButton(text="⭐ Quals",   callback_data="promo_reward_quals"),
-    )
-    text = (
-        f"🎁 <b>Создание промокода</b> <code>{data.get('code','')}</code>\n\n"
-        f"Уже добавлено:\n{existing}\n\n"
-        "Выберите тип <b>следующей</b> награды:"
-    )
-    sent = await bot.send_message(uid, text, parse_mode="HTML", reply_markup=kb.as_markup())
-    data["_last_bot_msg"] = sent.message_id
-
-async def _send_promo_add_more_kb(uid, data):
-    """После добавления награды - спрашиваем, добавить ещё?"""
-    existing = _promo_rewards_summary(data.get("rewards", []))
-    kb = InlineKeyboardBuilder()
-    kb.add(
-        types.InlineKeyboardButton(text="➕ Добавить ещё",  callback_data="promo_add_more"),
-        types.InlineKeyboardButton(text="✅ Готово",         callback_data="promo_finalize"),
-    )
-    text = (
-        f"🎁 <b>Промокод</b> <code>{data.get('code','')}</code>\n\n"
-        f"Добавленные награды:\n{existing}\n\n"
-        "Добавить ещё одну награду или завершить?"
-    )
-    sent = await bot.send_message(uid, text, parse_mode="HTML", reply_markup=kb.as_markup())
-    data["_last_bot_msg"] = sent.message_id
-
-@router.callback_query(F.data == "admin_promos")
-async def cb_admin_promos(callback: CallbackQuery):
-    uid = callback.from_user.id
-    if not is_admin(uid):
-        await safe_answer(callback.id, "❌ Нет доступа")
-        return
-    codes = get_all_promo_codes()
-    text = "🎁 <b>ПРОМОКОДЫ</b>\n\n"
-    if codes:
-        for row in codes:
-            code, rtype, rval, max_uses, uses, is_active, rdays, rjson = row
-            status = "✅" if is_active else "❌"
-            max_str = f"/{max_uses}" if max_uses > 0 else "/∞"
-            rewards = []
-            if rjson:
-                try:
-                    rewards = json.loads(rjson)
-                except Exception:
-                    pass
-            if not rewards:
-                rewards = [{"type": rtype, "value": rval or 0, "days": rdays or 30}]
-            rtype_str = _rewards_to_str(rewards)
-            text += f"{status} <code>{code}</code> - {rtype_str} | {uses}{max_str} исп.\n"
-    else:
-        text += "Промокодов нет."
-    kb = InlineKeyboardBuilder()
-    kb.add(
-        types.InlineKeyboardButton(text="➕ Создать промокод",        callback_data="admin_promo_create"),
-        types.InlineKeyboardButton(text="❌ Деактивировать промокод", callback_data="admin_promo_deactivate"),
-        types.InlineKeyboardButton(text="🔙 Назад",                   callback_data="admin_panel"),
-    )
-    await callback.message.edit_text(text, reply_markup=kb.as_markup())
-    await safe_answer(callback.id)
-
-
-@router.callback_query(F.data == "admin_promo_create")
-async def cb_admin_promo_create(callback: CallbackQuery):
-    uid = callback.from_user.id
-    if not is_admin(uid):
-        await safe_answer(callback.id, "❌ Нет доступа")
-        return
-    promo_admin_flow[uid] = {"step": "code", "rewards": []}
-    await safe_answer(callback.id)
-    sent = await bot.send_message(
-        uid,
-        "🎁 <b>Создание промокода</b>\n\n"
-        "<b>Шаг 1</b> - Введите код промокода (только буквы и цифры):\n"
-        "Пример: <code>SARE2025</code>",
-        parse_mode="HTML",
-    )
-    promo_admin_flow[uid]["_last_bot_msg"] = sent.message_id
-
-
-@router.callback_query(F.data == "admin_promo_deactivate")
-async def cb_admin_promo_deactivate(callback: CallbackQuery):
-    uid = callback.from_user.id
-    if not is_admin(uid):
-        await safe_answer(callback.id, "❌ Нет доступа")
-        return
-    promo_admin_flow[uid] = {"step": "deactivate"}
-    await safe_answer(callback.id)
-    await bot.send_message(uid, "❌ Введите код промокода для деактивации:")
-
-
-@router.callback_query(F.data.startswith("promo_reward_"))
-async def cb_promo_reward_type(callback: CallbackQuery):
-    uid = callback.from_user.id
-    if not is_admin(uid):
-        await safe_answer(callback.id, "❌ Нет доступа")
-        return
-    if uid not in promo_admin_flow:
-        await safe_answer(callback.id, "❌ Сессия не найдена")
-        return
-    reward_type = callback.data.split("promo_reward_")[1]
-    data = promo_admin_flow[uid]
-    data["_cur_reward_type"] = reward_type
-    await safe_answer(callback.id)
-    try:
-        await bot.delete_message(callback.message.chat.id, callback.message.message_id)
-    except Exception:
-        pass
-    data.pop("_last_bot_msg", None)
-    if reward_type == "coins":
-        data["step"] = "value"
-        sent = await bot.send_message(uid, "💰 Сколько монет выдавать?", parse_mode="HTML")
-        data["_last_bot_msg"] = sent.message_id
-    elif reward_type in ("premium", "quals"):
-        data["step"] = "days"
-        label = "👑 Premium" if reward_type == "premium" else "⭐ Quals"
-        sent = await bot.send_message(
-            uid,
-            f"На сколько дней выдавать {label}? (например: 7, 30, 90)",
-            parse_mode="HTML",
-        )
-        data["_last_bot_msg"] = sent.message_id
-
-
-@router.callback_query(F.data == "promo_add_more")
-async def cb_promo_add_more(callback: CallbackQuery):
-    uid = callback.from_user.id
-    if not is_admin(uid):
-        await safe_answer(callback.id, "❌ Нет доступа")
-        return
-    if uid not in promo_admin_flow:
-        await safe_answer(callback.id, "❌ Сессия не найдена")
-        return
-    await safe_answer(callback.id)
-    try:
-        await bot.delete_message(callback.message.chat.id, callback.message.message_id)
-    except Exception:
-        pass
-    data = promo_admin_flow[uid]
-    data["step"] = "reward_type"
-    _send_promo_reward_type_kb(uid, data)
-
-
-@router.callback_query(F.data == "promo_finalize")
-async def cb_promo_finalize(callback: CallbackQuery):
-    uid = callback.from_user.id
-    if not is_admin(uid):
-        await safe_answer(callback.id, "❌ Нет доступа")
-        return
-    if uid not in promo_admin_flow:
-        await safe_answer(callback.id, "❌ Сессия не найдена")
-        return
-    await safe_answer(callback.id)
-    try:
-        await bot.delete_message(callback.message.chat.id, callback.message.message_id)
-    except Exception:
-        pass
-    data = promo_admin_flow[uid]
-    data["step"] = "max_uses"
-    sent = await bot.send_message(
-        uid,
-        "🔢 Сколько раз можно использовать промокод?\n<i>(0 = неограничено)</i>",
-        parse_mode="HTML",
-    )
-    data["_last_bot_msg"] = sent.message_id
-
-
-async def _promo_delete_prev(uid, msg_id=None):
-    data = promo_admin_flow.get(uid, {})
-    last = data.pop("_last_bot_msg", None)
-    if last:
-        try:
-            await bot.delete_message(uid, last)
-        except Exception:
-            pass
-    if msg_id:
-        try:
-            await bot.delete_message(uid, msg_id)
-        except Exception:
-            pass
-
-
-@router.message(lambda m: m.from_user.id in promo_admin_flow and m.text is not None)
-async def handle_promo_admin_flow(message: Message):
-    # converted to async in post-pass
-    pass_async_marker = True; 
-    uid = message.from_user.id
-    if not is_admin(uid):
-        return
-    data = promo_admin_flow.get(uid, {})
-    step = data.get("step")
-    text = message.text.strip()
-
-    if step == "code":
-        if not re.match(r'^[A-Za-z0-9]+$', text):
-            await bot.send_message(uid, "❌ Только буквы и цифры. Попробуйте снова:")
-            return
-        _promo_delete_prev(uid, message.message_id)
-        data["code"] = text.upper()
-        data["step"] = "reward_type"
-        data.setdefault("rewards", [])
-        _send_promo_reward_type_kb(uid, data)
-
-    elif step == "value":
-        try:
-            value = int(text)
-            if value <= 0:
-                raise ValueError
-        except ValueError:
-            await bot.send_message(uid, "❌ Введите целое число больше 0")
-            return
-        _promo_delete_prev(uid, message.message_id)
-        data.setdefault("rewards", []).append({
-            "type": data.pop("_cur_reward_type", "coins"),
-            "value": value,
-            "days": 30,
-        })
-        data["step"] = "add_more"
-        _send_promo_add_more_kb(uid, data)
-
-    elif step == "days":
-        try:
-            days = int(text)
-            if days <= 0:
-                raise ValueError
-        except ValueError:
-            await bot.send_message(uid, "❌ Введите целое число больше 0 (например: 30)")
-            return
-        _promo_delete_prev(uid, message.message_id)
-        data.setdefault("rewards", []).append({
-            "type": data.pop("_cur_reward_type", "premium"),
-            "value": 0,
-            "days": days,
-        })
-        data["step"] = "add_more"
-        _send_promo_add_more_kb(uid, data)
-
-    elif step == "max_uses":
-        try:
-            max_uses = int(text)
-        except ValueError:
-            await bot.send_message(uid, "❌ Введите число")
-            return
-        _promo_delete_prev(uid, message.message_id)
-        code = data["code"]
-        rewards = data.get("rewards", [])
-        promo_admin_flow.pop(uid, None)
-        ok, reason = create_promo_code(code, rewards, max_uses)
-        if ok:
-            max_str = f"{max_uses}" if max_uses > 0 else "неограничено"
-            reward_str = _rewards_to_str(rewards)
-            label = "♻️ <b>Промокод переактивирован!</b>" if reason == "reactivated" else "✅ <b>Промокод создан!</b>"
-            await bot.send_message(
-                uid,
-                f"{label}\n\n"
-                f"Код: <code>{code}</code>\n"
-                f"Награды: {reward_str}\n"
-                f"Использований: {max_str}",
-                parse_mode="HTML",
-            )
-        elif reason == "exists_active":
-            await bot.send_message(uid, f"❌ Промокод <code>{code}</code> уже существует и активен!", parse_mode="HTML")
-        else:
-            await bot.send_message(uid, f"❌ Ошибка при создании промокода <code>{code}</code>. Проверьте логи.", parse_mode="HTML")
-
-    elif step == "deactivate":
-        _promo_delete_prev(uid, message.message_id)
-        promo_admin_flow.pop(uid, None)
-        deactivate_promo_code(text)
-        await bot.send_message(uid, f"✅ Промокод <code>{text.upper()}</code> деактивирован.", parse_mode="HTML")
-
-
-# ==================== УПРАВЛЕНИЕ МАТЧАМИ (АДМИН) ====================
-@router.callback_query(F.data == "admin_matches")
-async def cb_admin_matches(callback: CallbackQuery):
-    uid = callback.from_user.id
-    if not is_admin(uid):
-        await safe_answer(callback.id, "❌ Нет доступа")
-        return
-    active = [(mk, l) for mk, l in running_matches.items() if l.get("status") == "active"]
-    if not active:
-        text = "🎮 <b>Управление матчами</b>\n\nАктивных матчей нет."
-        kb = InlineKeyboardBuilder()
-        kb.button(text="🔙 Назад", callback_data="admin_panel")
-        await callback.message.edit_text(text, reply_markup=kb.as_markup())
-        await safe_answer(callback.id)
-        return
-    text = "🎮 <b>Активные матчи</b>\n\n"
-    kb = InlineKeyboardBuilder()
-    for mk, l in active:
-        mid = l.get("match_id", "?")
-        AC = l.get("ACreenshots_count", 0)
-        text += f"- Match #{mid} | 📸{AC}\n"
-        kb.button(text=f"⚙️ Match #{mid}", callback_data=f"admin_match_manage_{mk}")
-    kb.button(text="🔙 Назад", callback_data="admin_panel")
-    await callback.message.edit_text(text, reply_markup=kb.as_markup())
-    await safe_answer(callback.id)
-
-
-@router.callback_query(F.data.startswith("admin_match_manage_"))
-async def cb_admin_match_manage(callback: CallbackQuery):
-    uid = callback.from_user.id
-    if not is_admin(uid):
-        await safe_answer(callback.id, "❌ Нет доступа")
-        return
-    match_key = callback.data[len("admin_match_manage_"):]
-    lobby = running_matches.get(match_key)
-    if not lobby:
-        await safe_answer(callback.id, "❌ Матч не найден")
-        return
-    match_id   = lobby.get("match_id", "?")
-    match_code = lobby.get("match_code", str(match_id))
-    AC = lobby.get("ACreenshots_count", 0)
-    text = (
-        f"⚙️ <b>Match #{match_code}</b>\n🏷 {lobby.get('league','').upper()}/{lobby.get('device','').upper()}\n"
-        f"🗺 {lobby.get('map_name','?')}\n📸 {AC}"
-    )
-    kb = InlineKeyboardBuilder()
-    kb.add(
-        types.InlineKeyboardButton(text="🔄 Перерегать",  callback_data=f"reregister_match|{match_key}"),
-        types.InlineKeyboardButton(text="❌ Отменить",    callback_data=f"cancel_match|{match_key}"),
-        types.InlineKeyboardButton(text="🔙 Назад",       callback_data="admin_matches"),
-    )
-    await callback.message.edit_text(text, reply_markup=kb.as_markup())
-    await safe_answer(callback.id)
-
-
-@router.callback_query(F.data == "admin_players")
-async def cb_admin_players(callback: CallbackQuery):
-    uid = callback.from_user.id
-    if not is_admin(uid):
-        await safe_answer(callback.id, "❌ Нет доступа")
-        return
-    players = get_all_players()
-    text = "👥 <b>СПИСОК ИГРОКОВ</b>\n\n"
-    for p in players[:20]:
-        uid2, name, elo, wins, losses, kills, deaths, coins, banned, warns = p
-        ban_mark = " 🚫" if banned else ""
-        warn_mark = f" ⚠️{warns}" if warns > 0 else ""
-        prem = " 👑" if has_active_premium(uid2) else ""
-        text += f"- <b>{name}</b>{prem}{ban_mark}{warn_mark} | ELO: {elo} | {wins}W/{losses}L\n"
-    if len(players) > 20:
-        text += f"\n<i>...и ещё {len(players)-20}</i>"
-    if not players:
-        text += "Игроков нет."
-    kb = InlineKeyboardBuilder()
-    kb.button(text="🔙 Назад", callback_data="admin_panel")
-    await callback.message.edit_text(text, reply_markup=kb.as_markup())
-    await safe_answer(callback.id)
-
-
-@router.callback_query(F.data == "admin_match_history")
-async def cb_admin_match_history(callback: CallbackQuery):
-    uid = callback.from_user.id
-    if not is_admin(uid):
-        await safe_answer(callback.id, "❌ Нет доступа")
-        return
-    matches = get_match_history(10)
-    text = "📋 <b>ИСТОРИЯ МАТЧЕЙ</b>\n\nМатчей нет." if not matches else "📋 <b>ИСТОРИЯ МАТЧЕЙ</b>\n\n"
-    for row in matches:
-        match_id, league, device, map_name, winner, ACore_w, ACore_l, finished_at = row
-        dt = datetime.datetime.fromtimestamp(finished_at).strftime("%d.%m %H:%M") if finished_at else "?"
-        winner_str = "💙 CT" if winner == "ct" else "🧡 T"
-        text += f"🔢 <b>Match ID {match_id}</b> | {dt}\n   {league.upper()}/{device.upper()} | {map_name}\n   {winner_str} | {ACore_w}:{ACore_l}\n\n"
-    kb = InlineKeyboardBuilder()
-    kb.button(text="🔙 Назад", callback_data="admin_panel")
-    await callback.message.edit_text(text, reply_markup=kb.as_markup())
-    await safe_answer(callback.id)
-
-
-_RESTRICT_MAP = {
-    "give_coins":    "give_coins",
-    "set_elo":       "set_elo",
-    "warn":          "warn",
-    "unwarn":        "warn",
-    "broadcast":     "broadcast",
-    "give_admin":    "give_admin",
-    "quals_access":  "quals_access",
-    "give_game_reg": "give_game_reg",
-    "mute":          "mute",
-    "unmute":        "mute",
-    "check":         "check",
-    "uncheck":       "check",
-    "change_nick":   None,
-    "change_gid":    None,
-    "edit_stats":    "edit_stats",
-    "give_verified": "give_verified",
-}
-
-@router.callback_query(F.data.in_([
-    "admin_search", "admin_search_gameid", "admin_give_coins", "admin_set_elo",
-    "admin_warn", "admin_broadcast", "admin_give_admin",
-    "admin_quals_access", "admin_give_game_reg", "admin_mute", "admin_unmute",
-    "admin_check", "admin_uncheck", "admin_change_nick", "admin_change_gid",
-    "admin_edit_stats", "admin_give_verified", "admin_give_item",
-]))
-async def cb_admin_action(c: CallbackQuery):
-    uid = callback.from_user.id
-    if not is_admin(uid):
-        await safe_answer(callback.id, "❌ Нет доступа")
-        return
-    action = callback.data.split("admin_")[1]
-    restrict_key = _RESTRICT_MAP.get(action)
-    if restrict_key and is_admin_restricted(uid, restrict_key):
-        await safe_answer(callback.id, "❌ Доступ к этой функции ограничен", show_alert=True)
-        return
-    prompts = {
-        "search":         "🔍 Введите Telegram ID или никнейм:",
-        "search_gameid":  "🔍 Введите Game ID игрока:",
-        "give_coins":     "💰 Формат: <code>USER_ID КОЛИЧЕСТВО</code>",
-        "set_elo":        "📊 Формат: <code>USER_ID НОВОЕ_ELO</code>",
-        "change_nick":    "✏️ Введите Telegram ID для смены ника:",
-        "change_gid":     "🎮 Введите Telegram ID для смены Game ID:",
-        "warn":           "⚠️ Введите Telegram ID или никнейм:",
-        "unwarn":         "➖ Снять варн - введите Telegram ID или никнейм:",
-        "broadcast":      "📢 Введите текст рассылки:",
-        "give_admin":     "👑 Введите Telegram ID или никнейм:",
-        "quals_access":   "⭐ Введите Telegram ID или никнейм:",
-        "give_game_reg":  "🎮 Введите Telegram ID или никнейм:",
-        "mute":           "🔇 Введите Telegram ID или никнейм:",
-        "unmute":         "🔊 Введите Telegram ID или никнейм:",
-        "check":          "🔎 Введите Telegram ID или никнейм:",
-        "uncheck":        "✅ Введите Telegram ID или никнейм:",
-        "edit_stats":     "📈 Введите Telegram ID или никнейм игрока:",
-        "give_verified":  "✅ Введите Telegram ID или никнейм (выдать/снять синюю галочку):",
-        "give_item":      "🎁 Формат: <code>USER_ID ITEM_ID</code>\n\nСписок предметов из магазина - используйте ID из БД.\nПример: <code>123456789 3</code>",
-    }
-    if action == "give_item":
-        prompt = "🎁 Введите Telegram ID или никнейм игрока, которому выдать предмет:"
-    else:
-        prompt = prompts.get(action, "Введите данные:")
-    admin_action[uid] = action
-    await safe_answer(callback.id)
-    await bot.send_message(uid, prompt, parse_mode="HTML")
-
-
-# Бан обрабатывается отдельно через ban_flow (мульти-шаг)
-@router.callback_query(F.data == "admin_ban")
-async def cb_admin_ban_start(callback: CallbackQuery):
-    uid = callback.from_user.id
-    if not is_admin(uid):
-        await safe_answer(callback.id, "❌ Нет доступа")
-        return
-    if is_admin_restricted(uid, "ban"):
-        await safe_answer(callback.id, "❌ Доступ к этой функции ограничен", show_alert=True)
-        return
-    ban_flow[uid] = {"step": "target"}
-    await safe_answer(callback.id)
-    await bot.send_message(uid, "🚫 <b>Шаг 1/3</b> - Введите Telegram ID или никнейм игрока:", parse_mode="HTML")
-
-
-@router.message(lambda m: m.from_user.id in admin_action and m.text is not None)
-async def handle_admin_action(message: Message):
-    # converted to async in post-pass
-    pass_async_marker = True; 
-    uid = message.from_user.id
-    if not is_admin(uid):
-        return
-    action = admin_action.pop(uid)
-    text = message.text.strip()
-
-    async def find_player_by_input(inp):
-        if inp.isdigit():
-            return get_player(int(inp))
-        conn2 = _db()
-        cur2 = conn2.cursor()
-        cur2.execute("SELECT * FROM players WHERE username=%s AND is_bot=0", (inp,))
-        row = cur2.fetchone()
-        conn2.close()
-        return row
-
-    if action == "search":
-        p = find_player_by_input(text)
-        if not p:
-            await bot.send_message(uid, "❌ Игрок не найден")
-            return
-        games = p[6] + p[7]
-        winrate = round(p[6] / games * 100, 1) if games > 0 else 0
-        kd = round(p[8] / p[9], 2) if p[9] > 0 else p[8]
-        tg_u = p[22] if len(p) > 22 else ""
-        resp = (
-            f"👤 <b>{p[1]}</b>\n🆔 TG: <code>{p[0]}</code>\n"
-            f"🐦 @{tg_u}\n🎮 Game ID: <code>{p[2]}</code>\n📱 {p[3]}\n"
-            f"📊 ELO: {p[4]} | 💰 {p[5]} AC\n"
-            f"🏆 {p[6]}W/{p[7]}L ({winrate}%) | K/D: {kd}\n"
-            f"⚠️ Варны: {p[15] if len(p)>15 else 0} | 🚫 Бан: {'Да' if p[14] else 'Нет'}\n"
-            f"👑 Админ: {'Да' if p[11] else 'Нет'} | 🔇 Мут: {'Да' if p[18] else 'Нет'}"
-        )
-        kb = InlineKeyboardBuilder()
-        target_id = p[0]
-        _verif_now = is_verified_check(target_id)
-        _verif_lbl = "❎ Снять галочку" if _verif_now else "✅ Выдать галочку"
-        kb.add(
-            types.InlineKeyboardButton(text="🚫 Бан/Разбан",    callback_data=f"admin_do_ban_{target_id}"),
-            types.InlineKeyboardButton(text="⚠️ Варн",           callback_data=f"admin_do_warn_{target_id}"),
-            types.InlineKeyboardButton(text="➖ Снять варн",     callback_data=f"admin_do_unwarn_{target_id}"),
-            types.InlineKeyboardButton(text="🔇 Мут",            callback_data=f"admin_do_mute_{target_id}"),
-            types.InlineKeyboardButton(text="🔊 Размутить",      callback_data=f"admin_do_unmute_{target_id}"),
-            types.InlineKeyboardButton(text="🔎 Проверка",       callback_data=f"admin_do_check_{target_id}"),
-            types.InlineKeyboardButton(text="✅ Снять проверку", callback_data=f"admin_do_uncheck_{target_id}"),
-            types.InlineKeyboardButton(text="👑 Дать/Снять адм", callback_data=f"admin_do_give_admin_{target_id}"),
-            types.InlineKeyboardButton(text="⭐ Quals",           callback_data=f"admin_do_quals_{target_id}"),
-            types.InlineKeyboardButton(text=_verif_lbl,          callback_data=f"admin_do_toggle_verified_{target_id}"),
-            types.InlineKeyboardButton(text="🎁 Выдать предмет", callback_data=f"admin_do_give_item_{target_id}"),
-        )
-        p_target = get_player(target_id)
-        has_q = p_target and has_quals_access(target_id)
-        kb.button(text="✏️ Default стата", callback_data=f"editstatlg_default_{target_id}")
-        if has_q:
-            kb.button(text="⭐ Quals стата", callback_data=f"editstatlg_quals_{target_id}")
-        kb.button(text="🤝 2v2 стата", callback_data=f"editstatlg_duo_{target_id}")
-        await bot.send_message(uid, resp, parse_mode="HTML", reply_markup=kb.as_markup())
-
-    elif action == "search_gameid":
-        p = get_player_by_game_id(text)
-        if not p:
-            await bot.send_message(uid, "❌ Игрок не найден")
-            return
-        await bot.send_message(uid, f"👤 <b>{p[1]}</b>\n🆔 TG: <code>{p[0]}</code>\n🎮 Game ID: <code>{p[2]}</code>\n📊 ELO: {p[4]}", parse_mode="HTML")
-
-    elif action == "give_coins":
-        parts = text.split()
-        if len(parts) != 2 or not parts[0].isdigit() or not parts[1].lstrip("-").isdigit():
-            await bot.send_message(uid, "❌ Формат: USER_ID КОЛИЧЕСТВО")
-            return
-        target_id, amount = int(parts[0]), int(parts[1])
-        add_coins_to_player(target_id, amount)
-        await bot.send_message(uid, f"✅ Выдано {amount} AC игроку <code>{target_id}</code>", parse_mode="HTML")
-        try:
-            await bot.send_message(target_id, f"💰 Вам начислено <b>{amount} AC</b> администратором!", parse_mode="HTML")
-        except Exception:
-            pass
-
-    elif action == "set_elo":
-        parts = text.split()
-        if len(parts) != 2 or not parts[0].isdigit() or not parts[1].isdigit():
-            await bot.send_message(uid, "❌ Формат: USER_ID НОВОЕ_ELO")
-            return
-        target_id, new_elo = int(parts[0]), int(parts[1])
-        conn = _db(); cur = conn.cursor()
-        cur.execute("UPDATE players SET elo=%s WHERE user_id=%s AND registered=1", (new_elo, target_id))
-        affected = cur.rowcount
-        conn.commit(); conn.close()
-        if affected == 0:
-            await bot.send_message(uid, f"❌ Игрок <code>{target_id}</code> не найден в базе (не зарегистрирован).", parse_mode="HTML")
-        else:
-            await bot.send_message(uid, f"✅ ELO игрока <code>{target_id}</code> изменено на <b>{new_elo}</b>", parse_mode="HTML")
-
-    elif action == "change_nick":
-        p = find_player_by_input(text)
-        if not p:
-            await bot.send_message(uid, "❌ Игрок не найден")
-            return
-        change_flow[uid] = {"field": "admin_nick", "target_id": p[0]}
-        await bot.send_message(uid, f"✏️ Введите новый никнейм для <b>{p[1]}</b>:", parse_mode="HTML")
-
-    elif action == "change_gid":
-        p = find_player_by_input(text)
-        if not p:
-            await bot.send_message(uid, "❌ Игрок не найден")
-            return
-        change_flow[uid] = {"field": "admin_id", "target_id": p[0]}
-        await bot.send_message(uid, f"🎮 Введите новый Game ID для <b>{p[1]}</b>:", parse_mode="HTML")
-
-    elif action == "warn":
-        p = find_player_by_input(text)
-        if not p:
-            await bot.send_message(uid, "❌ Игрок не найден")
-            return
-        warn_flow[uid] = {"step": "reason", "target_id": p[0], "target_name": p[1]}
-        await bot.send_message(uid, f"⚠️ <b>Шаг 2/2</b> - Причина варна для <b>{p[1]}</b>:\n\nВведите причину:", parse_mode="HTML")
-        return
-
-    elif action == "unwarn":
-        p = find_player_by_input(text)
-        if not p:
-            await bot.send_message(uid, "❌ Игрок не найден")
-            return
-        cur_warns = p[15] if len(p) > 15 else 0
-        new_warns = max(0, cur_warns - 1)
-        conn = _db(); cur = conn.cursor()
-        cur.execute("UPDATE players SET warns=%s WHERE user_id=%s", (new_warns, p[0]))
-        conn.commit(); conn.close()
-        await bot.send_message(uid, f"➖ Варн снят с игрока <b>{p[1]}</b>. Итого: {new_warns}/3", parse_mode="HTML")
-        try:
-            await bot.send_message(p[0], f"➖ Один варн снят администратором. Осталось: {new_warns}/3")
-        except Exception:
-            pass
-        admin_p = get_player(uid)
-        admin_name = admin_p[1] if admin_p else str(uid)
-        send_punishment_log_priv(uid,
-            f"➖ <b>Снятие варна</b>\n"
-            f"👮 Снял: {tg_link(uid, admin_name)}\n"
-            f"👤 Игрок: {tg_link(p[0], p[1])}\n"
-            f"📊 Осталось: {new_warns}/3"
-        )
-
-    elif action == "broadcast":
-        players = get_all_players()
-        sent_count = 0
-        for row in players:
-            try:
-                await bot.send_message(row[0], f"📢 <b>Сообщение от администрации:</b>\n\n{text}", parse_mode="HTML")
-                sent_count += 1
-                await asyncio.sleep(0.05)  # converted from time.sleep
-            except Exception:
-                pass
-        await bot.send_message(uid, f"✅ Рассылка отправлена {sent_count}/{len(players)} игрокам")
-
-    elif action == "give_admin":
-        p = find_player_by_input(text)
-        if not p:
-            await bot.send_message(uid, "❌ Игрок не найден")
-            return
-        new_val = 0 if p[11] else 1
-        conn = _db(); cur = conn.cursor()
-        cur.execute("UPDATE players SET is_admin=%s WHERE user_id=%s", (new_val, p[0]))
-        conn.commit(); conn.close()
-        status = "выдана" if new_val else "снята"
-        await bot.send_message(uid, f"✅ Админка {status} игроку <b>{p[1]}</b>", parse_mode="HTML")
-
-    elif action == "quals_access":
-        p = find_player_by_input(text)
-        if not p:
-            await bot.send_message(uid, "❌ Игрок не найден")
-            return
-        cur_val = p[16] if len(p) > 16 else 0
-        new_val = 0 if cur_val else 1
-        conn = _db(); cur = conn.cursor()
-        cur.execute("UPDATE players SET quals_access=%s WHERE user_id=%s", (new_val, p[0]))
-        conn.commit(); conn.close()
-        status = "выдан" if new_val else "снят"
-        await bot.send_message(uid, f"✅ Quals доступ {status} игроку <b>{p[1]}</b>", parse_mode="HTML")
-        try:
-            await bot.send_message(p[0], f"{'⭐ Вам выдан доступ к QUALS!' if new_val else '❌ Ваш доступ к QUALS снят.'}")
-        except Exception:
-            pass
-
-    elif action == "give_game_reg":
-        p = find_player_by_input(text)
-        if not p:
-            await bot.send_message(uid, "❌ Игрок не найден")
-            return
-        cur_val = p[17] if len(p) > 17 else 0
-        new_val = 0 if cur_val else 1
-        conn = _db(); cur = conn.cursor()
-        cur.execute("UPDATE players SET is_game_reg=%s WHERE user_id=%s", (new_val, p[0]))
-        conn.commit(); conn.close()
-        status = "выдана" if new_val else "снята"
-        await bot.send_message(uid, f"✅ Роль Гейм Рег {status} игроку <b>{p[1]}</b>", parse_mode="HTML")
-
-    elif action == "mute":
-        p = find_player_by_input(text)
-        if not p:
-            await bot.send_message(uid, "❌ Игрок не найден")
-            return
-        mute_flow[uid] = {"step": "duration", "target_id": p[0], "target_name": p[1]}
-        await bot.send_message(
-            uid,
-            f"🔇 <b>Шаг 2/3</b> - Срок мута для <b>{p[1]}</b>:\n\n"
-            f"Введите количество часов (например: <code>2</code>, <code>24</code>, <code>72</code>):",
-            parse_mode="HTML"
-        )
-        return
-
-    elif action == "unmute":
-        p = find_player_by_input(text)
-        if not p:
-            await bot.send_message(uid, "❌ Игрок не найден")
-            return
-        conn = _db(); cur = conn.cursor()
-        cur.execute("UPDATE players SET is_muted=0, mute_until=0 WHERE user_id=%s", (p[0],))
-        conn.commit(); conn.close()
-        await bot.send_message(uid, f"🔊 Мут снят с игрока <b>{p[1]}</b>", parse_mode="HTML")
-        try:
-            await bot.send_message(p[0], "🔊 Ваш мут снят администратором.")
-        except Exception:
-            pass
-        admin_p = get_player(uid)
-        admin_name = admin_p[1] if admin_p else str(uid)
-        send_punishment_log_priv(uid,
-            f"🔊 <b>Размут</b>\n"
-            f"👮 Снял: {tg_link(uid, admin_name)}\n"
-            f"👤 Игрок: {tg_link(p[0], p[1])}"
-        )
-
-    elif action == "check":
-        p = find_player_by_input(text)
-        if not p:
-            await bot.send_message(uid, "❌ Игрок не найден")
-            return
-        conn = _db(); cur = conn.cursor()
-        cur.execute("UPDATE players SET is_on_check=1, check_admin_id=%s WHERE user_id=%s", (uid, p[0]))
-        conn.commit(); conn.close()
-        await bot.send_message(uid, f"🔎 Игрок <b>{p[1]}</b> вызван на проверку", parse_mode="HTML")
-        admin_p = get_player(uid)
-        admin_name = admin_p[1] if admin_p else str(uid)
-        tg_u = admin_p[22] if admin_p and len(admin_p) > 22 else ""
-        try:
-            await bot.send_message(
-                p[0],
-                f"⚠️ <b>Вас вызвал на проверку {'@'+tg_u if tg_u else 'администратор'}!</b>\n\nОбратитесь к администратору.",
-                parse_mode="HTML",
-            )
-        except Exception:
-            pass
-        send_punishment_log_priv(uid,
-            f"🔎 <b>Вызов на проверку</b>\n"
-            f"👮 Вызвал: {tg_link(uid, admin_name)}\n"
-            f"👤 Игрок: {tg_link(p[0], p[1])}"
-        )
-
-    elif action == "uncheck":
-        p = find_player_by_input(text)
-        if not p:
-            await bot.send_message(uid, "❌ Игрок не найден")
-            return
-        conn = _db(); cur = conn.cursor()
-        cur.execute("UPDATE players SET is_on_check=0, check_admin_id=0 WHERE user_id=%s", (p[0],))
-        conn.commit(); conn.close()
-        await bot.send_message(uid, f"✅ Проверка снята с игрока <b>{p[1]}</b>", parse_mode="HTML")
-        try:
-            await bot.send_message(p[0], "✅ Проверка снята. Доступ к боту восстановлен.")
-        except Exception:
-            pass
-        admin_p = get_player(uid)
-        admin_name = admin_p[1] if admin_p else str(uid)
-        send_punishment_log_priv(uid,
-            f"✅ <b>Снятие проверки</b>\n"
-            f"👮 Снял: {tg_link(uid, admin_name)}\n"
-            f"👤 Игрок: {tg_link(p[0], p[1])}"
-        )
-
-    elif action == "edit_stats":
-        p = find_player_by_input(text)
-        if not p:
-            await bot.send_message(uid, "❌ Игрок не найден")
-            return
-        has_q = has_quals_access(p[0])
-        kb = InlineKeyboardBuilder()
-        kb.button(text="✏️ Default стата", callback_data=f"editstatlg_default_{p[0]}")
-        if has_q:
-            kb.button(text="⭐ Quals стата", callback_data=f"editstatlg_quals_{p[0]}")
-        kb.button(text="🤝 2v2 стата", callback_data=f"editstatlg_duo_{p[0]}")
-        await bot.send_message(uid, f"📈 Редактирование статы <b>{p[1]}</b>:", parse_mode="HTML", reply_markup=kb.as_markup())
-
-    elif action == "give_verified":
-        p = find_player_by_input(text)
-        if not p:
-            await bot.send_message(uid, "❌ Игрок не найден")
-            return
-        target_id = p[0]
-        cur_val = is_verified_check(target_id)
-        new_val = 0 if cur_val else 1
-        conn_v = _db(); cur_v = conn_v.cursor()
-        cur_v.execute("UPDATE players SET is_verified=%s WHERE user_id=%s", (new_val, target_id))
-        conn_v.commit(); conn_v.close()
-        status_txt = "✅ Синяя галочка выдана" if new_val else "❎ Синяя галочка снята"
-        await bot.send_message(uid, f"{status_txt}: <b>{p[1]}</b>", parse_mode="HTML")
-        try:
-            if new_val:
-                await bot.send_message(target_id, "✅ Вам выдана <b>синяя галочка</b> верификации!", parse_mode="HTML")
-            else:
-                await bot.send_message(target_id, "❎ Ваша синяя галочка верификации была снята администратором.")
-        except Exception:
-            pass
-
-    elif action == "give_item":
-        # Find player by text (ID or nickname) then show item keyboard
-        async def _find_p(inp):
-            if inp.isdigit():
-                return get_player(int(inp))
-            c3 = _db(); cr3 = c3.cursor()
-            cr3.execute("SELECT * FROM players WHERE username=%s AND is_bot=0", (inp,))
-            row3 = cr3.fetchone(); c3.close()
-            return row3
-        target_p = _find_p(text)
-        if not target_p:
-            await bot.send_message(uid, "❌ Игрок не найден. Введите TG ID или никнейм:")
-            return
-        target_id2 = target_p[0]
-        await bot.send_message(
-            uid,
-            f"🎁 <b>Выдача предмета</b> для <b>{target_p[1]}</b>\n\nВыберите предмет из списка ниже:",
-            parse_mode="HTML",
-            reply_markup=_build_shop_items_kb(target_id2),
-        )
-        return
-
-
-# ==================== ВЫДАЧА ПРЕДМЕТА - INLINE КНОПКИ ====================
-
-@router.callback_query(F.data == "admin_noop")
-async def cb_admin_noop(callback: CallbackQuery):
-    await safe_answer(callback.id)
-
-
-async def _do_admin_give_item(admin_uid: int, target_id: int, item_id: int):
-    """Shared helper: give item_id to target_id, notify both, log."""
-    p = get_player(target_id)
-    if not p:
-        await bot.send_message(admin_uid, "❌ Игрок не найден")
-        return
-    item = get_shop_item(item_id)
-    if not item:
-        await bot.send_message(admin_uid, "❌ Предмет не найден")
-        return
-    _, item_name, _, _, _, item_type = item
-    stackable = {"sticker", "unwarn", "x2coins", "rename"}
-    if item_type not in stackable:
-        ck = _db(); ckc = ck.cursor()
-        ckc.execute("SELECT COUNT(*) FROM inventory WHERE user_id=%s AND item_id=%s",
-                    (target_id, item_id))
-        already = ckc.fetchone()[0]; ck.close()
-        if already > 0:
-            await bot.send_message(admin_uid,
-                f"❌ У игрока <b>{p[1]}</b> уже есть <b>{item_name}</b>",
-                parse_mode="HTML")
-            return
-    cg = _db(); cgc = cg.cursor()
-    cgc.execute("INSERT INTO inventory (user_id, item_id) VALUES (%s, %s)",
-                (target_id, item_id))
-    cg.commit(); cg.close()
-    admin_p = get_player(admin_uid)
-    admin_name = admin_p[1] if admin_p else str(admin_uid)
-    await bot.send_message(admin_uid,
-        f"✅ Предмет <b>{item_name}</b> выдан игроку <b>{p[1]}</b>",
-        parse_mode="HTML")
-    try:
-        await bot.send_message(target_id,
-            f"🎁 Администратор выдал вам предмет: <b>{item_name}</b>\n\n"
-            f"💡 Активируйте его в 🎒 Инвентаре", parse_mode="HTML")
-    except Exception:
-        pass
-    # Логирование выдачи предмета намеренно отключено
-
-
-@router.callback_query(F.data.startswith("adm_gi_"))
-async def cb_admin_give_item_pick(callback: CallbackQuery):
-    uid = callback.from_user.id
-    if not is_admin(uid):
-        await safe_answer(callback.id, "❌ Нет доступа")
-        return
-    try:
-        # Format: adm_gi_{target_id}_{item_id}
-        parts = callback.data.split("_")
-        target_id = int(parts[2])
-        item_id   = int(parts[3])
-    except (IndexError, ValueError):
-        await safe_answer(callback.id, "❌ Ошибка")
-        return
-    await safe_answer(callback.id)
-    _do_admin_give_item(uid, target_id, item_id)
-
-
-# ==================== МУЛЬТИШаговый БАН ====================
-@router.message(lambda m: m.from_user.id in ban_flow and m.text is not None)
-async def handle_ban_flow(message: Message):
-    # converted to async in post-pass
-    pass_async_marker = True; 
-    uid = message.from_user.id
-    if not is_admin(uid):
-        ban_flow.pop(uid, None)
-        return
-    data = ban_flow.get(uid, {})
-    step = data.get("step")
-    text = message.text.strip()
-
-    async def find_player_by_input(inp):
-        if inp.isdigit():
-            return get_player(int(inp))
-        conn2 = _db()
-        cur2 = conn2.cursor()
-        cur2.execute("SELECT * FROM players WHERE username=%s AND is_bot=0", (inp,))
-        row = cur2.fetchone()
-        conn2.close()
-        return row
-
-    if step == "target":
-        p = find_player_by_input(text)
-        if not p:
-            await bot.send_message(uid, "❌ Игрок не найден. Введите TG ID или никнейм:")
-            return
-        data["target_id"] = p[0]
-        data["target_name"] = p[1]
-        data["is_banned"] = p[14]
-        data["step"] = "duration"
-        if p[14]:
-            # Уже забанен - разбаниваем
-            conn = _db(); cur = conn.cursor()
-            cur.execute("UPDATE players SET is_banned=0, ban_reason='', ban_until=0 WHERE user_id=%s", (p[0],))
-            conn.commit(); conn.close()
-            ban_flow.pop(uid, None)
-            await bot.send_message(uid, f"✅ Игрок <b>{p[1]}</b> разблокирован.", parse_mode="HTML")
-            try:
-                await bot.send_message(p[0], "✅ Вы разблокированы.")
-            except Exception:
-                pass
-            admin_p = get_player(uid)
-            admin_name = admin_p[1] if admin_p else str(uid)
-            send_punishment_log_priv(uid,
-                f"✅ <b>Разбан</b>\n"
-                f"👮 Выдал: {tg_link(uid, admin_name)}\n"
-                f"👤 Разбанен: {tg_link(p[0], p[1])}"
-            )
-        else:
-            await bot.send_message(
-                uid,
-                f"🚫 <b>Шаг 2/3</b> - Срок бана для <b>{p[1]}</b>\n\n"
-                f"Введите количество дней или <code>0</code> для перманентного бана:",
-                parse_mode="HTML",
-            )
-
-    elif step == "duration":
-        try:
-            days = int(text)
-            if days < 0:
-                raise ValueError
-        except ValueError:
-            await bot.send_message(uid, "❌ Введите число дней (0 = навсегда)")
-            return
-        data["duration_days"] = days
-        data["step"] = "reason"
-        await bot.send_message(
-            uid,
-            f"🚫 <b>Шаг 3/3</b> - Причина бана:\n\nВведите причину:",
-            parse_mode="HTML",
-        )
-
-    elif step == "reason":
-        reason = text
-        target_id = data["target_id"]
-        target_name = data["target_name"]
-        days = data.get("duration_days", 0)
-        ban_flow.pop(uid, None)
-
-        until = int(time.time()) + days * 24 * 3600 if days > 0 else 0
-
-        conn = _db(); cur = conn.cursor()
-        cur.execute(
-            "UPDATE players SET is_banned=1, ban_reason=%s, ban_until=%s WHERE user_id=%s",
-            (reason, until, target_id),
-        )
-        conn.commit(); conn.close()
-
-        duration_str = f"{days} дн." if days > 0 else "Навсегда"
-        await bot.send_message(
-            uid,
-            f"✅ Игрок <b>{target_name}</b> заблокирован.\n"
-            f"⏰ Срок: {duration_str}\n"
-            f"📝 Причина: {reason}",
-            parse_mode="HTML",
-        )
-        try:
-            await bot.send_message(
-                target_id,
-                f"🚫 <b>Вы заблокированы.</b>\n⏰ Срок: {duration_str}\n📝 Причина: {reason}",
-                parse_mode="HTML",
-            )
-        except Exception:
-            pass
-
-        kick_from_lobby_if_present(target_id)
-
-        admin_p = get_player(uid)
-        admin_name = admin_p[1] if admin_p else str(uid)
-        send_punishment_log_priv(uid,
-            f"🚫 <b>Бан</b>\n"
-            f"👮 Выдал: {tg_link(uid, admin_name)}\n"
-            f"👤 Выдано: {tg_link(target_id, target_name)}\n"
-            f"⏰ Срок: {duration_str}\n"
-            f"📝 Причина: {reason}"
-        )
-
-
-# ==================== МУЛЬТИ-ШАГОВЫЙ ВАРН ====================
-@router.message(lambda m: m.from_user.id in warn_flow and m.text is not None)
-async def handle_warn_flow(message: Message):
-    # converted to async in post-pass
-    pass_async_marker = True; 
-    uid = message.from_user.id
-    if not is_admin(uid):
-        warn_flow.pop(uid, None)
-        return
-    data = warn_flow.pop(uid)
-    target_id   = data["target_id"]
-    target_name = data["target_name"]
-    reason      = message.text.strip()
-
-    warns = add_warn_to_player(target_id)
-    admin_p     = get_player(uid)
-    admin_name  = admin_p[1] if admin_p else str(uid)
-
-    # Проверка: 3-й варн → авто-мут 2ч + сброс счётчика
-    if warns >= 3:
-        until = apply_mute(target_id, hours=2)
-        dt = fmt_dt(until)
-        conn_r = _db(); cur_r = conn_r.cursor()
-        cur_r.execute("UPDATE players SET warns=0 WHERE user_id=%s", (target_id,))
-        conn_r.commit(); conn_r.close()
-        await bot.send_message(uid,
-            f"⚠️ Варн <b>{target_name}</b> - {warns}/3\n"
-            f"📝 Причина: {reason}\n"
-            f"🔇 <b>Авто-мут выдан на 2 часа</b> (до {dt})\n"
-            f"⚠️ Счётчик варнов сброшен.",
-            parse_mode="HTML")
-        try:
-            await bot.send_message(target_id,
-                f"⚠️ <b>Варн выдан администратором.</b>\n📝 Причина: {reason}\n"
-                f"📊 Итого: {warns}/3\n\n"
-                f"🔇 <b>Автоматический мут на 2 часа</b> (до {dt}) за 3 варна.\n⚠️ Счётчик сброшен.",
-                parse_mode="HTML")
-        except Exception:
-            pass
-        send_punishment_log_priv(uid,
-            f"⚠️ <b>Варн + Авто-мут (3/3)</b>\n"
-            f"👮 Выдал: {tg_link(uid, admin_name)}\n"
-            f"👤 Игрок: {tg_link(target_id, target_name)}\n"
-            f"📝 Причина: {reason}\n"
-            f"🔇 Мут до: {dt} | ⚠️ Варны сброшены до 0"
-        )
-    else:
-        await bot.send_message(uid,
-            f"⚠️ Варн выдан <b>{target_name}</b>. Итого: {warns}/3\n📝 Причина: {reason}",
-            parse_mode="HTML")
-        try:
-            await bot.send_message(target_id,
-                f"⚠️ <b>Вам выдан варн от администратора.</b>\n"
-                f"📝 Причина: {reason}\n📊 Итого: {warns}/3",
-                parse_mode="HTML")
-        except Exception:
-            pass
-        send_punishment_log_priv(uid,
-            f"⚠️ <b>Варн</b>\n"
-            f"👮 Выдал: {tg_link(uid, admin_name)}\n"
-            f"👤 Игрок: {tg_link(target_id, target_name)}\n"
-            f"📝 Причина: {reason}\n"
-            f"📊 Итого: {warns}/3"
-        )
-
-
-# ==================== МУЛЬТИ-ШАГОВЫЙ МУТ ====================
-@router.message(lambda m: m.from_user.id in mute_flow and m.text is not None)
-async def handle_mute_flow(message: Message):
-    # converted to async in post-pass
-    pass_async_marker = True; 
-    uid = message.from_user.id
-    if not is_admin(uid):
-        mute_flow.pop(uid, None)
-        return
-    data = mute_flow.get(uid, {})
-    step = data.get("step")
-    text = message.text.strip()
-
-    if step == "duration":
-        try:
-            hours = int(text)
-            if hours <= 0:
-                raise ValueError
-        except ValueError:
-            await bot.send_message(uid, "❌ Введите число часов больше 0 (например: 2, 24, 72)")
-            return
-        data["hours"] = hours
-        data["step"]  = "reason"
-        await bot.send_message(
-            uid,
-            f"🔇 <b>Шаг 3/3</b> - Причина мута для <b>{data['target_name']}</b>:\n\nВведите причину:",
-            parse_mode="HTML"
-        )
-
-    elif step == "reason":
-        reason      = text
-        target_id   = data["target_id"]
-        target_name = data["target_name"]
-        hours       = data.get("hours", 2)
-        mute_flow.pop(uid, None)
-
-        until = apply_mute(target_id, hours=hours)
-        dt    = fmt_dt(until)
-        kick_from_lobby_if_present(target_id)
-
-        hrs_str = f"{hours} ч."
-        await bot.send_message(uid,
-            f"🔇 Игрок <b>{target_name}</b> замучен на {hrs_str}\n"
-            f"⏰ До: {dt}\n📝 Причина: {reason}",
-            parse_mode="HTML")
-        try:
-            await bot.send_message(target_id,
-                f"🔇 <b>Вам выдан мут администратором.</b>\n"
-                f"⏰ Срок: {hrs_str} (до {dt})\n📝 Причина: {reason}",
-                parse_mode="HTML")
-        except Exception:
-            pass
-
-        admin_p    = get_player(uid)
-        admin_name = admin_p[1] if admin_p else str(uid)
-        send_punishment_log_priv(uid,
-            f"🔇 <b>Мут</b>\n"
-            f"👮 Выдал: {tg_link(uid, admin_name)}\n"
-            f"👤 Игрок: {tg_link(target_id, target_name)}\n"
-            f"⏰ Срок: {hrs_str} (до {dt})\n"
-            f"📝 Причина: {reason}"
-        )
-
-
-# ==================== БЫСТРЫЕ ДЕЙСТВИЯ (кнопки из поиска) ====================
-@router.callback_query(F.data.startswith("admin_do_"))
-async def cb_admin_do_action(callback: CallbackQuery):
-    uid = callback.from_user.id
-    if not is_admin(uid):
-        await safe_answer(callback.id, "❌ Нет доступа")
-        return
-    parts = callback.data.split("_")
-    action = "_".join(parts[2:-1])
-    target_id = int(parts[-1])
-    p = get_player(target_id)
-    if not p:
-        await safe_answer(callback.id, "❌ Игрок не найден")
-        return
-    conn = _db()
-    cur = conn.cursor()
-    msg_text = ""
-    if action == "ban":
-        # Запускаем ban_flow
-        conn.close()
-        ban_flow[uid] = {"step": "duration", "target_id": target_id, "target_name": p[1], "is_banned": p[14]}
-        if p[14]:
-            # Разбаниваем
-            ban_flow.pop(uid, None)
-            c2 = _db(); c2cur = c2.cursor()
-            c2cur.execute("UPDATE players SET is_banned=0, ban_reason='', ban_until=0 WHERE user_id=%s", (target_id,))
-            c2.commit(); c2.close()
-            await safe_answer(callback.id, f"✅ Разблокирован: {p[1]}", show_alert=True)
-            try:
-                await bot.send_message(target_id, "✅ Вы разблокированы.")
-            except Exception:
-                pass
-            admin_p = get_player(uid)
-            admin_name = admin_p[1] if admin_p else str(uid)
-            send_punishment_log_priv(uid,
-                f"✅ <b>Разбан</b>\n"
-                f"👮 Выдал: {tg_link(uid, admin_name)}\n"
-                f"👤 Разбанен: {tg_link(target_id, p[1])}"
-            )
-        else:
-            await safe_answer(callback.id, f"🚫 Начат бан {p[1]}", show_alert=True)
-            await bot.send_message(
-                uid,
-                f"🚫 <b>Шаг 2/3</b> - Срок бана для <b>{p[1]}</b>\n\n"
-                f"Введите количество дней (0 = навсегда):",
-                parse_mode="HTML",
-            )
-        return
-    elif action == "warn":
-        conn.close()
-        warn_flow[uid] = {"step": "reason", "target_id": target_id, "target_name": p[1]}
-        await safe_answer(callback.id, f"⚠️ Введите причину варна для {p[1]}", show_alert=True)
-        await bot.send_message(uid, f"⚠️ <b>Шаг 2/2</b> - Причина варна для <b>{p[1]}</b>:\n\nВведите причину:", parse_mode="HTML")
-        return
-    elif action == "unwarn":
-        cur_warns = p[15] if len(p) > 15 else 0
-        new_warns = max(0, cur_warns - 1)
-        cur.execute("UPDATE players SET warns=%s WHERE user_id=%s", (new_warns, target_id))
-        conn.commit(); conn.close()
-        await safe_answer(callback.id, f"➖ Варн снят: {p[1]} ({new_warns}/3)", show_alert=True)
-        try:
-            await bot.send_message(target_id, f"➖ Один варн снят администратором. Осталось: {new_warns}/3")
-        except Exception:
-            pass
-        admin_p = get_player(uid)
-        admin_name = admin_p[1] if admin_p else str(uid)
-        send_punishment_log_priv(uid,
-            f"➖ <b>Снятие варна</b>\n"
-            f"👮 Снял: {tg_link(uid, admin_name)}\n"
-            f"👤 Игрок: {tg_link(target_id, p[1])}\n"
-            f"📊 Осталось: {new_warns}/3"
-        )
-        return
-    elif action == "mute":
-        conn.close()
-        mute_flow[uid] = {"step": "duration", "target_id": target_id, "target_name": p[1]}
-        await safe_answer(callback.id, f"🔇 Введите срок мута для {p[1]}", show_alert=True)
-        await bot.send_message(
-            uid,
-            f"🔇 <b>Шаг 2/3</b> - Срок мута для <b>{p[1]}</b>:\n\n"
-            f"Введите количество часов (например: <code>2</code>, <code>24</code>, <code>72</code>):",
-            parse_mode="HTML"
-        )
-        return
-    elif action == "unmute":
-        cur.execute("UPDATE players SET is_muted=0, mute_until=0 WHERE user_id=%s", (target_id,))
-        conn.commit(); conn.close()
-        await safe_answer(callback.id, f"🔊 Мут снят: {p[1]}", show_alert=True)
-        try:
-            await bot.send_message(target_id, "🔊 Ваш мут снят администратором.")
-        except Exception:
-            pass
-        admin_p = get_player(uid)
-        admin_name = admin_p[1] if admin_p else str(uid)
-        send_punishment_log_priv(uid,
-            f"🔊 <b>Размут</b>\n"
-            f"👮 Снял: {tg_link(uid, admin_name)}\n"
-            f"👤 Игрок: {tg_link(target_id, p[1])}"
-        )
-        return
-    elif action == "check":
-        cur.execute("UPDATE players SET is_on_check=1, check_admin_id=%s WHERE user_id=%s", (uid, target_id))
-        conn.commit(); conn.close()
-        await safe_answer(callback.id, f"🔎 На проверке: {p[1]}", show_alert=True)
-        try:
-            await bot.send_message(target_id, f"⚠️ <b>Вас вызвали на проверку!</b>\n\nОбратитесь к администратору.", parse_mode="HTML")
-        except Exception:
-            pass
-        admin_p = get_player(uid)
-        admin_name = admin_p[1] if admin_p else str(uid)
-        send_punishment_log_priv(uid,
-            f"🔎 <b>Вызов на проверку</b>\n"
-            f"👮 Вызвал: {tg_link(uid, admin_name)}\n"
-            f"👤 Игрок: {tg_link(target_id, p[1])}"
-        )
-        return
-    elif action == "uncheck":
-        cur.execute("UPDATE players SET is_on_check=0, check_admin_id=0 WHERE user_id=%s", (target_id,))
-        conn.commit(); conn.close()
-        await safe_answer(callback.id, f"✅ Проверка снята: {p[1]}", show_alert=True)
-        try:
-            await bot.send_message(target_id, "✅ Проверка снята. Доступ восстановлен.")
-        except Exception:
-            pass
-        admin_p = get_player(uid)
-        admin_name = admin_p[1] if admin_p else str(uid)
-        send_punishment_log_priv(uid,
-            f"✅ <b>Снятие проверки</b>\n"
-            f"👮 Снял: {tg_link(uid, admin_name)}\n"
-            f"👤 Игрок: {tg_link(target_id, p[1])}"
-        )
-        return
-    elif action == "give_admin":
-        new_val = 0 if p[11] else 1
-        cur.execute("UPDATE players SET is_admin=%s WHERE user_id=%s", (new_val, target_id))
-        msg_text = f"{'👑 Админка выдана' if new_val else '❌ Админка снята'}: {p[1]}"
-    elif action == "quals":
-        cur_val = p[16] if len(p) > 16 else 0
-        new_val = 0 if cur_val else 1
-        cur.execute("UPDATE players SET quals_access=%s WHERE user_id=%s", (new_val, target_id))
-        msg_text = f"{'⭐ Quals выдан' if new_val else '❌ Quals снят'}: {p[1]}"
-    elif action == "give_item":
-        conn.close()
-        await safe_answer(callback.id, f"🎁 Выбор предмета для {p[1]}", show_alert=False)
-        await bot.send_message(
-            uid,
-            f"🎁 <b>Выдача предмета</b> для <b>{p[1]}</b>\n\n"
-            f"Выберите предмет из списка ниже:",
-            parse_mode="HTML",
-            reply_markup=_build_shop_items_kb(target_id),
-        )
-        return
-    elif action == "toggle_verified":
-        cur_val = is_verified_check(target_id)
-        new_val = 0 if cur_val else 1
-        cur.execute("UPDATE players SET is_verified=%s WHERE user_id=%s", (new_val, target_id))
-        msg_text = f"{'✅ Галочка выдана' if new_val else '❎ Галочка снята'}: {p[1]}"
-        try:
-            if new_val:
-                await bot.send_message(target_id, "✅ Вам выдана <b>синяя галочка</b> верификации!", parse_mode="HTML")
-            else:
-                await bot.send_message(target_id, "❎ Ваша синяя галочка верификации была снята администратором.")
-        except Exception:
-            pass
-    else:
-        conn.close()
-        await safe_answer(callback.id, "❌ Неизвестное действие")
-        return
-    conn.commit()
-    conn.close()
-    await safe_answer(callback.id, msg_text, show_alert=True)
-
-
-# ==================== ДОБАВЛЕНИЕ БОТОВ (АДМИН) ====================
-@router.callback_query(F.data == "add_bots_admin")
-async def cb_add_bots(callback: CallbackQuery):
-    uid = callback.from_user.id
-    if not is_admin(uid):
-        await safe_answer(callback.id, "❌ Нет доступа")
-        return
-    kb = InlineKeyboardBuilder()
-    for lobby_id, lobby in active_lobbies.items():
-        _msz = _lobby_max_size(lobby.get("league", "default"))
-        if lobby.get("status") == "waiting" and len(lobby["players"]) < _msz:
-            slots = _msz - len(lobby["players"])
-            kb.add(types.InlineKeyboardButton(
-                text=f"Лобби {lobby_id} ({len(lobby['players'])}/{_msz}) - добавить {slots} ботов",
-                callback_data=f"fill_bots_{lobby_id}",
-            ))
-    if not kb.keyboard:
-        await safe_answer(callback.id, "❌ Нет доступных лобби", show_alert=True)
-        return
-    kb.button(text="🔙 Назад", callback_data="back")
-    await callback.message.edit_text("🤖 Выберите лобби для заполнения ботами:", reply_markup=kb.as_markup())
-    await safe_answer(callback.id)
-
-
-@router.callback_query(F.data.startswith("fill_bots_"))
-async def cb_fill_bots(callback: CallbackQuery):
-    uid = callback.from_user.id
-    if not is_admin(uid):
-        await safe_answer(callback.id, "❌ Нет доступа")
-        return
-    lobby_id = callback.data[len("fill_bots_"):]
-    lobby = active_lobbies.get(lobby_id)
-    if not lobby or lobby["status"] != "waiting":
-        await safe_answer(callback.id, "❌ Лобби недоступно")
-        return
-    bots = get_bots()
-    _msz_fill = _lobby_max_size(lobby.get("league", "default"))
-    needed = _msz_fill - len(lobby["players"])
-    available_bots = [b for b in bots if b[0] not in lobby["players"]]
-    fill = random.sample(available_bots, min(needed, len(available_bots)))
-    for b_id, _ in fill:
-        lobby["players"].append(b_id)
-    await safe_answer(callback.id, f"✅ Добавлено {len(fill)} ботов")
-    if len(lobby["players"]) >= _msz_fill:
-        start_accept_phase(lobby_id)
-    else:
-        broadcast_lobby_update(lobby_id)
-
-
-# ==================== GAME REG ПАНЕЛЬ ====================
-@router.callback_query(F.data == "game_reg_panel")
-async def cb_game_reg_panel(callback: CallbackQuery):
-    uid = callback.from_user.id
-    if not is_game_reg_check(uid):
-        await safe_answer(callback.id, "❌ Нет доступа")
-        return
-    active = [(mk, l) for mk, l in running_matches.items() if l.get("status") == "active"]
-    if not active:
-        text = "📋 <b>Регистрация матчей</b>\n\nАктивных матчей нет."
-        kb = InlineKeyboardBuilder()
-        kb.button(text="🔙 Назад", callback_data="back")
-        await callback.message.edit_text(text, reply_markup=kb.as_markup())
-        await safe_answer(callback.id)
-        return
-    text = "📋 <b>Активные матчи</b>\n\n"
-    kb = InlineKeyboardBuilder()
-    for mk, l in active:
-        mid = l.get("match_id", "?")
-        AC = l.get("ACreenshots_count", 0)
-        _gr_priv_cfg   = PRIVATE_CONFIG.get(l.get("private", "fade"), PRIVATE_CONFIG["fade"])
-        _gr_priv_label = f"{_gr_priv_cfg['emoji']} {_gr_priv_cfg['display']}"
-        text += f"- Match #{mid} | {_gr_priv_label} | 📸{AC}\n"
-        kb.button(text=f"📝 Зарегистрировать Match #{mid}", callback_data=f"reg_match|{mk}")
-    kb.button(text="🔙 Назад", callback_data="back")
-    await callback.message.edit_text(text, reply_markup=kb.as_markup())
-    await safe_answer(callback.id)
-
-
-# ==================== АВТО-РАЗБАН / АВТО-РАЗМУТ ====================
-async def auto_unban_loop():
-    """Фоновый поток: каждые 30 минут снимает истёкшие баны и муты."""
-    while True:
-        try:
-            now = int(time.time())
-            conn = _db()
-            cur = conn.cursor()
-
-            # --- Авто-разбан (временный бан) ---
-            cur.execute(
-                "SELECT user_id, username FROM players WHERE is_banned=1 AND ban_until > 0 AND ban_until <= %s",
-                (now,)
-            )
-            expired_bans = cur.fetchall()
-            for (uid, uname) in expired_bans:
-                cur.execute(
-                    "UPDATE players SET is_banned=0, ban_until=0, ban_reason='' WHERE user_id=%s",
-                    (uid,)
-                )
-                conn.commit()
-                # Уведомить игрока
-                try:
-                    await bot.send_message(
-                        uid,
-                        "✅ <b>Ваш бан снят!</b>\n\nСрок блокировки истёк. Добро пожаловать обратно.",
-                        parse_mode="HTML"
-                    )
-                except Exception:
-                    pass
-                # Лог в ветку
-                send_punishment_log(
-                    f"✅ <b>Авто-разбан</b>\n"
-                    f"👤 Игрок: <b>{uname}</b> (id: <code>{uid}</code>)\n"
-                    f"📅 Срок бана истёк."
-                )
-
-            # --- Авто-размут ---
-            cur.execute(
-                "SELECT user_id, username FROM players WHERE is_muted=1 AND mute_until > 0 AND mute_until <= %s",
-                (now,)
-            )
-            expired_mutes = cur.fetchall()
-            for (uid, uname) in expired_mutes:
-                cur.execute(
-                    "UPDATE players SET is_muted=0, mute_until=0 WHERE user_id=%s",
-                    (uid,)
-                )
-                conn.commit()
-                try:
-                    await bot.send_message(
-                        uid,
-                        "🔊 <b>Мут снят!</b>\n\nВы снова можете общаться.",
-                        parse_mode="HTML"
-                    )
-                except Exception:
-                    pass
-                send_punishment_log(
-                    f"🔊 <b>Авто-размут</b>\n"
-                    f"👤 Игрок: <b>{uname}</b> (id: <code>{uid}</code>)\n"
-                    f"📅 Срок мута истёк."
-                )
-
-            # --- Авто-снятие Premium и Quals ---
-            # Premium и Quals глобальные - хранятся только в таблице players
-            total_expired_premiums = 0
-            total_expired_quals    = 0
-            try:
-                # Premium
-                cur.execute(
-                    "SELECT user_id, username FROM players WHERE premium_until > 0 AND premium_until <= %s",
-                    (now,)
-                )
-                expired_premiums = cur.fetchall()
-                for (puid, puname) in expired_premiums:
-                    cur.execute("UPDATE players SET premium_until=0 WHERE user_id=%s", (puid,))
-                    conn.commit()
-                    total_expired_premiums += 1
-                    try:
-                        await bot.send_message(
-                            puid,
-                            "👑 <b>Ваш Premium истёк.</b>\n\nВы можете продлить его в 🛒 Магазине.",
-                            parse_mode="HTML"
-                        )
-                    except Exception:
-                        pass
-
-                # Quals
-                cur.execute(
-                    "SELECT user_id, username FROM players WHERE quals_until > 0 AND quals_until <= %s AND quals_access=1",
-                    (now,)
-                )
-                expired_quals = cur.fetchall()
-                for (puid, puname) in expired_quals:
-                    cur.execute("UPDATE players SET quals_until=0, quals_access=0 WHERE user_id=%s", (puid,))
-                    conn.commit()
-                    total_expired_quals += 1
-                    try:
-                        await bot.send_message(
-                            puid,
-                            "⭐ <b>Ваш доступ к QUALS истёк.</b>\n\nВы можете продлить его в 🛒 Магазине.",
-                            parse_mode="HTML"
-                        )
-                    except Exception:
-                        pass
-            except Exception as _tbl_err:
-                print(f"[auto_unban] Ошибка при снятии premium/quals: {_tbl_err}")
-
-            conn.close()
-
-            if expired_bans or expired_mutes:
-                print(f"[auto_unban] Снято банов: {len(expired_bans)}, мутов: {len(expired_mutes)}")
-            if total_expired_premiums or total_expired_quals:
-                print(f"[auto_unban] Premium истёк: {total_expired_premiums}, Quals истёк: {total_expired_quals}")
-
-        except Exception as e:
-            print(f"[auto_unban] Ошибка: {e}")
-
-        await asyncio.sleep(30 * 60)  # converted from time.sleep  # проверка каждые 30 минут
-
-
-# ==================== СЕЗОНЫ - АДМИН ПАНЕЛЬ ====================
-
-@router.callback_query(F.data == "admin_seasons")
-async def cb_admin_seasons(callback: CallbackQuery):
-    uid = callback.from_user.id
-    if not is_admin(uid):
-        await safe_answer(callback.id, "❌ Нет доступа")
-        return
-    season = get_current_season()
-    all_seasons = get_all_seasons()
-
-    if season:
-        sid, snum, sname, started_at = season
-        dt_start = datetime.datetime.fromtimestamp(started_at).strftime("%d.%m.%Y %H:%M")
-        text = (
-            f"🏆 <b>УПРАВЛЕНИЕ СЕЗОНАМИ</b>\n\n"
-            f"📅 Текущий сезон: <b>{sname}</b>\n"
-            f"🔢 Номер: <b>{snum}</b>\n"
-            f"🕐 Начат: <b>{dt_start}</b>\n\n"
-            f"📊 Всего сезонов: <b>{len(all_seasons)}</b>\n\n"
-            f"⚠️ <i>Сброс сезона обнуляет ELO и статистику всех игроков, "
-            f"предварительно сохраняя их в архив.</i>"
-        )
-    else:
-        text = "🏆 <b>УПРАВЛЕНИЕ СЕЗОНАМИ</b>\n\nСезон не найден."
-
-    kb = InlineKeyboardBuilder()
-    kb.add(
-        types.InlineKeyboardButton(text="🔄 Сбросить сезон",        callback_data="admin_season_reset_confirm"),
-        types.InlineKeyboardButton(text="📜 История сезонов",        callback_data="admin_season_history"),
-    )
-    if season:
-        kb.button(text=f"🏅 Топ сезона #{season[1]}", callback_data=f"admin_season_top|{season[0]}")
-    kb.button(text="🔙 Назад", callback_data="admin_panel")
-    await callback.message.edit_text(text, reply_markup=kb.as_markup(), parse_mode="HTML")
-    await safe_answer(callback.id)
-
-
-@router.callback_query(F.data == "admin_season_reset_confirm")
-async def cb_admin_season_reset_confirm(callback: CallbackQuery):
-    uid = callback.from_user.id
-    if not is_admin(uid):
-        await safe_answer(callback.id, "❌ Нет доступа")
-        return
-    season = get_current_season()
-    sname = season[2] if season else "текущий сезон"
-    snum  = season[1] if season else 1
-
-    text = (
-        f"⚠️ <b>ПОДТВЕРЖДЕНИЕ СБРОСА СЕЗОНА</b>\n\n"
-        f"Вы собираетесь завершить <b>{sname}</b> и начать <b>Сезон {snum + 1}</b>.\n\n"
-        f"<b>Что произойдёт:</b>\n"
-        f"- Статистика всех игроков сохранится в архив сезона\n"
-        f"- ELO всех игроков сбросится до <b>1000</b>\n"
-        f"- Победы, поражения, убийства, смерти, MVP - обнулятся\n"
-        f"- Монеты игроков <b>не будут тронуты</b>\n"
-        f"- Инвентарь и покупки <b>не будут тронуты</b>\n\n"
-        f"❗ <b>Это действие необратимо!</b>\n"
-        f"Вы уверены?"
-    )
-    kb = InlineKeyboardBuilder()
-    kb.add(
-        types.InlineKeyboardButton(text="✅ Да, сбросить",  callback_data="admin_season_reset_execute"),
-        types.InlineKeyboardButton(text="❌ Отмена",         callback_data="admin_seasons"),
-    )
-    await callback.message.edit_text(text, reply_markup=kb.as_markup(), parse_mode="HTML")
-    await safe_answer(callback.id)
-
-
-@router.callback_query(F.data == "admin_season_reset_execute")
-async def cb_admin_season_reset_execute(callback: CallbackQuery):
-    uid = callback.from_user.id
-    if not is_admin(uid):
-        await safe_answer(callback.id, "❌ Нет доступа")
-        return
-    await safe_answer(callback.id, "⏳ Выполняется сброс...")
-    try:
-        new_season_number, players_count = reset_season(uid)
-        admin_p = get_player(uid)
-        admin_name = admin_p[1] if admin_p else str(uid)
-        text = (
-            f"✅ <b>СЕЗОН СБРОШЕН!</b>\n\n"
-            f"🏆 Начат <b>Сезон {new_season_number}</b>\n"
-            f"👥 Архивировано игроков: <b>{players_count}</b>\n"
-            f"👮 Администратор: <b>{admin_name}</b>\n\n"
-            f"Все игроки начинают с ELO 1000."
-        )
-        kb = InlineKeyboardBuilder()
-        kb.add(
-            types.InlineKeyboardButton(text="🏆 К сезонам", callback_data="admin_seasons"),
-            types.InlineKeyboardButton(text="🔙 Админ панель", callback_data="admin_panel"),
-        )
-        await callback.message.edit_text(text, reply_markup=kb.as_markup(), parse_mode="HTML")
-
-        # Уведомить всех администраторов
-        notif_text = (
-            f"🏆 <b>СЕЗОН СБРОШЕН!</b>\n\n"
-            f"Начат <b>Сезон {new_season_number}</b>\n"
-            f"Архивировано: {players_count} игроков\n"
-            f"Выполнил: <b>{admin_name}</b>"
-        )
-        for admin_id in ADMIN_IDS_LIST:
-            if admin_id != uid:
-                try:
-                    await bot.send_message(admin_id, notif_text, parse_mode="HTML")
-                except Exception:
-                    pass
-
-    except Exception as e:
-        await bot.send_message(
-            callback.message.chat.id,
-            f"❌ <b>Ошибка при сбросе сезона:</b>\n<code>{e}</code>",
-            parse_mode="HTML"
-        )
-
-
-@router.callback_query(F.data == "admin_season_history")
-async def cb_admin_season_history(callback: CallbackQuery):
-    uid = callback.from_user.id
-    if not is_admin(uid):
-        await safe_answer(callback.id, "❌ Нет доступа")
-        return
-    seasons = get_all_seasons()
-    text = "📜 <b>ИСТОРИЯ СЕЗОНОВ</b>\n\n"
-    if not seasons:
-        text += "Сезонов нет."
-    else:
-        for s in seasons:
-            sid, snum, sname, started_at, ended_at, is_active = s
-            dt_start = datetime.datetime.fromtimestamp(started_at).strftime("%d.%m.%Y") if started_at else "?"
-            if is_active:
-                text += f"🟢 <b>{sname}</b> - начат {dt_start} <i>(активный)</i>\n"
-            else:
-                dt_end = datetime.datetime.fromtimestamp(ended_at).strftime("%d.%m.%Y") if ended_at else "?"
-                text += f"⚫ <b>{sname}</b> - {dt_start} → {dt_end}\n"
-
-    kb = InlineKeyboardBuilder()
-    for s in seasons:
-        sid, snum, sname, started_at, ended_at, is_active = s
-        if not is_active:
-            kb.button(text=f"🏅 Топ: {sname}", callback_data=f"admin_season_top|{sid}")
-    kb.button(text="🔙 Назад", callback_data="admin_seasons")
-    await callback.message.edit_text(text, reply_markup=kb.as_markup(), parse_mode="HTML")
-    await safe_answer(callback.id)
-
-
-@router.callback_query(F.data.startswith("admin_season_top|"))
-async def cb_admin_season_top(callback: CallbackQuery):
-    uid = callback.from_user.id
-    if not is_admin(uid):
-        await safe_answer(callback.id, "❌ Нет доступа")
-        return
-    season_id = int(callback.data.split("|", 1)[1])
-    top = get_season_top(season_id)
-
-    conn = _db()
-    cur = conn.cursor()
-    cur.execute("SELECT season_number, name FROM seasons WHERE id=%s", (season_id,))
-    srow = cur.fetchone()
-    conn.close()
-    sname = srow[1] if srow else f"Сезон {season_id}"
-
-    text = f"🏅 <b>ТОП - {sname}</b>\n\n"
-    if not top:
-        text += "Нет данных."
-    else:
-        medals = ["🥇", "🥈", "🥉"]
-        for i, row in enumerate(top):
-            uname, elo, wins, losses, kills, deaths, mvp = row
-            medal = medals[i] if i < 3 else f"{i+1}."
-            kd = f"{kills/deaths:.2f}" if deaths else "-"
-            text += (
-                f"{medal} <b>{uname}</b>\n"
-                f"   ELO: {elo} | {wins}W/{losses}L | K/D: {kd}"
-                + (f" | MVP: {mvp}" if mvp else "") + "\n"
-            )
-
-    kb = InlineKeyboardBuilder()
-    kb.button(text="🔙 Назад", callback_data="admin_season_history")
-    await callback.message.edit_text(text, reply_markup=kb.as_markup(), parse_mode="HTML")
-    await safe_answer(callback.id)
-
-
-# ==================== ТИКЕТЫ - АДМИН ПАНЕЛЬ ====================
-
-@router.callback_query(F.data == "admin_tickets")
-async def cb_admin_tickets(callback: CallbackQuery):
-    uid = callback.from_user.id
-    if not is_admin(uid):
-        await safe_answer(callback.id, "❌ Нет доступа")
-        return
-    tickets = get_open_tickets()
-    if not tickets:
-        text = "🎟 <b>ОТКРЫТЫЕ ТИКЕТЫ</b>\n\n✅ Нет открытых тикетов."
-        kb = InlineKeyboardBuilder()
-        kb.button(text="🔙 Назад", callback_data="admin_panel")
-        await callback.message.edit_text(text, reply_markup=kb.as_markup(), parse_mode="HTML")
-        await safe_answer(callback.id)
-        return
-
-    text = f"🎟 <b>ОТКРЫТЫЕ ТИКЕТЫ</b> ({len(tickets)})\n\n"
-    kb = InlineKeyboardBuilder()
-    for row in tickets[:15]:
-        tid, ticket_code, user_id, match_code, reason, accused_name, status, created_at = row
-        p = get_player(user_id)
-        reporter = p[1] if p else str(user_id)
-        mc = f"#{match_code}" if match_code else "без матча"
-        short_reason = reason[:30] + "..." if len(reason) > 30 else reason
-        dt = datetime.datetime.fromtimestamp(created_at).strftime("%d.%m %H:%M") if created_at else "?"
-        text += f"<b>{ticket_code}</b> | {dt}\n👤 {reporter} | 🎮 {mc}\n📝 {short_reason}\n\n"
-        kb.button(
-            f"🎟 {ticket_code} - {reporter[:15]}",
-            callback_data=f"admin_ticket_view|{ticket_code}"
-        )
-    if len(tickets) > 15:
-        text += f"<i>...и ещё {len(tickets)-15}</i>\n"
-    kb.button(text="🔙 Назад", callback_data="admin_panel")
-    await callback.message.edit_text(text, reply_markup=kb.as_markup(), parse_mode="HTML")
-    await safe_answer(callback.id)
-
-
-@router.callback_query(F.data.startswith("admin_ticket_view|"))
-async def cb_admin_ticket_view(callback: CallbackQuery):
-    uid = callback.from_user.id
-    if not is_admin(uid):
-        await safe_answer(callback.id, "❌ Нет доступа")
-        return
-    ticket_code = callback.data.split("|", 1)[1]
-    conn = _db()
-    cur = conn.cursor()
-    cur.execute(
-        "SELECT ticket_code, user_id, match_code, reason, evidence_file_id, accused_id, accused_name, status, created_at FROM tickets WHERE ticket_code=%s",
-        (ticket_code,)
-    )
-    row = cur.fetchone()
-    conn.close()
-    if not row:
-        await safe_answer(callback.id, "❌ Тикет не найден", show_alert=True)
-        return
-    tcode, user_id, match_code, reason, evidence_file_id, accused_id, accused_name, status, created_at = row
-    p = get_player(user_id)
-    reporter = p[1] if p else str(user_id)
-    mc = f"#{match_code}" if match_code else "не указан"
-    acc = accused_name if accused_name else "не указан"
-    dt = datetime.datetime.fromtimestamp(created_at).strftime("%d.%m.%Y %H:%M") if created_at else "?"
-    text = (
-        f"🎟 <b>Тикет {tcode}</b>\n\n"
-        f"📅 Дата: {dt}\n"
-        f"👤 От: <b>{reporter}</b> (<code>{user_id}</code>)\n"
-        f"🎮 Матч: <b>{mc}</b>\n"
-        f"📝 Причина: {reason}\n"
-        f"🎯 Обвиняемый: {acc}\n"
-        f"📌 Статус: <b>{status}</b>"
-    )
-    kb = InlineKeyboardBuilder()
-    if status == "open":
-        kb.add(
-            types.InlineKeyboardButton(text="✅ Закрыть (решено)", callback_data=f"ticket_close|{tcode}"),
-            types.InlineKeyboardButton(text="❌ Отклонить",        callback_data=f"ticket_reject|{tcode}"),
-        )
-    kb.button(text="🔙 К тикетам", callback_data="admin_tickets")
-    await safe_answer(callback.id)
-    if evidence_file_id:
-        try:
-            await bot.send_photo(callback.message.chat.id, evidence_file_id, caption=text, reply_markup=kb.as_markup(), parse_mode="HTML")
-            return
-        except Exception:
-            pass
-    try:
-        await callback.message.edit_text(text, reply_markup=kb.as_markup(), parse_mode="HTML")
-    except Exception:
-        await bot.send_message(callback.message.chat.id, text, reply_markup=kb.as_markup(), parse_mode="HTML")
-
-
-# ==================== ТИКЕТЫ / ЖАЛОБЫ ====================
-
-def _ticket_cancel_kb():
-    """Клавиатура для отмены тикета (используется на каждом шаге)."""
-    kb = InlineKeyboardBuilder()
-    kb.button(text="❌ Отменить тикет", callback_data="ticket_cancel")
-    return kb
-
-def _ticket_back_kb():
-    """Клавиатура с кнопками Назад и Отмена."""
-    kb = InlineKeyboardBuilder()
-    kb.add(
-        types.InlineKeyboardButton(text="◀️ Назад",            callback_data="ticket_back"),
-        types.InlineKeyboardButton(text="❌ Отменить тикет",   callback_data="ticket_cancel"),
-    )
-    return kb
-
-
-@router.callback_query(F.data == "ticket_cancel")
-async def cb_ticket_cancel(callback: CallbackQuery):
-    uid = callback.from_user.id
-    ticket_flow.pop(uid, None)
-    await safe_answer(callback.id, "❌ Тикет отменён")
-    try:
-        await callback.message.edit_text("❌ Создание тикета отменено.")
-    except Exception:
-        pass
-    await bot.send_message(uid, "🏠 Главное меню:", reply_markup=main_menu(uid))
-
-
-@router.callback_query(F.data == "ticket_back")
-async def cb_ticket_back(callback: CallbackQuery):
-    uid = callback.from_user.id
-    data = ticket_flow.get(uid)
-    if not data:
-        await safe_answer(callback.id, "❌ Нет активного тикета", show_alert=True)
-        return
-    step = data.get("step", "match_code")
-    await safe_answer(callback.id)
-    if step == "reason":
-        # Вернуться к шагу match_code
-        ticket_flow[uid]["step"] = "match_code"
-        ticket_flow[uid].pop("match_code", None)
-        try:
-            await bot.edit_message_text(
-                "🎟 <b>СОЗДАНИЕ ТИКЕТА</b>\n\n"
-                "<b>Шаг 1/4</b> - Введите код матча (#XXXXXXX) к которому относится жалоба:\n"
-                "<i>Если жалоба не связана с конкретным матчем - напишите <code>нет</code></i>",
-                chat_id=callback.message.chat.id, message_id=callback.message.message_id,
-                parse_mode="HTML", reply_markup=_ticket_cancel_kb(),
-            )
-        except Exception:
-            await bot.send_message(uid,
-                "🎟 <b>Шаг 1/4</b> - Введите код матча:",
-                parse_mode="HTML", reply_markup=_ticket_cancel_kb(),
-            )
-    elif step == "evidence":
-        # Вернуться к шагу reason
-        ticket_flow[uid]["step"] = "reason"
-        ticket_flow[uid].pop("reason", None)
-        try:
-            await bot.edit_message_text(
-                "🎟 <b>Шаг 2/4</b> - Опишите причину жалобы подробно:\n"
-                "<i>(читы, токсик, AFK, нечестная игра и т.д.)</i>",
-                chat_id=callback.message.chat.id, message_id=callback.message.message_id,
-                parse_mode="HTML", reply_markup=_ticket_back_kb(),
-            )
-        except Exception:
-            await bot.send_message(uid,
-                "🎟 <b>Шаг 2/4</b> - Опишите причину жалобы:",
-                parse_mode="HTML", reply_markup=_ticket_back_kb(),
-            )
-    elif step == "accused":
-        # Вернуться к шагу evidence
-        ticket_flow[uid]["step"] = "evidence"
-        ticket_flow[uid].pop("evidence_file_id", None)
-        try:
-            await bot.edit_message_text(
-                "🎟 <b>Шаг 3/4</b> - Отправьте доказательство:\n"
-                "📷 Фото / скриншот, или напишите <code>нет</code> если доказательств нет.",
-                chat_id=callback.message.chat.id, message_id=callback.message.message_id,
-                parse_mode="HTML", reply_markup=_ticket_back_kb(),
-            )
-        except Exception:
-            await bot.send_message(uid,
-                "🎟 <b>Шаг 3/4</b> - Отправьте доказательство:",
-                parse_mode="HTML", reply_markup=_ticket_back_kb(),
-            )
-    else:
-        # На первом шаге - просто отмена
-        ticket_flow.pop(uid, None)
-        try:
-            await callback.message.edit_text("❌ Создание тикета отменено.")
-        except Exception:
-            await bot.send_message(uid, "❌ Создание тикета отменено.")
-
-
-@router.callback_query(F.data == "ticket_start")
-async def cb_ticket_start(callback: CallbackQuery):
-    uid = callback.from_user.id
-    err = check_blocked(uid)
-    if err:
-        await safe_answer(callback.id, "⚠️ Доступ ограничен", show_alert=True)
-        return
-    if not is_registered(uid):
-        await safe_answer(callback.id, "❌ Сначала зарегистрируйтесь", show_alert=True)
-        return
-    ticket_flow[uid] = {"step": "match_code"}
-    await safe_answer(callback.id)
-    try:
-        await bot.edit_message_text(
-            "🎟 <b>СОЗДАНИЕ ТИКЕТА</b>\n\n"
-            "<b>Шаг 1/4</b> - Введите код матча (#XXXXXXX) к которому относится жалоба:\n"
-            "<i>Если жалоба не связана с конкретным матчем - напишите <code>нет</code></i>",
-            chat_id=callback.message.chat.id, message_id=callback.message.message_id,
-            parse_mode="HTML", reply_markup=_ticket_cancel_kb(),
-        )
-    except Exception:
-        await bot.send_message(
-            uid,
-            "🎟 <b>СОЗДАНИЕ ТИКЕТА</b>\n\n"
-            "<b>Шаг 1/4</b> - Введите код матча (#XXXXXXX) к которому относится жалоба:\n"
-            "<i>Если жалоба не связана с конкретным матчем - напишите <code>нет</code></i>",
-            parse_mode="HTML", reply_markup=_ticket_cancel_kb(),
-        )
-
-
-@router.message(lambda m: m.from_user.id in ticket_flow and ticket_flow[m.from_user.id].get("step") == "match_code")
-async def ticket_step_match_code(message: Message):
-    # converted to async in post-pass
-    pass_async_marker = True; 
-    uid = message.from_user.id
-    text = message.text.strip() if message.text else ""
-    match_code = "" if text.lower() in ("нет", "no", "-") else text.lstrip("#").upper()
-    ticket_flow[uid]["match_code"] = match_code
-    ticket_flow[uid]["step"] = "reason"
-    await bot.send_message(
-        uid,
-        "🎟 <b>Шаг 2/4</b> - Опишите причину жалобы подробно:\n"
-        "<i>(читы, токсик, AFK, нечестная игра и т.д.)</i>",
-        parse_mode="HTML", reply_markup=_ticket_back_kb(),
-    )
-
-
-@router.message(lambda m: m.from_user.id in ticket_flow and ticket_flow[m.from_user.id].get("step") == "reason", F.text)
-async def ticket_step_reason(message):
-    uid = message.from_user.id
-    reason = message.text.strip()
-    if len(reason) < 5:
-        await bot.send_message(uid, "⚠️ Слишком коротко. Опишите подробнее:", reply_markup=_ticket_back_kb())
-        return
-    ticket_flow[uid]["reason"] = reason
-    ticket_flow[uid]["step"] = "evidence"
-    await bot.send_message(
-        uid,
-        "🎟 <b>Шаг 3/4</b> - Отправьте доказательство:\n"
-        "📷 Фото / скриншот, или напишите <code>нет</code> если доказательств нет.",
-        parse_mode="HTML", reply_markup=_ticket_back_kb(),
-    )
-
-
-@router.message(lambda m: m.from_user.id in ticket_flow and ticket_flow[m.from_user.id].get("step") == "evidence", F.content_type.in_({"photo", "document", "text"}))
-async def ticket_step_evidence(message):
-    uid = message.from_user.id
-    evidence_file_id = ""
-    if message.photo:
-        evidence_file_id = message.photo[-1].file_id
-    elif message.document:
-        evidence_file_id = message.document.file_id
-    ticket_flow[uid]["evidence_file_id"] = evidence_file_id
-    ticket_flow[uid]["step"] = "accused"
-    await bot.send_message(
-        uid,
-        "🎟 <b>Шаг 4/4</b> - Введите @username или ник игрока, на которого жалоба:\n"
-        "<i>Если неизвестен - напишите <code>нет</code></i>",
-        parse_mode="HTML", reply_markup=_ticket_back_kb(),
-    )
-
-
-@router.message(lambda m: m.from_user.id in ticket_flow and ticket_flow[m.from_user.id].get("step") == "accused", F.text)
-async def ticket_step_accused(message):
-    uid = message.from_user.id
-    accused_text = message.text.strip() if message.text else ""
-    accused_name = "" if accused_text.lower() in ("нет", "no", "-") else accused_text
-
-    data = ticket_flow.pop(uid, {})
-    match_code      = data.get("match_code", "")
-    reason          = data.get("reason", "")
-    evidence_file_id = data.get("evidence_file_id", "")
-
-    # Ищем accused_id по username если есть
-    accused_id = None
-    if accused_name.startswith("@"):
-        conn = _db()
-        cur = conn.cursor()
-        cur.execute("SELECT user_id FROM players WHERE tg_username=%s", (accused_name.lstrip("@"),))
-        row = cur.fetchone()
-        conn.close()
-        if row:
-            accused_id = row[0]
-
-    ticket_code = create_ticket(uid, match_code, reason, evidence_file_id, accused_id, accused_name)
-    if not ticket_code:
-        await bot.send_message(uid, "❌ Ошибка создания тикета. Попробуйте позже.", reply_markup=main_menu(uid))
-        return
-
-    p = get_player(uid)
-    reporter_name = p[1] if p else str(uid)
-    mc_text = f"<code>#{match_code}</code>" if match_code else "не указан"
-    accused_text_display = accused_name if accused_name else "не указан"
-
-    # Уведомить пользователя
-    await bot.send_message(
-        uid,
-        f"✅ <b>Тикет {ticket_code} создан!</b>\n\n"
-        f"🎮 Матч: {mc_text}\n"
-        f"📝 Причина: {reason}\n"
-        f"🎯 Обвиняемый: {accused_text_display}\n\n"
-        f"Администраторы рассмотрят тикет в ближайшее время.",
-        parse_mode="HTML",
-        reply_markup=main_menu(uid),
-    )
-
-    # Уведомить администраторов - в ветку группы или в личку каждому
-    kb_admin = InlineKeyboardBuilder()
-    kb_admin.add(
-        types.InlineKeyboardButton(text="✅ Закрыть (решено)", callback_data=f"ticket_close|{ticket_code}"),
-        types.InlineKeyboardButton(text="❌ Отклонить", callback_data=f"ticket_reject|{ticket_code}"),
-    )
-    admin_text = (
-        f"🎟 <b>Новый тикет {ticket_code}</b>\n\n"
-        f"👤 От: <b>{reporter_name}</b> (<code>{uid}</code>)\n"
-        f"🎮 Матч: {mc_text}\n"
-        f"📝 Причина: {reason}\n"
-        f"🎯 Обвиняемый: {accused_text_display}\n"
-    )
-    if _dynamic_ticket_chat_id:
-        # Отправляем в групповую ветку (настраивается через /setticketchat)
-        try:
-            send_kw = {"reply_markup": kb_admin, "parse_mode": "HTML"}
-            if _dynamic_ticket_thread_id:
-                send_kw["message_thread_id"] = _dynamic_ticket_thread_id
-            if evidence_file_id:
-                await bot.send_photo(_dynamic_ticket_chat_id, evidence_file_id, caption=admin_text, **send_kw)
-            else:
-                await bot.send_message(_dynamic_ticket_chat_id, admin_text, **send_kw)
-        except Exception as _te:
-            print(f"[ticket group send] {_te}")
-    else:
-        # Fallback - личка каждому администратору
-        for admin_id in ADMIN_IDS_LIST:
-            try:
-                if evidence_file_id:
-                    await bot.send_photo(admin_id, evidence_file_id, caption=admin_text, reply_markup=kb_admin.as_markup(), parse_mode="HTML")
-                else:
-                    await bot.send_message(admin_id, admin_text, reply_markup=kb_admin.as_markup(), parse_mode="HTML")
-            except Exception:
-                pass
-
-
-@router.callback_query(lambda c: callback.data.startswith("ticket_close|") or callback.data.startswith("ticket_reject|"))
-async def cb_ticket_action(callback: CallbackQuery):
-    uid = callback.from_user.id
-    if not is_admin(uid):
-        await safe_answer(callback.id, "❌ Нет доступа", show_alert=True)
-        return
-    parts = callback.data.split("|", 1)
-    action      = parts[0]    # "ticket_close" or "ticket_reject"
-    ticket_code = parts[1]
-
-    new_status  = "closed"   if action == "ticket_close"  else "rejected"
-    close_reason = "Решено администратором" if action == "ticket_close" else "Отклонено администратором"
-
-    row = close_ticket(ticket_code, uid, close_reason, new_status)
-
-    await safe_answer(callback.id, "✅ Тикет обновлён")
-    admin_p = get_player(uid)
-    admin_name = admin_p[1] if admin_p else str(uid)
-
-    # Редактируем сообщение у этого администратора
-    status_emoji = "✅" if action == "ticket_close" else "❌"
-    try:
-        original_text = callback.message.caption or callback.message.text or ""
-        new_text = original_text + f"\n\n{status_emoji} <b>{close_reason}</b>\n👮 Администратор: {admin_name}"
-        if callback.message.caption:
-            await bot.edit_message_caption(new_text, chat_id=callback.message.chat.id, message_id=callback.message.message_id, parse_mode="HTML")
-        else:
-            await callback.message.edit_text(new_text, parse_mode="HTML")
-    except Exception:
-        pass
-
-    # Уведомить пользователя о решении
-    if row:
-        reporter_uid, match_code, reason = row
-        mc_text = f"<code>#{match_code}</code>" if match_code else "не указан"
-        if action == "ticket_close":
-            user_msg = (
-                f"✅ <b>Тикет {ticket_code} закрыт (решено)</b>\n\n"
-                f"🎮 Матч: {mc_text}\n"
-                f"📝 Ваша жалоба рассмотрена и принята.\n"
-                f"👮 Администратор: <b>{admin_name}</b>"
-            )
-        else:
-            user_msg = (
-                f"❌ <b>Тикет {ticket_code} отклонён</b>\n\n"
-                f"🎮 Матч: {mc_text}\n"
-                f"📝 Ваша жалоба отклонена.\n"
-                f"👮 Администратор: <b>{admin_name}</b>"
-            )
-        try:
-            await bot.send_message(reporter_uid, user_msg, parse_mode="HTML")
-        except Exception:
-            pass
-
-
-# ==================== КРЕАТОРСКАЯ ПАНЕЛЬ ====================
-
-_RESTRICTABLE = [
-    ("give_coins",    "💰 Выдача монет"),
-    ("set_elo",       "📊 Изменение ELO"),
-    ("edit_stats",    "📈 Редактирование статы"),
-    ("warn",          "⚠️ Варны / Снятие варнов"),
-    ("mute",          "🔇 Мут / Размут"),
-    ("check",         "🔎 Проверка / Снятие"),
-    ("ban",           "🚫 Бан / Разбан"),
-    ("give_admin",    "👑 Выдача/Снятие админки"),
-    ("give_game_reg", "🎮 Роль Гейм Рег"),
-    ("quals_access",  "⭐ Quals доступ"),
-    ("promos",        "🎁 Промокоды"),
-    ("broadcast",     "📢 Рассылка"),
-    ("give_verified", "✅ Синяя галочка"),
-    ("seasons",       "🏆 Сезоны"),
-    ("matches",       "🎮 Матчи"),
-]
-
-
-def _get_admin_logs(limit=25):
-    try:
-        conn = _db()
-        cur  = conn.cursor()
-        cur.execute(
-            "SELECT al.admin_id, p.username, al.action, al.target_id, al.details, al.created_at "
-            "FROM admin_logs al LEFT JOIN players p ON p.user_id = al.admin_id "
-            "ORDER BY al.created_at DESC LIMIT %s",
-            (limit,),
-        )
-        rows = cur.fetchall()
-        conn.close()
-        return rows
-    except Exception as e:
-        print(f"[_get_admin_logs] {e}")
-        return []
-
-
-def _get_admin_list():
-    try:
-        conn = _db()
-        cur  = conn.cursor()
-        cur.execute(
-            "SELECT user_id, username FROM players WHERE is_admin=1 AND is_bot=0 ORDER BY username"
-        )
-        rows = cur.fetchall()
-        conn.close()
-        return rows
-    except Exception as e:
-        print(f"[_get_admin_list] {e}")
-        return []
-
-
-def _get_admin_restrictions_set(admin_id):
-    try:
-        conn = _db()
-        cur  = conn.cursor()
-        cur.execute("SELECT action FROM admin_restrictions WHERE admin_id=%s", (admin_id,))
-        rows = cur.fetchall()
-        conn.close()
-        return {r[0] for r in rows}
-    except Exception as e:
-        print(f"[_get_admin_restrictions_set] {e}")
         return set()
 
 
-def _reset_player_stats(target_uid, table="players"):
-    conn = _db()
-    cur  = conn.cursor()
-    cur.execute(
-        f"""UPDATE {table} SET
-            elo=1000, wins=0, losses=0, kills=0, deaths=0, assists=0, mvp_count=0,
-            quals_elo=1000, quals_wins=0, quals_losses=0,
-            quals_kills=0, quals_deaths=0, quals_assists=0,
-            duo_elo=1000, duo_wins=0, duo_losses=0,
-            duo_kills=0, duo_deaths=0, duo_assists=0
-        WHERE user_id=%s""",
-        (target_uid,),
-    )
-    conn.commit()
-    conn.close()
-
-
-def _reset_all_stats(table="players"):
-    conn = _db()
-    cur  = conn.cursor()
-    cur.execute(
-        f"""UPDATE {table} SET
-            elo=1000, wins=0, losses=0, kills=0, deaths=0, assists=0, mvp_count=0,
-            quals_elo=1000, quals_wins=0, quals_losses=0,
-            quals_kills=0, quals_deaths=0, quals_assists=0,
-            duo_elo=1000, duo_wins=0, duo_losses=0,
-            duo_kills=0, duo_deaths=0, duo_assists=0
-        WHERE is_bot=0"""
-    )
-    conn.commit()
-    conn.close()
-
-
-def _reset_everything(table="players"):
-    """Обнуляет ВСЁ: ELO, статы, монеты, премку, варны, баны, мут."""
-    conn = _db()
-    cur  = conn.cursor()
-    cur.execute(
-        f"""UPDATE {table} SET
-            elo=1000, wins=0, losses=0, kills=0, deaths=0, assists=0, mvp_count=0,
-            quals_elo=1000, quals_wins=0, quals_losses=0,
-            quals_kills=0, quals_deaths=0, quals_assists=0,
-            duo_elo=1000, duo_wins=0, duo_losses=0,
-            duo_kills=0, duo_deaths=0, duo_assists=0,
-            coins=0,
-            is_banned=0, warns=0, is_muted=0, mute_until=0
-        WHERE is_bot=0"""
-    )
-    # Сбрасываем премку: удаляем все активные записи
+def _tasks_get_daily_claimed(uid: int, today: str) -> set:
+    """Возвращает множество task_id ежедневных заданий, полученных сегодня.
+    Не бросает исключений — при сбое БД возвращает пустое множество (см. выше)."""
     try:
-        cur.execute("DELETE FROM user_items WHERE item_type='premium'")
+        conn = sqlite3.connect('faceit_bot.db')
+        try:
+            c = conn.cursor()
+            c.execute(
+                'SELECT task_id FROM user_daily_tasks WHERE user_id=? AND task_date=? AND claimed=1',
+                (uid, today)
+            )
+            return {r[0] for r in c.fetchall()}
+        finally:
+            conn.close()
+    except Exception:
+        return set()
+
+
+def _mini_bar(current: int, total: int, width: int = 6) -> str:
+    """Мини прогресс-бар: [████░░]"""
+    filled = round(current / total * width) if total > 0 else 0
+    return f"[{'█' * filled}{'░' * (width - filled)}]"
+
+
+def _build_tasks_text_and_kb(uid: int) -> tuple[str, InlineKeyboardMarkup]:
+    """Строит текст и клавиатуру вкладки заданий."""
+    stats   = _tasks_get_user_stats(uid)
+    claimed = _tasks_get_claimed(uid)
+    d_claimed = _tasks_get_daily_claimed(uid, stats['today_date'])
+
+    lines = [f"{E_DIAMOND} <b>Задания Moon Faceit</b>\n"]
+    kb_rows: list[list] = []
+
+    # ── Milestone-задания ────────────────────────────────────────────────────
+    lines.append(f"<b><tg-emoji emoji-id='5282843764451195532'>📋</tg-emoji> Разовые задания</b>")
+    for t in TASKS_MILESTONE:
+        done    = t['check'](stats)
+        is_cl   = t['id'] in claimed
+        cur, mx = t['progress'](stats)
+
+        if is_cl:
+            status = f"{E_CHECK} <i>Получено</i>"
+        elif done:
+            status = f"<tg-emoji emoji-id='5325547803936572038'>✨</tg-emoji> <b>Готово!</b>"
+        else:
+            status = f"{_mini_bar(cur, mx)} {cur}/{mx}"
+
+        reward_str = f"+{t['reward']} {E_DIAMOND}"
+        lines.append(f"\n{t['title']} — <b>{reward_str}</b>\n  {t['desc']}\n  {status}")
+
+        if done and not is_cl:
+            kb_rows.append([_ebtn(
+                f"Получить  +{t['reward']} 💎  —  {t['desc']}",
+                "5427168083074628963", 2,
+                f"task_claim_ms_{t['id']}"
+            )])
+
+    # ── Ежедневные задания ───────────────────────────────────────────────────
+    lines.append(f"\n\n<b>🗓 Ежедневные задания</b>  <i>(сброс в 00:00 UTC)</i>")
+    for t in TASKS_DAILY:
+        is_cl  = t['id'] in d_claimed
+        cur    = stats['today_matches'] if t['type'] == 'matches' else stats['today_wins']
+        target = t['target']
+        done   = cur >= target
+
+        if is_cl:
+            status = f"{E_CHECK} <i>Получено</i>"
+        elif done:
+            status = f"<tg-emoji emoji-id='5325547803936572038'>✨</tg-emoji> <b>Готово!</b>"
+        else:
+            status = f"{_mini_bar(cur, target)} {cur}/{target}"
+
+        reward_str = f"+{t['reward']} {E_DIAMOND}"
+        lines.append(f"\n{t['title']} — <b>{reward_str}</b>\n  {t['desc']}\n  {status}")
+
+        if done and not is_cl:
+            kb_rows.append([_ebtn(
+                f"Получить  +{t['reward']} 💎  —  {t['desc']}",
+                "5427168083074628963", 2,
+                f"task_claim_dy_{t['id']}"
+            )])
+
+    # Кнопка обновить + выйти в меню
+    kb_rows.append([
+        _ebtn("Обновить",  "5346321684574003384", 2, "tasks_refresh"),
+    ])
+
+    return "\n".join(lines), InlineKeyboardMarkup(kb_rows)
+
+
+async def _build_party_players(uid: int, bot) -> list[dict]:
+    """Собирает список игроков пати (creator первым) для карточки."""
+    import io as _io, base64 as _b64
+
+    party_info = _get_party_of(uid)
+    if party_info:
+        creator_uid, members = party_info
+        all_uids = [creator_uid] + [m for m in members if m != creator_uid]
+    else:
+        all_uids = [uid]
+        _parties[uid] = []
+
+    players = []
+    conn = sqlite3.connect('faceit_bot.db')
+    c = conn.cursor()
+    for idx, puid in enumerate(all_uids):
+        c.execute(
+            'SELECT COALESCE(first_name, username), elo, kills, deaths FROM users WHERE user_id=?',
+            (puid,)
+        )
+        row = c.fetchone()
+        if not row:
+            continue
+        name, elo, kills, deaths = row
+        kd = round(kills / deaths, 2) if deaths else (float(kills) if kills else 0.0)
+        avatar_b64 = None
+        try:
+            photos = await bot.get_user_profile_photos(puid, limit=1)
+            if photos.total_count > 0:
+                file_obj = await bot.get_file(photos.photos[0][-1].file_id)
+                buf = _io.BytesIO()
+                await file_obj.download_to_memory(buf)
+                avatar_b64 = _b64.b64encode(buf.getvalue()).decode()
+        except Exception:
+            pass
+        players.append({
+            'name': name or str(puid),
+            'elo': elo or 0,
+            'kd': kd,
+            'avatar_b64': avatar_b64,
+            'is_creator': idx == 0,
+        })
+    conn.close()
+    return players
+
+
+async def action_party(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Раздел пати — рендерит лобби-карточку."""
+    uid = update.effective_user.id
+    if not get_user(uid):
+        await update.effective_message.reply_text("Сначала нажмите /start.")
+        return
+
+    keyboard = InlineKeyboardMarkup([
+        [
+            _ebtn('Добавить друга', "5271604874419647061", 2, "party_add_friend"),
+            _ebtn('Выйти из пати',  "5240241223632954241", 2, "party_exit"),
+        ]
+    ])
+
+    party_info = _get_party_of(uid)
+    members_count = 1 + len(party_info[1]) if party_info else 1
+
+    caption_t, caption_e = _parse_msg(
+        f"{E_TEAM} <b>Пати</b>  {members_count}/5\n\n"
+        "Добавляй друзей и залетайте вместе в очередь!"
+    )
+
+    try:
+        from card_renderer import generate_lobby_card
+        players = await _build_party_players(uid, context.bot)
+        png = await generate_lobby_card(players, mode="5v5")
+        await update.effective_message.reply_photo(
+            png,
+            caption=caption_t,
+            caption_entities=caption_e,
+            reply_markup=keyboard,
+        )
+    except Exception:
+        await _reply_html(
+            update.effective_message,
+            f"{E_TEAM} <b>Пати</b>  {members_count}/5\n\n"
+            "Добавляй друзей и залетайте вместе в очередь!",
+            reply_markup=keyboard,
+        )
+
+
+async def party_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    uid = query.from_user.id
+
+    if query.data == "party_exit":
+        # Убираем пользователя из пати
+        if uid in _parties:
+            # Создатель выходит — распускаем пати, уведомляем членов
+            for member in list(_parties[uid]):
+                try:
+                    await _send_html(context.bot, member,
+                        f"{E_CROSS} Создатель пати вышел — пати распущена.")
+                except Exception:
+                    pass
+            del _parties[uid]
+        else:
+            for creator, members in list(_parties.items()):
+                if uid in members:
+                    members.remove(uid)
+                    try:
+                        await _send_html(context.bot, creator,
+                            f"{E_CROSS} Игрок покинул пати.")
+                    except Exception:
+                        pass
+                    break
+        await action_show_menu(update, context)
+
+    elif query.data == "party_add_friend":
+        context.user_data['reg_step'] = 'party_add_friend'
+        await _send_html(
+            context.bot, uid,
+            f"{E_TEAM} <b>Добавить друга в пати</b>\n\n"
+            "Введи юзернейм или никнейм друга чтобы добавить его в пати!"
+        )
+
+    elif query.data.startswith("party_invite_accept_"):
+        inviter_id = int(query.data.split("_")[-1])
+        conn = sqlite3.connect('faceit_bot.db')
+        c = conn.cursor()
+        c.execute('SELECT COALESCE(first_name, username) FROM users WHERE user_id=?', (uid,))
+        row = c.fetchone()
+        conn.close()
+        accepter_name = row[0] if row and row[0] else str(uid)
+
+        # Добавляем принявшего в пати создателя
+        if inviter_id not in _parties:
+            _parties[inviter_id] = []
+        if uid not in _parties[inviter_id]:
+            _parties[inviter_id].append(uid)
+
+        await _edit_html(query,
+            f"{E_CHECK} <b>Вы приняли приглашение в пати!</b>\n\n"
+            f"Ждите — хозяин пати скоро начнёт игру. {E_TEAM}"
+        )
+        try:
+            await _send_html(
+                context.bot, inviter_id,
+                f'{E_CONFIRM} <b>{accepter_name}</b> принял(а) ваше приглашение в пати!'
+            )
+        except Exception:
+            pass
+
+    elif query.data.startswith("party_invite_decline_"):
+        inviter_id = int(query.data.split("_")[-1])
+        conn = sqlite3.connect('faceit_bot.db')
+        c = conn.cursor()
+        c.execute('SELECT COALESCE(first_name, username) FROM users WHERE user_id=?', (uid,))
+        row = c.fetchone()
+        conn.close()
+        decliner_name = row[0] if row and row[0] else str(uid)
+        await _edit_html(query,
+            f'{E_CROSS} Вы отклонили приглашение в пати.'
+        )
+        try:
+            await _send_html(
+                context.bot, inviter_id,
+                f'{E_CROSS} <b>{decliner_name}</b> отклонил(а) ваше приглашение в пати.'
+            )
+        except Exception:
+            pass
+
+
+async def action_tasks(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Показывает вкладку заданий — текстом, плюс PNG-карточка если рендер доступен."""
+    uid = update.effective_user.id
+    user = get_user(uid)
+    if not user:
+        await update.effective_message.reply_text("Сначала нажмите /start.")
+        return
+
+    # PNG-карточка — необязательное украшение. Пробуем её только если рендер
+    # вообще подключён (CARDS_ENABLED); если нет — не тратим время на попытку
+    # и не шумим в логах, а сразу переходим к тексту.
+    if CARDS_ENABLED:
+        try:
+            stats = _tasks_get_user_stats(uid)
+
+            daily_list, special_list = [], []
+
+            for t in TASKS_DAILY:
+                prog = stats.get(f"today_{t['type']}", 0)
+                daily_list.append({
+                    'icon': '🎮', 'title': _re_html.sub(r'<[^>]+>', '', t['title']),
+                    'desc': t['desc'], 'progress': prog,
+                    'total': t['target'], 'reward': t['reward'],
+                })
+
+            for t in TASKS_MILESTONE:
+                prog, total = t['progress'](stats)
+                special_list.append({
+                    'icon': '⭐', 'title': _re_html.sub(r'<[^>]+>', '', t['title']),
+                    'desc': t['desc'], 'progress': prog,
+                    'total': total, 'reward': t['reward'],
+                })
+
+            try:
+                import sqlite3 as _sq
+                _c2 = _sq.connect('faceit_bot.db')
+                try:
+                    _cur2 = _c2.cursor()
+                    _cur2.execute('SELECT moon_coins FROM users WHERE user_id=?', (uid,))
+                    _r2 = _cur2.fetchone()
+                    moon_coins = int(_r2[0] or 0) if _r2 else 0
+                finally:
+                    _c2.close()
+            except Exception:
+                moon_coins = 0
+
+            png = await generate_tasks_card(
+                daily_tasks=daily_list if daily_list else None,
+                weekly_tasks=None,
+                special_tasks=special_list if special_list else None,
+                moon_coins=moon_coins,
+            )
+            # Карточка + текст с кнопками как два отдельных сообщения
+            await update.effective_message.reply_photo(png)
+        except Exception:
+            import traceback
+            print(f"[action_tasks] Ошибка рендера карточки заданий для uid={uid}:")
+            traceback.print_exc()
+
+    # Текстовый вид всегда отправляется — это основной способ показать задания,
+    # PNG выше лишь дополняет его, если рендер настроен.
+    try:
+        text, kb = _build_tasks_text_and_kb(uid)
+        await _reply_html(update.effective_message, text, reply_markup=kb)
+    except Exception as _tasks_err:
+        import traceback as _tb_mod
+        _tb = _tb_mod.format_exc()
+        print(f"[action_tasks] Ошибка текстового вида заданий uid={uid}: {_tasks_err}\n{_tb}")
+        await update.effective_message.reply_text(
+            f"{E_CROSS} Не удалось загрузить задания, попробуйте ещё раз."
+        )
+
+
+async def tasks_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Обрабатывает кнопки во вкладке заданий: получить награду / обновить."""
+    query = update.callback_query
+    await query.answer()
+    uid  = query.from_user.id
+    data = query.data
+
+    # ── Обновить ────────────────────────────────────────────────────────────
+    if data == "tasks_refresh":
+        try:
+            text, kb = _build_tasks_text_and_kb(uid)
+            await _edit_html(query, text, reply_markup=kb)
+        except Exception:
+            await query.answer("Не удалось обновить. Попробуйте ещё раз.", show_alert=True)
+        return
+
+    # ── Получить milestone ───────────────────────────────────────────────────
+    if data.startswith("task_claim_ms_"):
+        task_id = data[len("task_claim_ms_"):]
+        task    = next((t for t in TASKS_MILESTONE if t['id'] == task_id), None)
+        if not task:
+            await query.answer("Задание не найдено.", show_alert=True)
+            return
+
+        # Финальная проверка выполнения (до входа в БД)
+        stats = _tasks_get_user_stats(uid)
+        if not task['check'](stats):
+            await query.answer("Задание ещё не выполнено.", show_alert=True)
+            return
+
+        # Атомарная вставка — если строка уже существует (claimed=1),
+        # INSERT OR IGNORE ничего не делает и rowcount == 0.
+        conn = sqlite3.connect('faceit_bot.db')
+        c = conn.cursor()
+        c.execute(
+            'INSERT OR IGNORE INTO user_tasks (user_id, task_id, claimed) VALUES (?,?,1)',
+            (uid, task_id)
+        )
+        inserted = c.rowcount  # 1 — первый клик, 0 — уже получено
+        if inserted:
+            c.execute(
+                'UPDATE users SET moon_coins=moon_coins+? WHERE user_id=?',
+                (task['reward'], uid)
+            )
+        conn.commit()
+        c.execute('SELECT moon_coins FROM users WHERE user_id=?', (uid,))
+        _row = c.fetchone()
+        new_coins = _row[0] if _row else 0
+        conn.close()
+
+        if not inserted:
+            await query.answer("Награда уже получена!", show_alert=True)
+            return
+
+        await query.answer(f"🎉 +{task['reward']} Moon Coins!", show_alert=True)
+        try:
+            await _send_html(
+                context.bot, uid,
+                f"{E_DIAMOND} <b>Задание выполнено!</b>\n\n"
+                f"{task['title']}\n"
+                f"{task['desc']}\n\n"
+                f"Награда: <b>+{task['reward']} Moon Coins</b> <tg-emoji emoji-id='5461151367559141950'>🎉</tg-emoji>\n"
+                f"Баланс: <b>{new_coins}</b> {E_DIAMOND}"
+            )
+        except Exception:
+            pass
+
+        text, kb = _build_tasks_text_and_kb(uid)
+        await _edit_html(query, text, reply_markup=kb)
+        return
+
+    # ── Получить ежедневное ──────────────────────────────────────────────────
+    if data.startswith("task_claim_dy_"):
+        task_id = data[len("task_claim_dy_"):]
+        task    = next((t for t in TASKS_DAILY if t['id'] == task_id), None)
+        if not task:
+            await query.answer("Задание не найдено.", show_alert=True)
+            return
+
+        today = datetime.datetime.utcnow().strftime('%Y-%m-%d')
+
+        # Финальная проверка выполнения
+        stats = _tasks_get_user_stats(uid)
+        cur   = stats['today_matches'] if task['type'] == 'matches' else stats['today_wins']
+        if cur < task['target']:
+            await query.answer("Задание ещё не выполнено.", show_alert=True)
+            return
+
+        # Атомарная вставка — предотвращает двойное начисление
+        conn = sqlite3.connect('faceit_bot.db')
+        c = conn.cursor()
+        c.execute(
+            'INSERT OR IGNORE INTO user_daily_tasks (user_id, task_id, task_date, claimed) '
+            'VALUES (?,?,?,1)',
+            (uid, task_id, today)
+        )
+        inserted = c.rowcount
+        if inserted:
+            c.execute(
+                'UPDATE users SET moon_coins=moon_coins+? WHERE user_id=?',
+                (task['reward'], uid)
+            )
+        conn.commit()
+        c.execute('SELECT moon_coins FROM users WHERE user_id=?', (uid,))
+        _row = c.fetchone()
+        new_coins = _row[0] if _row else 0
+        conn.close()
+
+        if not inserted:
+            await query.answer("Награда уже получена!", show_alert=True)
+            return
+
+        await query.answer(f"🎉 +{task['reward']} Moon Coins!", show_alert=True)
+        try:
+            await _send_html(
+                context.bot, uid,
+                f"{E_DIAMOND} <b>Ежедневное задание выполнено!</b>\n\n"
+                f"{task['title']}\n"
+                f"{task['desc']}\n\n"
+                f"Награда: <b>+{task['reward']} Moon Coins</b> <tg-emoji emoji-id='5461151367559141950'>🎉</tg-emoji>\n"
+                f"Баланс: <b>{new_coins}</b> {E_DIAMOND}"
+            )
+        except Exception:
+            pass
+
+        text, kb = _build_tasks_text_and_kb(uid)
+        await _edit_html(query, text, reply_markup=kb)
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  ПОИСК ИГРОКА
+# ══════════════════════════════════════════════════════════════════════════════
+
+def _player_search_result_keyboard() -> InlineKeyboardMarkup:
+    """Кнопки под профилем найденного игрока."""
+    return InlineKeyboardMarkup([
+        [_ebtn("Искать другого", "5231012545799666522", 2, "search_another")],
+        [_ebtn("Выйти",          "6035130900075777681", 2, "search_exit")],
+    ])
+
+
+async def action_search_player(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Запускает поиск — просит ввести ник или юзернейм."""
+    context.user_data['reg_step'] = 'search_player'
+    await _reply_html(
+        update.effective_message,
+        f"{E_SEARCH} <b>Поиск игрока</b>\n\n"
+        f"Введите <b>никнейм</b> или <b>@юзернейм</b> игрока:"
+    )
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  ПРОМОКОД
+# ══════════════════════════════════════════════════════════════════════════════
+
+_PROMO_EMOJI = '<tg-emoji emoji-id="5224607267797606837">☄️</tg-emoji>'
+
+
+def _promo_cancel_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([[
+        InlineKeyboardButton("❌ Отмена", callback_data="menu_promo_cancel")
+    ]])
+
+
+async def action_promo(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Открывает вкладку ввода промокода."""
+    context.user_data['reg_step'] = 'awaiting_promo'
+    await _reply_html(
+        update.effective_message,
+        f"{_PROMO_EMOJI} <b>Промокод</b>\n\nВведите промокод:",
+        reply_markup=_promo_cancel_keyboard()
+    )
+
+
+async def action_promo_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Отменяет ввод промокода и возвращает в главное меню."""
+    query = update.callback_query
+    context.user_data.pop('reg_step', None)
+    uid = update.effective_user.id
+    conn = sqlite3.connect('faceit_bot.db')
+    c = conn.cursor()
+    c.execute('SELECT COALESCE(first_name, username) FROM users WHERE user_id = ?', (uid,))
+    row = c.fetchone()
+    conn.close()
+    nick = row[0] if row and row[0] else update.effective_user.first_name or str(uid)
+    await _edit_html(
+        query,
+        f'<tg-emoji emoji-id="5458797798495377338">🔥</tg-emoji> Привет! Рад тебя видеть, <b>{nick}</b>!\n\n'
+        f'<tg-emoji emoji-id="5406745015365943482">⬇️</tg-emoji> Выбери действие:',
+        reply_markup=inline_main_menu_keyboard()
+    )
+
+
+async def _show_found_player(msg_obj, uid_found: int, bot=None):
+    """Формирует и отправляет профиль найденного игрока."""
+    conn = sqlite3.connect('faceit_bot.db')
+    c = conn.cursor()
+    c.execute(
+        'SELECT COALESCE(first_name, username), warns, game_id, moon_coins, '
+        'elo_5v5, matches_5v5, level_5v5, '
+        'elo_3v3, matches_3v3, level_3v3, '
+        'elo_2v2, matches_2v2, level_2v2, '
+        'is_banned, mvp_count '
+        'FROM users WHERE user_id=?', (uid_found,)
+    )
+    row = c.fetchone()
+    if not row:
+        conn.close()
+        await _reply_html(msg_obj, f"{E_CROSS} Игрок не найден.")
+        return
+
+    display_name  = row[0] or str(uid_found)
+    warns_count   = row[1] or 0
+    game_id_val   = row[2]
+    moon_coins    = row[3] or 0
+    is_banned     = row[13] or 0
+    mvp_count     = row[14] or 0
+
+    mode_stats = {
+        '5v5': {'elo': row[4]  or 0, 'matches': row[5]  or 0, 'level': row[6]  or 1, 'calib': 10},
+        '3v3': {'elo': row[7]  or 0, 'matches': row[8]  or 0, 'level': row[9]  or 1, 'calib': 5},
+        '2v2': {'elo': row[10] or 0, 'matches': row[11] or 0, 'level': row[12] or 1, 'calib': 5},
+    }
+
+    c.execute('''
+        SELECT
+            COUNT(*),
+            COALESCE(SUM(CASE WHEN mp.team = tm.winner THEN 1 ELSE 0 END), 0),
+            COALESCE(SUM(mp.kills),  0),
+            COALESCE(SUM(mp.deaths), 0)
+        FROM match_players mp
+        JOIN team_matches tm ON mp.match_id = tm.match_id
+        WHERE mp.user_id = ? AND tm.status = 'finished'
+    ''', (uid_found,))
+    stat = c.fetchone()
+    conn.close()
+
+    matches = stat[0] if stat else 0
+    wins    = stat[1] if stat else 0
+    kills   = stat[2] if stat else 0
+    deaths  = stat[3] if stat else 0
+    losses  = matches - wins
+    winrate = round(wins / matches * 100) if matches > 0 else 0
+    kd_str  = f"{kills/deaths:.2f}" if deaths > 0 else f"{float(kills):.2f}"
+
+    creator_ids = get_creator_ids()
+    admin_ids   = get_admin_ids()
+    badge = creator_badge(uid_found, creator_ids) + admin_badge(uid_found, admin_ids) + official_badge_str(uid_found)
+
+    gid_line   = f"\n{E_INFO}  ID в игре — <code>{game_id_val}</code>" if game_id_val else ""
+    ban_line   = f"\n{E_BAN}  <b>Игрок заблокирован</b>" if is_banned else ""
+    warn_icons = '<tg-emoji emoji-id="5393551318214257273">🟡</tg-emoji>' * warns_count
+
+    MODE_ICONS = {'5v5': E_SWORD, '3v3': E_SHIELD, '2v2': E_HANDSHAKE}
+    calib_lock = LEVEL_ICONS.get(0, '🔒')
+    mode_lines = []
+    for mname in ('5v5', '3v3', '2v2'):
+        ms = mode_stats[mname]
+        mico = MODE_ICONS[mname]
+        if ms['matches'] < ms['calib']:
+            mode_lines.append(
+                f"{mico} <b>{mname}</b> — {calib_lock} Калибровка <b>{ms['matches']}/{ms['calib']}</b>"
+            )
+        else:
+            lvl_ico = LEVEL_ICONS.get(ms['level'], str(ms['level']))
+            mode_lines.append(
+                f"{mico} <b>{mname}</b> — {lvl_ico} <code>{ms['elo']}</code> ELO"
+            )
+    mode_block = "\n".join(mode_lines)
+
+    text = (
+        f"{EPV_USER} <b>{display_name}{badge}</b>{gid_line}{ban_line}\n\n"
+        f"{mode_block}\n\n"
+        f"{EPV_MATCHES}  Матчей — <b>{matches}</b>\n"
+        f"{EPV_WL}  Побед / Поражений — <b>{wins}</b> / <b>{losses}</b>\n"
+        f"{EP_WR}  Винрейт — <b>{winrate}%</b>\n"
+        f"{EP_KD}  К/Д — <b>{kd_str}</b>\n\n"
+        f"{EP_WARN}  Варны — {warn_icons} <b>{warns_count}/3</b>\n"
+        f"{E_PRICE}  Moon Coins — <b>{moon_coins}</b>"
+    )
+    # Генерируем PNG-карточку профиля найденного игрока
+    try:
+        png = await generate_profile_card(uid_found, bot)
+        caption_text, caption_entities = _parse_msg(text)
+        _TG_CAP_MAX = 1024
+        if len(caption_text) > _TG_CAP_MAX:
+            caption_text = caption_text[:_TG_CAP_MAX - 1] + "…"
+            if caption_entities:
+                caption_entities = [
+                    e for e in caption_entities if e.offset + e.length <= len(caption_text)
+                ]
+        await msg_obj.reply_photo(
+            photo=png,
+            caption=caption_text,
+            caption_entities=caption_entities or [],
+            reply_markup=_player_search_result_keyboard(),
+        )
+    except Exception:
+        # Fallback: просто текст
+        await _reply_html(msg_obj, text, reply_markup=_player_search_result_keyboard())
+
+
+async def search_result_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Обработчик кнопок 'Искать другого' и 'Выйти' под профилем игрока."""
+    query = update.callback_query
+    await query.answer()
+
+    if query.data == "search_another":
+        context.user_data['reg_step'] = 'search_player'
+        await _edit_html(
+            query,
+            f"{E_SEARCH} <b>Поиск игрока</b>\n\n"
+            f"Введите <b>никнейм</b> или <b>@юзернейм</b> игрока:"
+        )
+    elif query.data == "search_exit":
+        context.user_data.pop('reg_step', None)
+        uid = update.effective_user.id
+        conn = sqlite3.connect('faceit_bot.db')
+        c = conn.cursor()
+        c.execute('SELECT COALESCE(first_name, username) FROM users WHERE user_id = ?', (uid,))
+        row = c.fetchone()
+        conn.close()
+        nick = row[0] if row and row[0] else update.effective_user.first_name or str(uid)
+        await _edit_html(
+            query,
+            f'<tg-emoji emoji-id="5458797798495377338">🔥</tg-emoji> Привет! Рад тебя видеть, <b>{nick}</b>!\n\n'
+            f'<tg-emoji emoji-id="5406745015365943482">⬇️</tg-emoji> Выбери действие:',
+            reply_markup=inline_main_menu_keyboard()
+        )
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  ПРОФИЛЬ
+# ══════════════════════════════════════════════════════════════════════════════
+
+async def action_profile(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    uid  = update.effective_user.id
+    user = get_user(uid)
+    if not user:
+        await update.effective_message.reply_text("Сначала нажмите /start.")
+        return
+    badge    = creator_badge(uid, get_creator_ids()) + admin_badge(uid, get_admin_ids()) + official_badge_str(uid)
+    conn_w   = sqlite3.connect('faceit_bot.db')
+    c_w      = conn_w.cursor()
+    c_w.execute(
+        'SELECT warns, game_id, moon_coins, '
+        'elo_5v5, matches_5v5, level_5v5, '
+        'elo_3v3, matches_3v3, level_3v3, '
+        'elo_2v2, matches_2v2, level_2v2, '
+        'mvp_count '
+        'FROM users WHERE user_id=?', (uid,)
+    )
+    w_row    = c_w.fetchone()
+    warns_count = (w_row[0] or 0) if w_row else 0
+    game_id_val = w_row[1] if w_row and w_row[1] else None
+    moon_coins  = (w_row[2] or 0) if w_row else 0
+    mvp_count   = (w_row[12] or 0) if w_row else 0
+    mode_stats = {
+        '5v5': {'elo': (w_row[3]  or 0) if w_row else 0, 'matches': (w_row[4]  or 0) if w_row else 0, 'level': (w_row[5]  or 1) if w_row else 1, 'calib': 10},
+        '3v3': {'elo': (w_row[6]  or 0) if w_row else 0, 'matches': (w_row[7]  or 0) if w_row else 0, 'level': (w_row[8]  or 1) if w_row else 1, 'calib': 5},
+        '2v2': {'elo': (w_row[9]  or 0) if w_row else 0, 'matches': (w_row[10] or 0) if w_row else 0, 'level': (w_row[11] or 1) if w_row else 1, 'calib': 5},
+    }
+    c_w.execute('''
+        SELECT
+            COUNT(*)                                                           AS total,
+            COALESCE(SUM(CASE WHEN mp.team = tm.winner THEN 1 ELSE 0 END), 0) AS wins,
+            COALESCE(SUM(mp.kills),  0)                                        AS kills,
+            COALESCE(SUM(mp.deaths), 0)                                        AS deaths
+        FROM match_players mp
+        JOIN team_matches tm ON mp.match_id = tm.match_id
+        WHERE mp.user_id = ? AND tm.status = 'finished'
+    ''', (uid,))
+    stat    = c_w.fetchone()
+    conn_w.close()
+    matches = stat[0] if stat else 0
+    wins    = stat[1] if stat else 0
+    kills   = stat[2] if stat else 0
+    deaths  = stat[3] if stat else 0
+    losses  = matches - wins
+    winrate = round(wins / matches * 100) if matches > 0 else 0
+    kd_str  = f"{kills/deaths:.2f}" if deaths > 0 else f"{float(kills):.2f}"
+    warn_icons = '<tg-emoji emoji-id="5393551318214257273">🟡</tg-emoji>' * warns_count
+    gid_line   = f"\n{E_INFO}  ID в игре — <code>{game_id_val}</code>" if game_id_val else ""
+
+    MODE_ICONS_PROFILE = {'5v5': E_SWORD, '3v3': E_SHIELD, '2v2': E_HANDSHAKE}
+    calib_lock = LEVEL_ICONS.get(0, '🔒')
+    mode_lines = []
+    for mname in ('5v5', '3v3', '2v2'):
+        ms   = mode_stats[mname]
+        mico = MODE_ICONS_PROFILE[mname]
+        if ms['matches'] < ms['calib']:
+            mode_lines.append(
+                f"{mico} <b>{mname}</b> — {calib_lock} Калибровка <b>{ms['matches']}/{ms['calib']}</b>"
+            )
+        else:
+            lvl_ico = LEVEL_ICONS.get(ms['level'], str(ms['level']))
+            mode_lines.append(
+                f"{mico} <b>{mname}</b> — {lvl_ico} <code>{ms['elo']}</code> ELO"
+            )
+    mode_block = "\n".join(mode_lines)
+
+    caption_html = (
+        f"{EPV_USER} <b>{user[1]}{badge}</b>{gid_line}\n\n"
+        f"{mode_block}\n\n"
+        f"{EPV_MATCHES}  Матчей — <b>{matches}</b>\n"
+        f"{EPV_WL}  Побед / Поражений — <b>{wins}</b> / <b>{losses}</b>\n"
+        f"{EP_WR}  Винрейт — <b>{winrate}%</b>\n"
+        f"{EP_KD}  К/Д — <b>{kd_str}</b>\n\n"
+        f"{EP_WARN}  Варны — {warn_icons} <b>{warns_count}/3</b>\n"
+        f"{E_PRICE}  Moon Coins — <b>{moon_coins}</b>"
+    )
+    caption_text, caption_entities = _parse_msg(caption_html)
+
+    # Telegram caption limit = 1024 chars; при превышении обрезаем безопасно
+    _TG_CAP_MAX = 1024
+    if len(caption_text) > _TG_CAP_MAX:
+        caption_text     = caption_text[:_TG_CAP_MAX - 1] + "…"
+        # Убираем сущности, выходящие за границу
+        if caption_entities:
+            caption_entities = [
+                e for e in caption_entities if e.offset + e.length <= len(caption_text)
+            ]
+
+    # Генерируем карточку → фото + текст с кнопками двумя сообщениями
+    try:
+        png = await generate_profile_card(uid, context.bot)
+        await update.effective_message.reply_photo(photo=png)
+        await _reply_html(update.effective_message, caption_html, reply_markup=profile_actions_keyboard())
+    except Exception:
+        # Фоллбэк: если рендер упал — обычный текст
+        await _reply_html(update.effective_message, caption_html, reply_markup=profile_actions_keyboard())
+
+
+async def profile_action_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    uid = update.effective_user.id
+    user = get_user(uid)
+    if not user:
+        await query.message.reply_text("Сначала нажмите /start.")
+        return
+
+    _cancel_btn = InlineKeyboardMarkup([[
+        InlineKeyboardButton("❌ Отмена", callback_data="profile_cancel_change")
+    ]])
+
+    if query.data == "profile_change_nick":
+        context.user_data['reg_step'] = 'change_nick'
+        await _reply_html(query.message,
+            f'<tg-emoji emoji-id="5319247469165433798">🎮</tg-emoji> Введите новый <b>никнейм</b>:',
+            reply_markup=_cancel_btn)
+    elif query.data == "profile_change_id":
+        context.user_data['reg_step'] = 'change_id'
+        await _reply_html(query.message,
+            f'<tg-emoji emoji-id="5319247469165433798">🎮</tg-emoji> Введите новый <b>ID в игре</b> (буквы и цифры):',
+            reply_markup=_cancel_btn)
+    elif query.data == "profile_cancel_change":
+        context.user_data.pop('reg_step', None)
+        await query.message.delete()
+        await action_profile(update, context)
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  ИСТОРИЯ
+# ══════════════════════════════════════════════════════════════════════════════
+
+async def action_history(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    uid = update.effective_user.id
+    if not get_user(uid):
+        await update.effective_message.reply_text("Сначала нажмите /start.")
+        return
+    conn = sqlite3.connect('faceit_bot.db')
+    c = conn.cursor()
+    c.execute('''SELECT tm.match_id, mp.team, tm.winner, mp.elo_before, mp.elo_change, tm.timestamp, tm.mode
+                 FROM match_players mp
+                 JOIN team_matches tm ON mp.match_id = tm.match_id
+                 WHERE mp.user_id = ? AND tm.status = "finished"
+                 ORDER BY tm.timestamp DESC LIMIT 5''', (uid,))
+    rows = c.fetchall()
+    conn.close()
+    if not rows:
+        await update.effective_message.reply_text("У вас ещё нет завершённых матчей.")
+        return
+    msg = "<tg-emoji emoji-id='5282843764451195532'>📋</tg-emoji> <b>Последние матчи:</b>\n\n"
+    for match_id, team, winner, elo_before, elo_change, timestamp, mode in rows:
+        won    = (team == winner)
+        result = f"{E_CHECK} Победа" if won else f"{E_CROSS} Поражение"
+        elo_change = elo_change or 0
+        elo_before = elo_before or 0
+        sign   = "+" if elo_change >= 0 else ""
+        mode_s = f" [{mode}]" if mode else ""
+        msg   += (
+            f"Матч #{match_id}{mode_s} — {(timestamp or '')[:10]}\n"
+            f"  {result} | Команда {team}\n"
+            f"  ELO: {elo_before} → {elo_before + elo_change} ({sign}{elo_change})\n\n"
+        )
+    await _reply_html(update.effective_message, msg)
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  ТАБЛИЦА ЛИДЕРОВ
+# ══════════════════════════════════════════════════════════════════════════════
+
+_LB_MODE_CALIB = {'5v5': 10, '3v3': 5, '2v2': 5}
+_LB_MODE_LABEL = {'5v5': f'{E_SWORD} 5v5', '3v3': f'{E_SHIELD} 3v3', '2v2': f'{E_HANDSHAKE} 2v2'}
+
+
+def _leaderboard_text(season: str = 'curr', mode: str = '5v5') -> str:
+    """Единая функция текста лидерборда — режим + сезон."""
+    ec, mc, wc, _ = mode_cols(mode)
+    calib = _LB_MODE_CALIB.get(mode, 10)
+    mode_label = _LB_MODE_LABEL.get(mode, mode)
+    MEDALS = {1: E_CROWN, 2: E_FIRE, 3: E_ZAP}
+    conn = sqlite3.connect('faceit_bot.db')
+    c = conn.cursor()
+
+    if season == 'curr':
+        c.execute(
+            f'SELECT user_id, COALESCE(first_name, username), {ec}, {wc}, {mc} '
+            f'FROM users WHERE {mc} >= ? AND is_banned = 0 '
+            f'ORDER BY {ec} DESC LIMIT 10',
+            (calib,)
+        )
+        top = c.fetchall()
+        conn.close()
+        if not top:
+            return f"Пока нет игроков в таблице {mode_label} (нужно {calib}+ матчей)."
+        creator_ids = get_creator_ids()
+        admin_ids   = get_admin_ids()
+        msg = f"{E_TROPHY} <b>Таблица лидеров — Нынешний сезон  {mode_label}</b>\n\n"
+        for i, u in enumerate(top, 1):
+            medal    = MEDALS.get(i, f"<code>{i}.</code>")
+            winrate  = round(u[3] / u[4] * 100) if u[4] > 0 else 0
+            lvl_icon = LEVEL_ICONS.get(elo_to_level(u[2]), str(elo_to_level(u[2])))
+            badge    = creator_badge(u[0], creator_ids) + admin_badge(u[0], admin_ids) + official_badge_str(u[0])
+            msg += f"{medal}  <b>{u[1]}{badge}</b>  〔{lvl_icon}〕\n"
+            msg += f"      <code>{u[2]}</code> ELO  ·  {u[3]} побед  ·  {winrate}%\n\n"
+        return msg
+    else:
+        c.execute('SELECT MAX(season_num) FROM season_archive')
+        row = c.fetchone()
+        season_num = row[0] if row and row[0] is not None else None
+        if season_num is None:
+            conn.close()
+            return "Архив прошлых сезонов пуст."
+        c.execute(
+            f'SELECT user_id, username, {ec}, {wc}, {mc} FROM season_archive '
+            f'WHERE season_num = ? ORDER BY {ec} DESC LIMIT 10',
+            (season_num,)
+        )
+        top = c.fetchall()
+        conn.close()
+        if not top:
+            return f"В прошлом сезоне ({season_num}) нет данных для {mode_label}."
+        msg = f"{E_TROPHY} <b>Таблица лидеров — Прошлый сезон ({season_num})  {mode_label}</b>\n\n"
+        for i, u in enumerate(top, 1):
+            medal    = MEDALS.get(i, f"<code>{i}.</code>")
+            winrate  = round(u[3] / u[4] * 100) if u[4] > 0 else 0
+            lvl_icon = LEVEL_ICONS.get(elo_to_level(u[2] or 0), str(elo_to_level(u[2] or 0)))
+            msg += f"{medal}  <b>{u[1]}</b>  〔{lvl_icon}〕\n"
+            msg += f"      <code>{u[2] or 0}</code> ELO  ·  {u[3] or 0} побед  ·  {winrate}%\n\n"
+        return msg
+
+
+# ── Legacy wrappers (не используются, оставлены для совместимости) ────────────
+def _leaderboard_current_text() -> str:
+    return _leaderboard_text('curr', '5v5')
+
+
+def _leaderboard_past_text() -> str:
+    return _leaderboard_text('past', '5v5')
+
+
+
+
+def _get_leaderboard_rows(season: str = 'curr', mode: str = '5v5') -> list[dict]:
+    """Возвращает список строк для PNG-карточки таблицы лидеров."""
+    ec, mc, wc, _ = mode_cols(mode)
+    calib = _LB_MODE_CALIB.get(mode, 10)
+    conn = sqlite3.connect('faceit_bot.db')
+    c = conn.cursor()
+    if season == 'curr':
+        c.execute(
+            f'SELECT user_id, COALESCE(first_name, username), {ec}, {wc}, {mc} '
+            f'FROM users WHERE {mc} >= ? AND is_banned = 0 '
+            f'ORDER BY {ec} DESC LIMIT 10',
+            (calib,)
+        )
+    else:
+        c.execute('SELECT MAX(season_num) FROM season_archive')
+        row = c.fetchone()
+        season_num = row[0] if row and row[0] is not None else None
+        if season_num is None:
+            conn.close()
+            return []
+        c.execute(
+            f'SELECT user_id, username, {ec}, {wc}, {mc} FROM season_archive '
+            f'WHERE season_num = ? ORDER BY {ec} DESC LIMIT 10',
+            (season_num,)
+        )
+    top = c.fetchall()
+    conn.close()
+    rows = []
+    for i, u in enumerate(top, 1):
+        matches_played = u[4] or 0
+        wins = u[3] or 0
+        winrate = round(wins / matches_played * 100) if matches_played > 0 else 0
+        rows.append({'rank': i, 'name': u[1] or '-', 'elo': u[2] or 0, 'wins': wins, 'winrate': winrate})
+    return rows
+
+async def action_leaderboard(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    uid  = update.effective_user.id
+    user = get_user(uid)
+
+    # Имя и game_id из профиля
+    display_name = "Игрок"
+    game_id      = "0"
+    official     = False
+    if user:
+        try:
+            display_name = str(user[1] or "Игрок")
+            # game_id stored in a separate field; use user_id as fallback
+            game_id = str(user[0])
+        except Exception:
+            pass
+    # Fetch game_id from full profile
+    try:
+        import sqlite3 as _sq
+        _c3 = _sq.connect('faceit_bot.db')
+        try:
+            _cur3 = _c3.cursor()
+            _cur3.execute('SELECT game_id FROM users WHERE user_id=?', (uid,))
+            _r3 = _cur3.fetchone()
+            if _r3 and _r3[0]:
+                game_id = str(_r3[0])
+        finally:
+            _c3.close()
     except Exception:
         pass
+
+    # Данные таблицы лидеров
+    rows = _get_leaderboard_rows('curr', '5v5')
+
+    # Аватар (опционально)
+    avatar_b64 = None
+    try:
+        import base64, io
+        photos = await context.bot.get_user_profile_photos(uid, limit=1)
+        if photos.total_count > 0:
+            file_obj = await context.bot.get_file(photos.photos[0][-1].file_id)
+            buf = io.BytesIO()
+            await file_obj.download_to_memory(buf)
+            avatar_b64 = base64.b64encode(buf.getvalue()).decode()
+    except Exception:
+        pass
+
+    try:
+        png = await generate_leaderboard_card(
+            rows=rows, mode='5v5', region='Все',
+            username=display_name, game_id=game_id,
+            official=official, avatar_b64=avatar_b64,
+        )
+        # Карточка + текст с кнопками как два отдельных сообщения
+        await update.effective_message.reply_photo(png)
+        text = _leaderboard_text('curr', '5v5')
+        await _reply_html(update.effective_message, text, reply_markup=_leaderboard_keyboard('curr', '5v5'))
+    except Exception:
+        text = _leaderboard_text('curr', '5v5')
+        await _reply_html(update.effective_message, text, reply_markup=_leaderboard_keyboard('curr', '5v5'))
+
+
+async def leaderboard_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    parts  = query.data.split("_")   # ['lb', 'curr'/'past', '5v5'/'3v3'/'2v2']
+    season = parts[1] if len(parts) > 1 else 'curr'
+    mode   = parts[2] if len(parts) > 2 else '5v5'
+    # Обратная совместимость со старыми callback_data
+    if season == 'current': season = 'curr'
+    if season == 'past' and mode not in ('5v5', '3v3', '2v2'): mode = '5v5'
+    if mode not in ('5v5', '3v3', '2v2'): mode = '5v5'
+    text = _leaderboard_text(season, mode)
+    await _edit_html(query, text, reply_markup=_leaderboard_keyboard(season, mode))
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  О СЕЗОНЕ / ПРАВИЛА / ПОДДЕРЖКА / РЕПОРТ
+# ══════════════════════════════════════════════════════════════════════════════
+
+async def action_season(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    conn = sqlite3.connect('faceit_bot.db')
+    c = conn.cursor()
+    c.execute('''SELECT COALESCE(first_name, username), elo, wins, matches_played
+                 FROM users WHERE is_banned = 0 AND elo > 0 ORDER BY elo DESC LIMIT 3''')
+    top = c.fetchall()
+    conn.close()
+    medals = [
+        '<tg-emoji emoji-id="5801004944211317728">🥇</tg-emoji>',
+        '<tg-emoji emoji-id="5303516017572460859">🥈</tg-emoji>',
+        '<tg-emoji emoji-id="5801072138974663924">🥉</tg-emoji>',
+    ]
+    top_lines = ""
+    if top:
+        top_lines = f"\n\n{E_CROWN} <b>Топ-3 игрока:</b>\n"
+        for i, (name, elo, wins, matches) in enumerate(top):
+            winrate = round(wins / matches * 100) if matches > 0 else 0
+            top_lines += f"{medals[i]} <b>{name}</b> — ELO: <b>{elo}</b> | WR: {winrate}%\n"
+    intro = (
+        f'<tg-emoji emoji-id="5402477260982731644">☀️</tg-emoji> <b>Летний сезон фейсита ждёт вас!</b>\n\n'
+        f"{E_ZAP} Мы подготовили для вас награды, которые дадут вам мотивацию "
+        f"играть усердно и сильно, удачи в бою!"
+    )
+    prizes = (
+        f"\n\n{E_TROPHY} <b>Призовые места:</b>\n"
+        f"{medals[0]} 1 место — <b>400к голды</b>\n"
+        f"{medals[1]} 2 место — <b>200к голды + приз</b>\n"
+        f"{medals[2]} 3 место — <b>100к голды + утеш.приз</b>"
+    )
+    season_end_date = get_setting('season_end_date', '01.09.2026')
+    await _reply_html(update.effective_message, f"{intro}\n\n{E_CAL} Дата окончания сезона: <b>{season_end_date}</b>" + prizes + top_lines)
+
+
+async def action_rules(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await _reply_html(update.effective_message,
+        f'{E_RULES} <b>Правила Moon Faceit</b>\n\nНажмите кнопку ниже:',
+        reply_markup=InlineKeyboardMarkup([[
+            InlineKeyboardButton("📄 Открыть правила", url=RULES_URL)
+        ]])
+    )
+
+
+def _make_custom_emoji_message(parts: list[tuple[str, str | None]]) -> tuple[str, list[MessageEntity]]:
+    """Build message text + MessageEntity list for custom emoji.
+    parts: list of (text, emoji_id_or_None). emoji_id triggers a custom_emoji entity.
+    Offsets are computed in UTF-16 code units as required by Telegram Bot API."""
+    text = ""
+    entities: list[MessageEntity] = []
+    for part_text, emoji_id in parts:
+        if emoji_id:
+            offset = len(text.encode("utf-16-le")) // 2
+            length = len(part_text.encode("utf-16-le")) // 2
+            entities.append(MessageEntity(
+                type=MessageEntity.CUSTOM_EMOJI,
+                offset=offset,
+                length=length,
+                custom_emoji_id=emoji_id,
+            ))
+        text += part_text
+    return text, entities
+
+
+async def action_support(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await _reply_html(update.effective_message,
+        '<tg-emoji emoji-id="5854841392899036819">💪</tg-emoji> <b>Поддержка Moon Faceit</b>\n\n'
+        f'• {E_HANDSHAKE} Сотрудничество\n'
+        '• <tg-emoji emoji-id="5436113877181941026">❓</tg-emoji> Вопросы\n'
+        '• <tg-emoji emoji-id="5445397693805373887">🪲</tg-emoji> Баги\n\n'
+        f'{E_RIGHT} По всем вопросам: @MoonFaceitGroup'
+    )
+
+
+async def action_donate(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await _reply_html(update.effective_message,
+        '<tg-emoji emoji-id="5409048419211682843">💰</tg-emoji> <b>Донат</b>\n\n'
+        '<tg-emoji emoji-id="5282843764451195532">📋</tg-emoji> <b>Прайс-лист:</b>\n'
+        '  <tg-emoji emoji-id="5393551318214257273">🟡</tg-emoji> Снятие варна — <b>50₽</b>\n'
+        '  <tg-emoji emoji-id="5319247469165433798">🔓</tg-emoji> Снятие бана — <b>200₽</b>\n'
+        '  <tg-emoji emoji-id="5319247469165433798">✏️</tg-emoji> Смена ника — <b>30₽</b>\n'
+        '  <tg-emoji emoji-id="5319247469165433798">🎮</tg-emoji> Смена айди — <b>30₽</b>\n\n'
+        '  <tg-emoji emoji-id="5282843764451195532">💳</tg-emoji> <b>Сбербанк:</b> <code>2202202358610735</code>\n\n'
+        '<i>После оплаты обратись к администратору.</i>',
+        reply_markup=InlineKeyboardMarkup([[
+            InlineKeyboardButton("Telegram Stars", url="https://t.me/tainygod", api_kwargs={'icon_custom_emoji_id': '5438496463044752972'})
+        ]]))
+
+
+async def action_donate_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await _reply_html(update.effective_message, f'<tg-emoji emoji-id="5409048419211682843">💵</tg-emoji> <b>Донат</b>\n\n'
+        f'{E_PRICE} <b>100 Moon Coins</b> — <b>80</b>\n'
+        f'{E_PRICE} <b>500 Moon Coins</b> — <b>350</b>\n'
+        f'{E_PRICE} <b>Своё количество Moon Coins</b>\n\n'
+        f'<tg-emoji emoji-id="5465198403573012261">👉</tg-emoji>'
+        f' За донатом — @MoonFaceitGroup')
+
+
+async def action_shop(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    uid  = update.effective_user.id
+    user = get_user(uid)
+    moon_coins = 0
+    if user:
+        try:
+            import sqlite3 as _sq
+            _c4 = _sq.connect('faceit_bot.db')
+            try:
+                _cur4 = _c4.cursor()
+                _cur4.execute('SELECT moon_coins FROM users WHERE user_id=?', (uid,))
+                _r4 = _cur4.fetchone()
+                moon_coins = int(_r4[0] or 0) if _r4 else 0
+            finally:
+                _c4.close()
+        except Exception:
+            pass
+
+    # Собираем все предметы из магазина
+    items = []
+    for cat_key in _SHOP_SKINS_ORDER:
+        _, cat_items = _SHOP_SKINS[cat_key]
+        for name, price in cat_items:
+            items.append({'name': name, 'price': price})
+    for cat_key in _SHOP_KNIVES_ORDER:
+        _, cat_items = _SHOP_KNIVES[cat_key]
+        for name, price in cat_items:
+            items.append({'name': name, 'price': price})
+    for name, price in _SHOP_STICKERS:
+        items.append({'name': name, 'price': price})
+
+    try:
+        png = await generate_shop_card(items=items or None, moon_coins=moon_coins)
+        # Карточка + текст с кнопками как два отдельных сообщения
+        await update.effective_message.reply_photo(png)
+        await _reply_html(update.effective_message,
+            f'{E_SHOP} <b>Магазин Moon Faceit</b>\n\n{E_RIGHT} Выбери категорию:',
+            reply_markup=shop_keyboard())
+    except Exception:
+        await _reply_html(update.effective_message, f'{E_SHOP} <b>Магазин Moon Faceit</b>\n\n'
+            f'{E_RIGHT} Выбери категорию:', reply_markup=shop_keyboard())
+
+
+async def shop_category_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    data = query.data
+
+    # ── Назад → главное меню магазина ──────────────────────────────────────
+    if data == "shop_back":
+        _t, _e = _parse_msg(f'{E_SHOP} <b>Магазин Moon Faceit</b>\n\n{E_RIGHT} Выбери категорию:')
+        await query.message.edit_text(_t, entities=_e, reply_markup=shop_keyboard())
+        return
+
+    # ── Скины ──────────────────────────────────────────────────────────────
+    if data == "shop_cat_skins":
+        tab = _SHOP_SKINS_ORDER[0]
+    elif data.startswith("shop_nav_skins_"):
+        tab = data[len("shop_nav_skins_"):]
+    else:
+        tab = None
+
+    if tab and tab in _SHOP_SKINS:
+        label, items = _SHOP_SKINS[tab]
+        labels = {k: v[0] for k, v in _SHOP_SKINS.items()}
+        kb = _shop_tab_keyboard("skins", tab, _SHOP_SKINS_ORDER, labels, items)
+        text = _shop_page_text(
+            '<tg-emoji emoji-id="5409048419211682843">💵</tg-emoji>',
+            f"Скины — {label}"
+        )
+        _t, _e = _parse_msg(text); await query.message.edit_text(_t, entities=_e, reply_markup=kb)
+        return
+
+    # ── Ножи ───────────────────────────────────────────────────────────────
+    if data == "shop_cat_knives":
+        tab = _SHOP_KNIVES_ORDER[0]
+    elif data.startswith("shop_nav_knives_"):
+        tab = data[len("shop_nav_knives_"):]
+    else:
+        tab = None
+
+    if tab and tab in _SHOP_KNIVES:
+        label, items = _SHOP_KNIVES[tab]
+        labels = {k: v[0] for k, v in _SHOP_KNIVES.items()}
+        kb = _shop_tab_keyboard("knives", tab, _SHOP_KNIVES_ORDER, labels, items)
+        text = _shop_page_text(
+            '<tg-emoji emoji-id="5062267305124168856">🔪</tg-emoji>',
+            f"Ножи — {label}"
+        )
+        _t, _e = _parse_msg(text); await query.message.edit_text(_t, entities=_e, reply_markup=kb)
+        return
+
+    # ── Наклейки ───────────────────────────────────────────────────────────
+    if data == "shop_cat_stickers":
+        text = _shop_page_text(
+            '<tg-emoji emoji-id="5393619629669097759">💎</tg-emoji>',
+            "Наклейки"
+        )
+        sticker_rows = [
+            [_ebtn(f"{price}  —  {name}", "5377631390571472449", 2, "shop_buy_stickers")]
+            for name, price in _SHOP_STICKERS
+        ]
+        sticker_rows.append([_ebtn("Назад", "5255703720078879038", 2, "shop_back")])
+        _t, _e = _parse_msg(text); await query.message.edit_text(_t, entities=_e, reply_markup=InlineKeyboardMarkup(sticker_rows))
+        return
+
+    # ── Покупка товара ─────────────────────────────────────────────────────
+    if data.startswith("shop_buy_"):
+        buy_text = (
+            'Привет <tg-emoji emoji-id="5458797798495377338">🔥</tg-emoji> '
+            'Хочешь купить товар? Пиши — @MoonFaceitGroup — '
+            'Отвечаю быстро <tg-emoji emoji-id="5458908492687497206">🔥</tg-emoji>'
+        )
+        suffix = data[len("shop_buy_"):]
+        if "_" in suffix:
+            cat_part, tab_part = suffix.rsplit("_", 1)
+            back_cb = f"shop_nav_{cat_part}_{tab_part}"
+        else:
+            back_cb = "shop_cat_stickers"
+        kb = InlineKeyboardMarkup([[
+            _ebtn("Назад", "5255703720078879038", 2, back_cb)
+        ]])
+        _t, _e = _parse_msg(buy_text); await query.message.edit_text(_t, entities=_e, reply_markup=kb)
+
+
+async def action_report(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await _reply_html(update.effective_message, '<tg-emoji emoji-id="5395695537687123235">🚨</tg-emoji> <b>Репорт на игрока</b>\n\n'
+        "Для репорта укажи:\n• ID игрока\n• Причину\n• Скриншот/запись\n\n"
+        '<tg-emoji emoji-id="5377355726685497939">✉️</tg-emoji> Писать — @MoonFaceitGroup')
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  ПОИСК МАТЧА — выбор режима → лобби
+# ══════════════════════════════════════════════════════════════════════════════
+
+async def _check_ban(uid: int) -> Optional[str]:
+    """Возвращает сообщение о бане или None если не забанен."""
+    conn = sqlite3.connect('faceit_bot.db')
+    c = conn.cursor()
+    c.execute('SELECT is_banned, ban_reason, ban_until FROM users WHERE user_id=?', (uid,))
+    row = c.fetchone()
+    if row and row[0]:
+        ban_until = row[2]
+        reason = row[1] or "не указана"
+        if ban_until:
+            if datetime.datetime.utcnow() >= datetime.datetime.fromisoformat(ban_until):
+                c.execute('UPDATE users SET is_banned=0, ban_reason=NULL, ban_until=NULL WHERE user_id=?', (uid,))
+                conn.commit()
+                conn.close()
+                return None
+            else:
+                conn.close()
+                days = (datetime.datetime.fromisoformat(ban_until) - datetime.datetime.utcnow()).days + 1
+                return f"{E_BAN} <b>Вы заблокированы!</b>\nПричина: <b>{reason}</b>\nОсталось: ~{days} дн."
+        else:
+            conn.close()
+            return f"{E_BAN} <b>Вы заблокированы!</b>\nПричина: <b>{reason}</b>"
+    conn.close()
+    return None
+
+
+async def action_find_match(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    uid = update.effective_user.id
+    if not get_user(uid):
+        await update.effective_message.reply_text("Сначала нажмите /start.")
+        return
+    ban_msg = await _check_ban(uid)
+    if ban_msg:
+        await _reply_html(update.effective_message, ban_msg)
+        return
+
+    # Уже в лобби?
+    for mode, lobbies in lobby_queues.items():
+        for lid, q in lobbies.items():
+            if uid in q:
+                info = _lobby_msg_info.get(uid)
+                if info:
+                    chat_id, msg_id, _, _ = info
+                    match = MODES[mode]['match_size']
+                    text  = (
+                        f"{E_CHECK} <b>Вы в лобби {lid}  [{mode}]</b>  ({len(q)}/{match})\n"
+                        f"Ожидаем ещё <b>{match - len(q)}</b> игрок(ов)...\n\n"
+                        f"{E_PEOPLE} Игроки:\n{queue_list_text(lid, mode)}\n\n"
+                        f"{E_SEARCH} <i>Другие лобби:</i>"
+                    )
+                    try:
+                        _t, _e = _parse_msg(text)
+                        await context.bot.edit_message_text(
+                            chat_id=chat_id, message_id=msg_id,
+                            text=_t, entities=_e,
+                            reply_markup=lobby_list_keyboard(mode, uid_in_lobby=True)
+                        )
+                        return
+                    except Exception:
+                        pass
+                await update.effective_message.reply_text(
+                    f"Вы уже в лобби {lid} [{mode}]."
+                )
+                return
+
+    # Показываем выбор режима
+    await _reply_html(update.effective_message, f"{EP_GAME} <b>Выберите режим игры:</b>", reply_markup=mode_select_keyboard())
+
+
+async def mode_select_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Обрабатывает нажатие mode_5v5 / mode_3v3."""
+    query = update.callback_query
+    await query.answer()
+    uid  = query.from_user.id
+    mode = query.data.split("_", 1)[1]   # "5v5", "3v3" или "2v2"
+
+    if not get_user(uid):
+        await query.answer("Сначала нажмите /start.", show_alert=True)
+        return
+    ban_msg = await _check_ban(uid)
+    if ban_msg:
+        await query.answer("Вы заблокированы.", show_alert=True)
+        return
+
+    # Уже в очереди?
+    for m, lobbies in lobby_queues.items():
+        for lid, q in lobbies.items():
+            if uid in q:
+                await query.answer(f"Вы уже в лобби {lid} [{m}]. Выйдите сначала.", show_alert=True)
+                return
+
+    cfg   = MODES[mode]
+    text  = (
+        f"{cfg['emoji']} <b>Режим {mode}</b>\n\n"
+        f"{E_SEARCH} <b>Выберите лобби:</b>"
+    )
+    try:
+        await _edit_html(query, text, reply_markup=lobby_list_keyboard(mode))
+    except Exception:
+        sent = await _reply_html(query.message, text, reply_markup=lobby_list_keyboard(mode))
+        _lobby_selector_msg[uid] = (sent.chat_id, sent.message_id)
+
+
+async def lobby_join_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """callback_data = lobby_join_{mode}_{lobby_id}"""
+
+    query    = update.callback_query
+    parts    = query.data.split("_")         # ['lobby','join','5v5','1']
+    mode     = parts[2]
+    lobby_id = int(parts[3])
+    uid      = query.from_user.id
+
+    if not get_user(uid):
+        await query.answer("Сначала нажмите /start.", show_alert=True)
+        return
+    ban_msg = await _check_ban(uid)
+    if ban_msg:
+        await query.answer("Вы заблокированы.", show_alert=True)
+        return
+
+    # Уже в какой-то очереди?
+    for m, lobbies in lobby_queues.items():
+        for lid, q in lobbies.items():
+            if uid in q:
+                await query.answer(f"Вы уже в лобби {lid} [{m}]. Выйдите сначала.", show_alert=True)
+                return
+
+    if mode not in MODES:
+        await query.answer("Неизвестный режим.", show_alert=True)
+        return
+
+    lobby      = lobby_queues[mode][lobby_id]
+    match_size = MODES[mode]['match_size']
+    lobby.append(uid)
+    pos = len(lobby)
+    _queue_join_time[uid] = datetime.datetime.utcnow()
+    await query.answer(f"✅ Вы вступили в лобби {lobby_id} [{mode}]!")
+
+    if pos < match_size:
+        markup = lobby_list_keyboard(mode, uid_in_lobby=True)
+        text = (
+            f"{E_CHECK} <b>Вы в лобби {lobby_id}  [{mode}]</b>  ({pos}/{match_size})\n"
+            f"Ожидаем ещё <b>{match_size - pos}</b> игрок(ов)...\n\n"
+            f"{E_PEOPLE} Игроки:\n{queue_list_text(lobby_id, mode)}\n\n"
+            f"{E_SEARCH} <i>Другие лобби:</i>"
+        )
+        try:
+            await _edit_html(query, text, reply_markup=markup)
+        except Exception:
+            sent = await _reply_html(query.message, text, reply_markup=markup)
+            _lobby_msg_info[uid] = (sent.chat_id, sent.message_id, lobby_id, mode)
+            _lobby_selector_msg.pop(uid, None)
+            await _refresh_lobby_messages(context, lobby_id, mode, exclude_uid=uid)
+            return
+        _lobby_msg_info[uid] = (query.message.chat_id, query.message.message_id, lobby_id, mode)
+        _lobby_selector_msg.pop(uid, None)
+        await _refresh_lobby_messages(context, lobby_id, mode, exclude_uid=uid)
+        return
+
+    # Лобби заполнено — запускаем подтверждение
+    players_ids = list(lobby[:match_size])
+    # Сохраняем ссылки на сообщения ДО cleanup, чтобы start_confirmation отредактировал их на месте
+    prior_msg_info: dict[int, tuple[int, int]] = {}
+    for u in players_ids:
+        if u in _lobby_msg_info:
+            ch, mi, _, _ = _lobby_msg_info[u]
+            prior_msg_info[u] = (ch, mi)
+    # Сообщение самого последнего вошедшего доступно напрямую через query
+    prior_msg_info[uid] = (query.message.chat_id, query.message.message_id)
+    lobby_queues[mode][lobby_id].clear()
+    for u in players_ids:
+        _cleanup_uid(u)
+    # Немедленный фидбек для последнего вошедшего: даже если edit в start_confirmation
+    # и fallback send оба не сработают — игрок увидит хоть что-то
+    _MODE_PREMIUM_EMOJI = {'5v5': E_SWORD, '3v3': E_SHIELD, '2v2': E_HANDSHAKE}
+    try:
+        mode_icon = _MODE_PREMIUM_EMOJI.get(mode, E_SWORD)
+        await _edit_html(query,
+            f"{mode_icon} <b>Лобби {lobby_id} [{mode}]:</b> набралось {match_size} игроков! "
+            "Ожидаем подтверждения...")
+    except Exception:
+        pass
+    await start_confirmation(context, players_ids, mode, prior_msg_info=prior_msg_info)
+
+
+async def lobby_leave_inline_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    uid   = query.from_user.id
+
+    left_lobby = None
+    left_mode  = None
+    for m, lobbies in lobby_queues.items():
+        for lid, q in lobbies.items():
+            if uid in q:
+                q.remove(uid)
+                left_lobby = lid
+                left_mode  = m
+                break
+        if left_lobby:
+            break
+
+    _lobby_msg_info.pop(uid, None)
+    _queue_join_time.pop(uid, None)
+
+    if left_lobby is not None:
+        await _refresh_lobby_messages(context, left_lobby, left_mode)
+        text   = f"{E_DOOR} Вы вышли из лобби {left_lobby} [{left_mode}].\n\n{EP_GAME} <b>Выберите режим:</b>"
+        markup = mode_select_keyboard()
+        try:
+            await _edit_html(query, text, reply_markup=markup)
+        except Exception:
+            await _reply_html(query.message, text, reply_markup=markup)
+    else:
+        await query.answer("Вы не в очереди.", show_alert=True)
+
+
+async def action_leave_queue(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    uid = update.effective_user.id
+    left_lobby = None
+    left_mode  = None
+    for m, lobbies in lobby_queues.items():
+        for lid, q in lobbies.items():
+            if uid in q:
+                q.remove(uid)
+                left_lobby = lid
+                left_mode  = m
+                break
+        if left_lobby:
+            break
+    _lobby_msg_info.pop(uid, None)
+    _queue_join_time.pop(uid, None)
+    if left_lobby is not None:
+        await _refresh_lobby_messages(context, left_lobby, left_mode)
+        await _reply_html(update.message, f"{E_DOOR} Вы вышли из лобби {left_lobby} [{left_mode}].\n\n{EP_GAME} Выберите режим:", reply_markup=mode_select_keyboard())
+    else:
+        await update.message.reply_text("Вы не в очереди.")
+
+
+async def action_queue_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    msg = f"{E_PEOPLE} <b>Статус лобби:</b>\n"
+    for mode in MODES:
+        match = MODES[mode]['match_size']
+        msg  += f"\n{MODES[mode]['emoji']} <b>Режим {mode}</b>\n"
+        for i in range(1, 6):
+            q = lobby_queues[mode][i]
+            msg += f"  Лобби {i}: {len(q)}/{match}\n"
+            if txt := queue_list_text(i, mode):
+                msg += txt + "\n"
+    await _reply_html(update.effective_message, msg.strip())
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  ПОДТВЕРЖДЕНИЕ МАТЧА
+# ══════════════════════════════════════════════════════════════════════════════
+
+async def _job_confirm_timeout(context: ContextTypes.DEFAULT_TYPE):
+    session_id: int = context.job.data['session_id']
+    state = confirm_state.get(session_id)
+    if not state:
+        return
+
+    mode        = state['mode']
+    afk_players = [uid for uid in state['real_players'] if uid not in state['confirmed']]
+    ok_players  = [uid for uid in state['real_players'] if uid in state['confirmed']]
+
+    conn = sqlite3.connect('faceit_bot.db')
+    c = conn.cursor()
+    afk_names = []
+    for uid in afk_players:
+        c.execute('SELECT COALESCE(first_name, username) FROM users WHERE user_id=?', (uid,))
+        row = c.fetchone()
+        afk_names.append(row[0] if row else str(uid))
+    conn.close()
+
+    del confirm_state[session_id]
+    afk_list = ", ".join(afk_names) if afk_names else "—"
+
+    for uid in afk_players:
+        _cleanup_uid(uid)
+        try:
+            await _send_html(context.bot, uid, (
+                    f"{E_BAN} <b>Вы были кикнуты с лобби.</b>\n\n"
+                    f"Причина: Игнорирование подтверждения матча."
+                ))
+        except Exception:
+            pass
+
+    if not ok_players:
+        return
+
+    # Возвращаем подтвердивших в очередь того же режима
+    target_lobby = min(range(1, 6), key=lambda i: len(lobby_queues[mode][i]))
+    rejoined     = []
+    for uid in ok_players:
+        in_any = any(uid in q for m in MODES for q in lobby_queues[m].values())
+        if not in_any:
+            lobby_queues[mode][target_lobby].append(uid)
+            _queue_join_time[uid] = datetime.datetime.utcnow()
+            rejoined.append(uid)
+
+    match_size = MODES[mode]['match_size']
+    lobby_size = len(lobby_queues[mode][target_lobby])
+    queue_txt  = queue_list_text(target_lobby, mode)
+
+    for uid in rejoined:
+        try:
+            sent = await _send_html(context.bot, uid, (
+                    f"{E_CROSS} <b>Матч отменён</b>\n\n"
+                    f"{E_BAN} Не подтвердили за {CONFIRM_TIMEOUT_SEC} сек: <b>{afk_list}</b>\n\n"
+                    f"{E_RELOAD} Вы возвращены в <b>лобби {target_lobby} [{mode}]</b> "
+                    f"({lobby_size}/{match_size}).\n\n{E_PEOPLE} Игроки:\n{queue_txt}"
+                ))
+            _lobby_msg_info[uid] = (sent.chat_id, sent.message_id, target_lobby, mode)
+        except Exception:
+            pass
+
+    if lobby_size >= match_size:
+        players_to_start = list(lobby_queues[mode][target_lobby][:match_size])
+        prior_msg_info: dict[int, tuple[int, int]] = {}
+        for u in players_to_start:
+            if u in _lobby_msg_info:
+                ch, mi, _, _ = _lobby_msg_info[u]
+                prior_msg_info[u] = (ch, mi)
+        lobby_queues[mode][target_lobby].clear()
+        for u in players_to_start:
+            _cleanup_uid(u)
+        await start_confirmation(context, players_to_start, mode, prior_msg_info=prior_msg_info)
+
+
+async def start_confirmation(context, players_ids: list, mode: str,
+                             prior_msg_info: dict | None = None):
+    global _confirm_counter
+    _confirm_counter += 1
+    session_id = _confirm_counter
+
+    real_players = [uid for uid in players_ids if not is_bot(uid)]
+    confirmed    = set(uid for uid in players_ids if is_bot(uid))
+
+    confirm_state[session_id] = {
+        'players':      list(players_ids),
+        'real_players': real_players,
+        'confirmed':    confirmed,
+        'mode':         mode,
+    }
+
+    keyboard   = InlineKeyboardMarkup([[
+        InlineKeyboardButton("✔️ Подтвердить", callback_data=f"confirm_{session_id}")
+    ]])
+    match_size = MODES[mode]['match_size']
+
+    conn = sqlite3.connect('faceit_bot.db')
+    c = conn.cursor()
+    names = []
+    for uid in players_ids:
+        c.execute('SELECT COALESCE(first_name, username) FROM users WHERE user_id=?', (uid,))
+        row = c.fetchone()
+        names.append(_esc(row[0]) if row else str(uid))
+    conn.close()
+
+    _PREMIUM_MODE_ICON = {'5v5': E_SWORD, '3v3': E_SHIELD, '2v2': E_HANDSHAKE}
+    mode_icon_confirm = _PREMIUM_MODE_ICON.get(mode, E_SWORD)
+    player_list = "\n".join(
+        f"  {E_CONFIRM if is_bot(uid) else E_WAITING} {names[i]}"
+        for i, uid in enumerate(players_ids)
+    )
+    msg = (
+        f"{mode_icon_confirm} <b>Матч [{mode}] найден!</b>\n\n"
+        f"{E_TEAM} Игроки:\n{player_list}\n\n"
+        f"Нажми <b>Подтвердить</b> для участия.\n"
+        f"Подтвердили: <b>{len(confirmed)}/{match_size}</b>\n"
+        f"{EP_TIMER} Осталось: <b>{CONFIRM_TIMEOUT_SEC} сек</b>"
+    )
+    _confirm_msg_info[session_id] = {}
+    for uid in real_players:
+        # Пробуем отредактировать существующее сообщение (лобби-карточку),
+        # чтобы кнопка «Подтвердить» появилась прямо на том месте, где игрок уже смотрит.
+        # Если редактирование не удаётся — отправляем новое сообщение.
+        prior = prior_msg_info.get(uid) if prior_msg_info else None
+        if prior:
+            chat_id_p, msg_id_p = prior
+            try:
+                await context.bot.edit_message_text(
+                    chat_id=chat_id_p,
+                    message_id=msg_id_p,
+                    text=msg,
+                    parse_mode='HTML',
+                    reply_markup=keyboard,
+                )
+                _confirm_msg_info[session_id][uid] = (chat_id_p, msg_id_p)
+                continue
+            except Exception as _edit_err:
+                logger.warning("[start_confirmation] edit failed uid=%s chat=%s msg=%s: %s",
+                               uid, chat_id_p, msg_id_p, _edit_err)
+                # не удалось — пробуем отправить новое
+        try:
+            sent = await context.bot.send_message(
+                chat_id=uid,
+                text=msg,
+                parse_mode='HTML',
+                reply_markup=keyboard,
+            )
+            _confirm_msg_info[session_id][uid] = (uid, sent.message_id)
+        except Exception as _err:
+            logger.error("[start_confirmation] uid=%s send error: %s", uid, _err, exc_info=True)
+
+    if len(confirmed) >= match_size:
+        del confirm_state[session_id]
+        await start_draft(context, players_ids, mode)
+        return
+
+    if context.job_queue:
+        context.job_queue.run_once(
+            _job_confirm_timeout,
+            when=CONFIRM_TIMEOUT_SEC,
+            data={'session_id': session_id},
+            name=f"confirm_timeout_{session_id}"
+        )
+
+
+async def confirm_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query      = update.callback_query
+    session_id = int(query.data.split("_")[1])
+    uid        = query.from_user.id
+
+    state = confirm_state.get(session_id)
+    if not state:
+        await query.answer("Это подтверждение уже истекло.", show_alert=True)
+        return
+    if uid not in state['real_players']:
+        await query.answer("Вы не участник этого матча.", show_alert=True)
+        return
+    if uid in state['confirmed']:
+        await query.answer("Вы уже подтвердили участие.", show_alert=True)
+        return
+
+    state['confirmed'].add(uid)
+    await query.answer("✅ Участие подтверждено!")
+
+    mode       = state['mode']
+    total      = len(state['players'])
+    confirmed  = len(state['confirmed'])
+
+    conn = sqlite3.connect('faceit_bot.db')
+    c = conn.cursor()
+    names = []
+    for pid in state['players']:
+        c.execute('SELECT COALESCE(first_name, username) FROM users WHERE user_id=?', (pid,))
+        row = c.fetchone()
+        names.append(_esc(row[0]) if row else str(pid))
+    conn.close()
+
+    _PREMIUM_MODE_ICON = {'5v5': E_SWORD, '3v3': E_SHIELD, '2v2': E_HANDSHAKE}
+    mode_icon_confirm = _PREMIUM_MODE_ICON.get(mode, E_SWORD)
+    player_list = "\n".join(
+        f"  {E_CONFIRM if pid in state['confirmed'] else E_WAITING} {names[i]}"
+        for i, pid in enumerate(state['players'])
+    )
+    updated_msg = (
+        f"{mode_icon_confirm} <b>Матч [{mode}] найден!</b>\n\n"
+        f"{E_TEAM} Игроки:\n{player_list}\n\n"
+        f"Подтвердили: <b>{confirmed}/{total}</b>"
+    )
+    keyboard = InlineKeyboardMarkup([[
+        InlineKeyboardButton("✔️ Подтвердить", callback_data=f"confirm_{session_id}")
+    ]])
+
+    if confirmed >= total:
+        players_ids = state['players']
+        msg_info = _confirm_msg_info.pop(session_id, {})
+        del confirm_state[session_id]
+        # Обновляем сообщение кликнувшего (убираем кнопку)
+        try:
+            await query.edit_message_text(
+                text=updated_msg, parse_mode='HTML', reply_markup=None
+            )
+        except Exception:
+            pass
+        # Обновляем сообщения всех остальных игроков (убираем кнопку)
+        for pid in state['real_players']:
+            if pid == uid:
+                continue
+            chat_id_p, msg_id_p = msg_info.get(pid, (None, None))
+            if chat_id_p is None:
+                continue
+            try:
+                await context.bot.edit_message_text(
+                    chat_id=chat_id_p,
+                    message_id=msg_id_p,
+                    text=updated_msg,
+                    parse_mode='HTML',
+                    reply_markup=None,
+                )
+            except Exception:
+                pass
+        for pid in state['real_players']:
+            try:
+                await context.bot.send_message(chat_id=pid, text=f"{E_CIRCLE_M} <b>Все подтвердили! Начинается выбор состава...</b>", parse_mode='HTML')
+            except Exception:
+                pass
+        await start_draft(context, players_ids, mode)
+    else:
+        msg_info = _confirm_msg_info.get(session_id, {})
+        # Сообщение кликающего — через query (иначе Telegram отклоняет pending callback)
+        try:
+            await query.edit_message_text(
+                text=updated_msg, parse_mode='HTML', reply_markup=keyboard
+            )
+        except Exception:
+            pass
+        # Все остальные — через bot.edit_message_text
+        for pid in state['real_players']:
+            if pid == uid:
+                continue  # уже обновили через query выше
+            chat_id_p, msg_id_p = msg_info.get(pid, (None, None))
+            if chat_id_p is None:
+                continue
+            try:
+                await context.bot.edit_message_text(
+                    chat_id=chat_id_p,
+                    message_id=msg_id_p,
+                    text=updated_msg,
+                    parse_mode='HTML',
+                    reply_markup=keyboard,
+                )
+            except Exception:
+                pass
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  ДРАФТ
+# ══════════════════════════════════════════════════════════════════════════════
+
+def draft_status_text(draft: dict, title: str = None) -> str:
+    data        = draft['player_data']
+    mode        = draft['mode']
+    pick_order  = MODES[mode]['pick_order']
+    calib_games = MODES[mode]['calib_games']
+    match_size  = MODES[mode]['match_size']
+    team_size   = match_size // 2
+    cap1        = draft['captain1']
+    cap2        = draft['captain2']
+
+    def player_badge(uid):
+        p = data[uid]
+        off_val = p.get('official_badge', 0)
+        off = (f" {E_OFF1}" if off_val == 1 else f" {E_OFF2}" if off_val == 2 else f" {E_OFF3}" if off_val == 3 else "")
+        return (f" {E_CHECK}" if p.get('is_creator') else "") + (f" {E_ADMIN}" if p.get('is_admin') else "") + off
+
+    def player_link(uid, name):
+        # tg://user?id=<uid> открывает профиль игрока в Telegram по его id —
+        # работает даже без юзернейма, в отличие от @username-упоминаний.
+        return f'<a href="tg://user?id={uid}">{_esc(name)}</a>'
+
+    def team_lines(uids):
+        lines = []
+        for uid in uids:
+            p   = data[uid]
+            mp  = p.get('matches_played', 0)
+            badge = player_badge(uid)
+            name_link = player_link(uid, p['name'])
+            if mp < calib_games:
+                lvl_icon = LEVEL_ICONS[0]
+                lines.append(f"  • <b>{name_link}</b>{badge}  〔{lvl_icon}〕")
+            else:
+                lvl_icon = LEVEL_ICONS.get(elo_to_level(p['elo']), "")
+                lines.append(f"  • <b>{name_link}</b>{badge}  〔{lvl_icon}〕  <code>{p['elo']}</code> ELO")
+        return "\n".join(lines) if lines else "  —"
+
+    pick_idx      = draft['pick_index']
+    draft_over    = pick_idx >= len(pick_order)
+    lines: list[str] = []
+
+    if title:
+        lines.append(title)
+
+    if not draft_over:
+        current_team = pick_order[pick_idx]
+        cap = cap1 if current_team == 1 else cap2
+        lines.append(f"{E_RIGHT} Сейчас выбирает: <b>{_esc(data[cap]['name'])}</b> (Команда {current_team})")
+
+    lines.append("")
+    lines.append(f"{E_CROWN} Капитан <tg-emoji emoji-id=\"5416081784641168838\">🟢</tg-emoji> Команда 1: <b>{player_link(cap1, data[cap1]['name'])}</b>")
+    lines.append(f"{E_CROWN} Капитан <tg-emoji emoji-id=\"5411225014148014586\">🔴</tg-emoji> Команда 2: <b>{player_link(cap2, data[cap2]['name'])}</b>")
+    lines.append("━━━━━━━━━━━━━━━━━━━")
+    lines.append("")
+    lines.append(f"{E_TEAM} Команда 1 ({len(draft['team1'])}/{team_size})")
+    lines.append(team_lines(draft['team1']))
+    lines.append("")
+    lines.append(f"{E_TEAM} Команда 2 ({len(draft['team2'])}/{team_size})")
+    lines.append(team_lines(draft['team2']))
+    lines.append("━━━━━━━━━━━━━━━━━━━")
+    lines.append("")
+
+    if draft_over:
+        lines.append(f"<tg-emoji emoji-id=\"5206607081334906820\">✔️</tg-emoji> Драфт завершён!")
+    else:
+        lines.append(f"<tg-emoji emoji-id=\"5123230779593196220\">⏰</tg-emoji> Выберите игрока ({len(draft['remaining'])} свободных):")
+
+    return "\n".join(lines)
+
+
+def pick_keyboard(match_id: int, remaining: list, player_data: dict, calib_games: int = 0) -> InlineKeyboardMarkup:
+    import re as _re_eid
+    _eid_re = _re_eid.compile(r'emoji-id=["\'](\d+)["\']')
+
+    def _btn(uid):
+        p  = player_data[uid]
+        mp = p.get('matches_played', 0)
+        cb = f"pick_{match_id}_{uid}"
+        if mp < calib_games:
+            # Калибровка: только имя + значок калибровки, ELO не показываем
+            icon_html = LEVEL_ICONS[0]
+            label     = p['name']
+        else:
+            # Откалиброван: имя + ELO, уровень — премиум-значком на кнопке
+            icon_html = LEVEL_ICONS.get(elo_to_level(p['elo']), "")
+            label     = f"{p['name']} — {p['elo']} ELO"
+        m = _eid_re.search(icon_html)
+        if m:
+            return _ebtn(label, m.group(1), 2, cb)
+        return InlineKeyboardButton(label, callback_data=cb)
+
+    return InlineKeyboardMarkup([
+        [_btn(uid)]
+        for uid in remaining
+    ])
+
+
+def _cancel_pick_timer(context, match_id: int):
+    """Отменяет текущий таймер авто-пика для матча."""
+    if not context.job_queue:
+        return
+    for job in context.job_queue.get_jobs_by_name(f"pick_timeout_{match_id}"):
+        job.schedule_removal()
+
+
+async def _job_pick_timeout(context: ContextTypes.DEFAULT_TYPE):
+    """Job: капитан не выбрал игрока за PICK_TIMEOUT_SEC — авто-пик случайного."""
+    match_id:          int = context.job.data['match_id']
+    expected_pick_idx: int = context.job.data['expected_pick_idx']
+
+    async with _get_draft_lock(match_id):
+        draft = draft_state.get(match_id)
+        # Если драфт уже завершён или ход сменился (ручной пик успел) — ничего не делаем
+        if not draft or draft.get('finalized') or not draft['remaining']:
+            return
+
+        pick_order = MODES[draft['mode']]['pick_order']
+        pick_idx   = draft['pick_index']
+        if pick_idx >= len(pick_order):
+            return
+        # Ключевая проверка: этот job был запланирован для другого хода
+        if pick_idx != expected_pick_idx:
+            return
+
+        current_team = pick_order[pick_idx]
+        current_cap  = draft['captain1'] if current_team == 1 else draft['captain2']
+        cap_name     = draft['player_data'][current_cap]['name']
+
+        # Авто-пик: случайный свободный игрок
+        auto_uid  = random.choice(draft['remaining'])
+        auto_name = draft['player_data'][auto_uid]['name']
+
+        draft['remaining'].remove(auto_uid)
+        if current_team == 1:
+            draft['team1'].append(auto_uid)
+        else:
+            draft['team2'].append(auto_uid)
+        draft['pick_index'] += 1
+
+        should_finalize = draft['pick_index'] >= len(pick_order)
+        if should_finalize:
+            draft['finalized'] = True
+            draft_state.pop(match_id, None)
+            _release_draft_lock(match_id)
+
+    # Уведомляем всех об авто-пике (вне лока — только IO)
+    notify_msg = (
+        f"{EP_TIMER} <b>{_esc(cap_name)}</b> не выбрал игрока за {PICK_TIMEOUT_SEC} сек.\n"
+        f"Авто-выбран: <b>{_esc(auto_name)}</b> в Команду {current_team}."
+    )
+    for uid in draft['all_players']:
+        if is_bot(uid):
+            continue
+        try:
+            await context.bot.send_message(chat_id=uid, text=notify_msg, parse_mode='HTML')
+        except Exception:
+            pass
+
+    if should_finalize:
+        await finalize_draft(context, draft)
+    else:
+        status = draft_status_text(draft)
+        for uid in draft['all_players']:
+            if is_bot(uid):
+                continue
+            try:
+                await context.bot.send_message(chat_id=uid, text=status, parse_mode='HTML')
+            except Exception:
+                pass
+        await send_pick_keyboard(context, draft)
+
+
+async def send_pick_keyboard(context, draft: dict):
+    pick_order = MODES[draft['mode']]['pick_order']
+    pick_idx   = draft['pick_index']
+    if pick_idx >= len(pick_order):
+        return
+    current_team = pick_order[pick_idx]
+    cap          = draft['captain1'] if current_team == 1 else draft['captain2']
+    match_id     = draft['match_id']
+    calib_games  = MODES[draft['mode']]['calib_games']
+    keyboard     = pick_keyboard(match_id, draft['remaining'], draft['player_data'], calib_games)
+
+    # Отменяем предыдущий таймер и планируем новый
+    _cancel_pick_timer(context, match_id)
+
+    if not is_bot(cap):
+        try:
+            pick_msg = (
+                f"{E_AIM} Ваш ход! Выберите игрока в <b>Команду {current_team}</b>:"
+                f"\n{EP_TIMER} У вас <b>{PICK_TIMEOUT_SEC} сек</b>, иначе выберется случайный."
+            )
+            await context.bot.send_message(
+                chat_id=cap,
+                text=pick_msg,
+                parse_mode='HTML',
+                reply_markup=keyboard,
+            )
+        except Exception:
+            pass
+
+    if context.job_queue:
+        context.job_queue.run_once(
+            _job_pick_timeout,
+            when=PICK_TIMEOUT_SEC,
+            data={'match_id': match_id, 'expected_pick_idx': pick_idx},
+            name=f"pick_timeout_{match_id}",
+        )
+
+
+async def start_draft(context, players_ids: list, mode: str):
+    conn        = sqlite3.connect('faceit_bot.db')
+    c           = conn.cursor()
+    creator_ids = get_creator_ids()
+    admin_ids   = get_admin_ids()
+    player_data = {}
+    _ec, _mc, _wc, _lc = mode_cols(mode)
+    for pid in players_ids:
+        c.execute(
+            f'SELECT user_id, COALESCE(first_name, username), {_ec}, game_id, {_mc}, official_badge FROM users WHERE user_id=?',
+            (pid,)
+        )
+        row = c.fetchone()
+        if row:
+            player_data[row[0]] = {'name': row[1], 'elo': row[2] or 0,
+                                   'is_creator': row[0] in creator_ids,
+                                   'is_admin':   row[0] in admin_ids,
+                                   'game_id': row[3] or '',
+                                   'matches_played': row[4] or 0,
+                                   'official_badge': row[5] or 0}
+    c.execute("INSERT INTO team_matches (status, mode) VALUES ('draft', ?)", (mode,))
+    match_id = c.lastrowid
     conn.commit()
     conn.close()
 
-
-def _creator_panel_kb():
-    kb = InlineKeyboardBuilder()
-    kb.add(
-        types.InlineKeyboardButton(text="📊 Статистика бота",          callback_data="creator_botstats"),
-        types.InlineKeyboardButton(text="📋 Логи админов",             callback_data="creator_logs"),
-    )
-    kb.add(
-        types.InlineKeyboardButton(text="📢 Рассылка",                 callback_data="creator_broadcast"),
-        types.InlineKeyboardButton(text="🎁 Выдать Premium",           callback_data="creator_give_premium"),
-    )
-    kb.add(
-        types.InlineKeyboardButton(text="✅ Верификация игрока",       callback_data="creator_verify_player"),
-        types.InlineKeyboardButton(text="🛡️ Управление админами",     callback_data="creator_manage_admins"),
-    )
-    kb.add(
-        types.InlineKeyboardButton(text="🏆 Новый сезон",              callback_data="creator_new_season"),
-        types.InlineKeyboardButton(text="💰 Монеты игроку",            callback_data="creator_give_coins"),
-    )
-    kb.add(
-        types.InlineKeyboardButton(text="📦 Добавить пакет монет",     callback_data="creator_add_coinpack"),
-    )
-    kb.add(
-        types.InlineKeyboardButton(text="💱 Цены товаров",             callback_data="creator_shop_prices"),
-    )
-    kb.add(
-        types.InlineKeyboardButton(text="🧹 Обнулить стату всех",      callback_data="creator_reset_all"),
-        types.InlineKeyboardButton(text="👤 Обнулить стату игрока",    callback_data="creator_reset_player"),
-    )
-    kb.add(
-        types.InlineKeyboardButton(text="💣 Обнулить ВСЁ",             callback_data="creator_reset_everything"),
-    )
-    kb.add(
-        types.InlineKeyboardButton(text="🔒 Ограничения для админов",  callback_data="creator_restrict_menu"),
-    )
-    kb.add(
-        types.InlineKeyboardButton(text="🔙 Назад",                    callback_data="back"),
-    )
-    return kb
-
-
-@router.callback_query(F.data == "creator_panel")
-async def cb_creator_panel(callback: CallbackQuery):
-    uid = callback.from_user.id
-    if not is_creator(uid):
-        await safe_answer(callback.id, "❌ Нет доступа")
-        return
-    text = (
-        "🔴 <b>КРЕАТОРСКАЯ ПАНЕЛЬ</b>\n\n"
-        "📊 Статистика бота · 📋 Логи админов\n"
-        "📢 Рассылка игрокам · 🎁 Выдать Premium\n"
-        "✅ Верификация · 🛡️ Управление админами\n"
-        "🏆 Новый сезон · 💰 Монеты игроку\n"
-        "🧹 Обнулить стату всех · 👤 Обнулить игрока\n"
-        "🔒 Ограничения для администраторов"
-    )
-    try:
-        await callback.message.edit_text(text, reply_markup=_creator_panel_kb(), parse_mode="HTML")
-    except Exception:
-        await bot.send_message(callback.message.chat.id, text,
-                         reply_markup=_creator_panel_kb(), parse_mode="HTML")
-    await safe_answer(callback.id)
-
-
-@router.callback_query(F.data == "creator_logs")
-async def cb_creator_logs(callback: CallbackQuery):
-    uid = callback.from_user.id
-    if not is_creator(uid):
-        await safe_answer(callback.id, "❌ Нет доступа")
-        return
-    rows = _get_admin_logs(limit=25)
-    if not rows:
-        text = "📋 <b>Логи администраторов</b>\n\nЛогов нет."
+    sorted_ids   = sorted(player_data.keys(), key=lambda uid: player_data[uid]['elo'], reverse=True)
+    real_players = [uid for uid in sorted_ids if uid > 0]
+    bots_sorted  = [uid for uid in sorted_ids if uid <= 0]
+    if len(real_players) == 0:
+        captain1, captain2 = sorted_ids[0], sorted_ids[1]
+    elif len(real_players) == 1:
+        # Единственный реальный игрок — всегда капитан 1, бот — капитан 2
+        captain1 = real_players[0]
+        captain2 = bots_sorted[0] if bots_sorted else sorted_ids[1]
     else:
-        lines = ["📋 <b>Логи администраторов</b> (последние 25)\n"]
-        for r in rows:
-            admin_id, admin_name, action, target_id, details, created_at = r
-            dt    = fmt_dt(int(created_at)) if created_at else "-"
-            t_str = f" → {target_id}" if target_id else ""
-            d_str = f" | {str(details)[:40]}" if details else ""
-            lines.append(f"<code>{dt}</code> | <b>{admin_name or admin_id}</b>: {action}{t_str}{d_str}")
-        text = "\n".join(lines)
-    kb = InlineKeyboardBuilder()
-    kb.button(text="🔙 Назад", callback_data="creator_panel")
-    try:
-        await callback.message.edit_text(text, reply_markup=kb.as_markup(), parse_mode="HTML")
-    except Exception:
-        await bot.send_message(callback.message.chat.id, text, reply_markup=kb.as_markup(), parse_mode="HTML")
-    await safe_answer(callback.id)
+        captain1, captain2 = real_players[0], real_players[1]
 
-
-@router.callback_query(F.data == "creator_reset_all")
-async def cb_creator_reset_all(callback: CallbackQuery):
-    uid = callback.from_user.id
-    if not is_creator(uid):
-        await safe_answer(callback.id, "❌ Нет доступа")
-        return
-    kb = InlineKeyboardBuilder()
-    kb.add(
-        types.InlineKeyboardButton(text="✅ Да, обнулить всех", callback_data="creator_reset_all_exec"),
-        types.InlineKeyboardButton(text="❌ Отмена",            callback_data="creator_panel"),
-    )
-    await bot.edit_message_text(
-        "⚠️ <b>ПОДТВЕРЖДЕНИЕ</b>\n\n"
-        "Вы уверены, что хотите обнулить статистику <b>ВСЕХ</b> игроков?\n"
-        "Это действие необратимо!\n\n"
-        "(ELO сбрасывается к 1000, все матч-стата обнуляется)",
-        chat_id=callback.message.chat.id, message_id=callback.message.message_id,
-        reply_markup=kb.as_markup(), parse_mode="HTML",
-    )
-    await safe_answer(callback.id)
-
-
-@router.callback_query(F.data == "creator_reset_all_exec")
-async def cb_creator_reset_all_exec(callback: CallbackQuery):
-    uid = callback.from_user.id
-    if not is_creator(uid):
-        await safe_answer(callback.id, "❌ Нет доступа")
-        return
-    try:
-        _reset_all_stats("players")
-        log_admin_action(uid, "reset_all_stats", details="Обнуление статы всех игроков")
-        await safe_answer(callback.id, "✅ Статистика всех игроков обнулена!", show_alert=True)
-        await callback.message.edit_text(
-            "✅ <b>Статистика всех игроков успешно обнулена.</b>",
-            reply_markup=_creator_panel_kb(), parse_mode="HTML",
-        )
-    except Exception as e:
-        await safe_answer(callback.id, f"❌ Ошибка: {e}", show_alert=True)
-
-
-@router.callback_query(F.data == "creator_reset_everything")
-async def cb_creator_reset_everything(callback: CallbackQuery):
-    uid = callback.from_user.id
-    if not is_creator(uid):
-        await safe_answer(callback.id, "❌ Нет доступа")
-        return
-    kb = InlineKeyboardBuilder()
-    kb.add(
-        types.InlineKeyboardButton(text="💣 Да, обнулить ВСЁ", callback_data="creator_reset_everything_exec"),
-        types.InlineKeyboardButton(text="❌ Отмена",             callback_data="creator_panel"),
-    )
-    await bot.edit_message_text(
-        "💣 <b>ОБНУЛЕНИЕ ВСЕГО - ПОДТВЕРЖДЕНИЕ</b>\n\n"
-        "⚠️ Это действие <b>необратимо</b>!\n\n"
-        "Будет сброшено у <b>ВСЕХ</b> игроков:\n"
-        "- ELO → 1000\n"
-        "- Все статы (победы, поражения, убийства и т.д.) → 0\n"
-        "- Монеты (голды) → 0\n"
-        "- Варны → 0\n"
-        "- Баны → сняты\n"
-        "- Мут → снят\n"
-        "- Премиум → удалён\n\n"
-        "Вы уверены?",
-        chat_id=callback.message.chat.id, message_id=callback.message.message_id,
-        reply_markup=kb.as_markup(), parse_mode="HTML",
-    )
-    await safe_answer(callback.id)
-
-
-@router.callback_query(F.data == "creator_reset_everything_exec")
-async def cb_creator_reset_everything_exec(callback: CallbackQuery):
-    uid = callback.from_user.id
-    if not is_creator(uid):
-        await safe_answer(callback.id, "❌ Нет доступа")
-        return
-    try:
-        _reset_everything("players")
-        log_admin_action(uid, "reset_everything", details="Полное обнуление всех игроков (ELO, монеты, премка, варны, баны, мут)")
-        await safe_answer(callback.id, "💣 Всё обнулено!", show_alert=True)
-        await bot.edit_message_text(
-            "💣 <b>Полное обнуление выполнено.</b>\n\n"
-            "У всех игроков сброшены: ELO, статы, монеты, варны, баны, мут, премиум.",
-            chat_id=callback.message.chat.id, message_id=callback.message.message_id,
-            reply_markup=_creator_panel_kb(), parse_mode="HTML",
-        )
-    except Exception as e:
-        await safe_answer(callback.id, f"❌ Ошибка: {e}", show_alert=True)
-
-
-@router.callback_query(F.data == "creator_reset_player")
-async def cb_creator_reset_player(callback: CallbackQuery):
-    uid = callback.from_user.id
-    if not is_creator(uid):
-        await safe_answer(callback.id, "❌ Нет доступа")
-        return
-    creator_flow[uid] = {"step": "reset_player"}
-    await safe_answer(callback.id)
-    await bot.send_message(uid, "👤 Введите Telegram ID или никнейм игрока для обнуления статы:")
-
-
-@router.callback_query(F.data == "creator_restrict_menu")
-async def cb_creator_restrict_menu(callback: CallbackQuery):
-    uid = callback.from_user.id
-    if not is_creator(uid):
-        await safe_answer(callback.id, "❌ Нет доступа")
-        return
-    admins = _get_admin_list()
-    non_creator = [(a_uid, a_name) for a_uid, a_name in admins if a_uid != CREATOR_ID]
-    if not non_creator:
-        kb = InlineKeyboardBuilder()
-        kb.button(text="🔙 Назад", callback_data="creator_panel")
-        await bot.edit_message_text(
-            "🔒 <b>Ограничения для админов</b>\n\nАдминов нет.",
-            chat_id=callback.message.chat.id, message_id=callback.message.message_id, reply_markup=kb.as_markup(), parse_mode="HTML",
-        )
-        await safe_answer(callback.id)
-        return
-    kb = InlineKeyboardBuilder()
-    for a_uid, a_name in non_creator:
-        kb.button(
-            f"👤 {a_name or a_uid}",
-            callback_data=f"creator_restrict_admin_{a_uid}",
-        )
-    kb.button(text="🔙 Назад", callback_data="creator_panel")
-    await bot.edit_message_text(
-        "🔒 <b>Ограничения для администраторов</b>\n\nВыберите админа для настройки:",
-        chat_id=callback.message.chat.id, message_id=callback.message.message_id, reply_markup=kb.as_markup(), parse_mode="HTML",
-    )
-    await safe_answer(callback.id)
-
-
-@router.callback_query(F.data.startswith("creator_restrict_admin_"))
-async def cb_creator_restrict_admin(callback: CallbackQuery):
-    uid = callback.from_user.id
-    if not is_creator(uid):
-        await safe_answer(callback.id, "❌ Нет доступа")
-        return
-    try:
-        target_admin = int(callback.data.replace("creator_restrict_admin_", ""))
-    except ValueError:
-        await safe_answer(callback.id, "❌ Ошибка")
-        return
-    target_p    = get_player(target_admin)
-    target_name = target_p[1] if target_p else str(target_admin)
-    restrictions = _get_admin_restrictions_set(target_admin)
-    kb = InlineKeyboardBuilder()
-    for action_key, action_label in _RESTRICTABLE:
-        is_blocked = action_key in restrictions
-        status = "🚫" if is_blocked else "✅"
-        kb.button(
-            f"{status} {action_label}",
-            callback_data=f"creator_toggle_{target_admin}_{action_key}",
-        )
-    kb.button(text="🔙 К списку", callback_data="creator_restrict_menu")
-    active     = [lbl for key, lbl in _RESTRICTABLE if key in restrictions]
-    blocked_str = ("\n".join(f"  - {l}" for l in active)) if active else "  нет"
-    text = (
-        f"🔒 <b>Ограничения для {target_name}</b>\n\n"
-        f"Сейчас заблокировано:\n{blocked_str}\n\n"
-        "🚫 = запрещено  |  ✅ = разрешено"
-    )
-    await callback.message.edit_text(text, reply_markup=kb.as_markup(), parse_mode="HTML")
-    await safe_answer(callback.id)
-
-
-@router.callback_query(F.data.startswith("creator_toggle_"))
-async def cb_creator_toggle_restriction(callback: CallbackQuery):
-    uid = callback.from_user.id
-    if not is_creator(uid):
-        await safe_answer(callback.id, "❌ Нет доступа")
-        return
-    # Format: creator_toggle_{admin_id}_{action_key}
-    # action_key may contain underACores, so split from left only twice after prefix
-    suffix = callback.data[len("creator_toggle_"):]
-    parts  = suffix.split("_", 1)
-    if len(parts) < 2:
-        await safe_answer(callback.id, "❌ Ошибка")
-        return
-    try:
-        target_admin = int(parts[0])
-        action_key   = parts[1]
-    except ValueError:
-        await safe_answer(callback.id, "❌ Ошибка")
-        return
-    restrictions = _get_admin_restrictions_set(target_admin)
-    try:
-        conn = _db()
-        cur  = conn.cursor()
-        if action_key in restrictions:
-            cur.execute(
-                "DELETE FROM admin_restrictions WHERE admin_id=%s AND action=%s",
-                (target_admin, action_key),
-            )
-            new_state = "разрешено ✅"
-        else:
-            cur.execute(
-                "INSERT INTO admin_restrictions (admin_id, action) VALUES (%s, %s) ON CONFLICT DO NOTHING",
-                (target_admin, action_key),
-            )
-            new_state = "запрещено 🚫"
-        conn.commit()
-        conn.close()
-        log_admin_action(uid, "toggle_restriction", target_id=target_admin,
-                         details=f"{action_key} -> {new_state}")
-        await safe_answer(callback.id, f"{action_key}: {new_state}", show_alert=False)
-    except Exception as e:
-        await safe_answer(callback.id, f"❌ Ошибка: {e}", show_alert=True)
-        return
-    # Refresh the page
-    target_p    = get_player(target_admin)
-    target_name = target_p[1] if target_p else str(target_admin)
-    restrictions = _get_admin_restrictions_set(target_admin)
-    kb = InlineKeyboardBuilder()
-    for a_key, a_label in _RESTRICTABLE:
-        is_blocked = a_key in restrictions
-        status = "🚫" if is_blocked else "✅"
-        kb.button(
-            f"{status} {a_label}",
-            callback_data=f"creator_toggle_{target_admin}_{a_key}",
-        )
-    kb.button(text="🔙 К списку", callback_data="creator_restrict_menu")
-    active     = [lbl for key, lbl in _RESTRICTABLE if key in restrictions]
-    blocked_str = ("\n".join(f"  - {l}" for l in active)) if active else "  нет"
-    text = (
-        f"🔒 <b>Ограничения для {target_name}</b>\n\n"
-        f"Сейчас заблокировано:\n{blocked_str}\n\n"
-        "🚫 = запрещено  |  ✅ = разрешено"
-    )
-    await callback.message.edit_text(text, reply_markup=kb.as_markup(), parse_mode="HTML")
-
-
-@router.callback_query(F.data.startswith("creator_reset_exec_"))
-async def cb_creator_reset_exec(callback: CallbackQuery):
-    uid = callback.from_user.id
-    if not is_creator(uid):
-        await safe_answer(callback.id, "❌ Нет доступа")
-        return
-    try:
-        t_uid = int(callback.data.replace("creator_reset_exec_", ""))
-    except ValueError:
-        await safe_answer(callback.id, "❌ Ошибка")
-        return
-    target_p = get_player(t_uid)
-    t_name   = target_p[1] if target_p else str(t_uid)
-    try:
-        _reset_player_stats(t_uid, "players")
-        log_admin_action(uid, "reset_player_stats", target_id=t_uid, details=t_name)
-        await safe_answer(callback.id, f"✅ Стата {t_name} обнулена!", show_alert=True)
-        await callback.message.edit_text(
-            f"✅ <b>Статистика игрока {t_name} успешно обнулена.</b>",
-            reply_markup=_creator_panel_kb(), parse_mode="HTML",
-        )
-    except Exception as e:
-        await safe_answer(callback.id, f"❌ Ошибка: {e}", show_alert=True)
-
-
-@router.message(lambda m: m.from_user.id in creator_flow and m.text is not None)
-async def handle_creator_flow(message: Message):
-    # converted to async in post-pass
-    pass_async_marker = True; 
-    uid  = message.from_user.id
-    if not is_creator(uid):
-        creator_flow.pop(uid, None)
-        return
-    flow = creator_flow.get(uid, {})
-    step = flow.get("step")
-
-    # Делегируем расширенные шаги
-    _extended_steps = {
-        "broadcast", "broadcast_confirm",
-        "give_premium_id", "give_premium_days",
-        "verify_player",
-        "promote_admin",
-        "give_coins_id", "give_coins_amount",
-        "add_coinpack_name", "add_coinpack_coins", "add_coinpack_stars",
-        "add_coinpack_crypto", "add_coinpack_target",
-        "shop_price_value",
+    remaining = [uid for uid in sorted_ids if uid not in (captain1, captain2)]
+    draft = {
+        'match_id':   match_id,
+        'mode':       mode,
+        'captain1':   captain1,
+        'captain2':   captain2,
+        'remaining':  list(remaining),
+        'team1':      [captain1],
+        'team2':      [captain2],
+        'pick_index': 0,
+        'player_data':player_data,
+        'all_players':list(players_ids),
     }
-    if step in _extended_steps:
-        _handle_creator_flow_extended(message, uid, flow, step)
+    draft_state[match_id] = draft
+
+    announce  = draft_status_text(draft, title=f"{E_CIRCLE_M} <b>Матч #{match_id} [{mode}] — Драфт начался!</b>")
+    for uid in players_ids:
+        if is_bot(uid):
+            continue  # боты не имеют реальных чатов
+        try:
+            await context.bot.send_message(chat_id=uid, text=announce, parse_mode='HTML')
+        except Exception:
+            pass
+    await send_pick_keyboard(context, draft)
+
+
+async def pick_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query      = update.callback_query
+    parts      = query.data.split("_")
+    match_id   = int(parts[1])
+    picked_uid = int(parts[2])
+    captain_id = query.from_user.id
+
+    # Быстрая проверка без лока — если матча нет вообще
+    if not draft_state.get(match_id):
+        await query.answer("Драфт уже завершён.", show_alert=True)
         return
 
-    if step == "reset_player":
-        creator_flow.pop(uid, None)
-        inp = message.text.strip()
-        target_p = None
-        if inp.isdigit():
-            target_p = get_player(int(inp))
+    async with _get_draft_lock(match_id):
+        draft = draft_state.get(match_id)
+        if not draft or draft.get('finalized'):
+            await query.answer("Драфт уже завершён.", show_alert=True)
+            return
+
+        pick_order   = MODES[draft['mode']]['pick_order']
+        pick_idx     = draft['pick_index']
+        current_team = pick_order[pick_idx]
+        current_cap  = draft['captain1'] if current_team == 1 else draft['captain2']
+        if captain_id != current_cap:
+            await query.answer("Сейчас не ваш ход!", show_alert=True)
+            return
+        if picked_uid not in draft['remaining']:
+            await query.answer("Этот игрок уже выбран.", show_alert=True)
+            return
+
+        # Отменяем таймер авто-пика — капитан успел выбрать сам
+        _cancel_pick_timer(context, match_id)
+
+        draft['remaining'].remove(picked_uid)
+        if current_team == 1:
+            draft['team1'].append(picked_uid)
         else:
+            draft['team2'].append(picked_uid)
+        draft['pick_index'] += 1
+
+        picked_name = draft['player_data'][picked_uid]['name']
+        should_finalize = draft['pick_index'] >= len(pick_order)
+        if should_finalize:
+            draft['finalized'] = True
+            draft_state.pop(match_id, None)
+            _release_draft_lock(match_id)
+
+    # IO вне лока
+    await query.answer(f"Выбран: {picked_name}!")
+    await _edit_html(query, f"{E_CHECK} <b>{_esc(picked_name)}</b> добавлен в Команду {current_team}")
+
+    if should_finalize:
+        await finalize_draft(context, draft)
+    else:
+        status = draft_status_text(draft)
+        for uid in draft['all_players']:
+            if is_bot(uid):
+                continue
             try:
-                conn2 = _db()
-                cur2  = conn2.cursor()
-                cur2.execute(
-                    "SELECT * FROM players WHERE LOWER(username)=LOWER(%s) AND is_bot=0", (inp,)
-                )
-                target_p = cur2.fetchone()
-                conn2.close()
+                await context.bot.send_message(chat_id=uid, text=status, parse_mode='HTML')
             except Exception:
                 pass
-        if not target_p:
-            await bot.send_message(uid, "❌ Игрок не найден. Попробуйте ещё раз.")
-            return
-        t_uid  = target_p[0]
-        t_name = target_p[1] or str(t_uid)
-        kb = InlineKeyboardBuilder()
-        kb.add(
-            types.InlineKeyboardButton(text="✅ Да, обнулить", callback_data=f"creator_reset_exec_{t_uid}"),
-            types.InlineKeyboardButton(text="❌ Отмена",        callback_data="creator_panel"),
-        )
-        await bot.send_message(
-            uid,
-            f"⚠️ Обнулить статистику игрока <b>{t_name}</b> (ID: <code>{t_uid}</code>)?\n"
-            "ELO → 1000, все матч-стата → 0. Это необратимо!",
-            reply_markup=kb.as_markup(), parse_mode="HTML",
-        )
+        await send_pick_keyboard(context, draft)
 
 
-# ==================== CREATOR: СТАТИСТИКА БОТА ====================
-@router.callback_query(F.data == "creator_botstats")
-async def cb_creator_botstats(callback: CallbackQuery):
-    uid = callback.from_user.id
-    if not is_creator(uid):
-        await safe_answer(callback.id, "❌ Нет доступа")
-        return
-    try:
-        conn = _db()
-        cur  = conn.cursor()
-        cur.execute("SELECT COUNT(*) FROM players WHERE is_bot=0")
-        total_players = cur.fetchone()[0]
-        cur.execute("SELECT COUNT(*) FROM players WHERE is_bot=0 AND registered=1")
-        reg_players = cur.fetchone()[0]
-        cur.execute("SELECT COUNT(*) FROM players WHERE premium_until > %s AND is_bot=0", (int(time.time()),))
-        premium_count = cur.fetchone()[0]
-        cur.execute("SELECT COUNT(*) FROM players WHERE is_banned=1 AND is_bot=0")
-        banned_count = cur.fetchone()[0]
-        cur.execute("SELECT COUNT(*) FROM players WHERE is_admin=1 AND is_bot=0")
-        admin_count = cur.fetchone()[0]
-        cur.execute("SELECT COUNT(*) FROM players WHERE is_verified=1 AND is_bot=0")
-        verified_count = cur.fetchone()[0]
-        cur.execute("SELECT COUNT(*) FROM players WHERE quals_access=1 AND is_bot=0")
-        quals_count = cur.fetchone()[0]
-        cur.execute("SELECT COUNT(*) FROM matches")
-        total_matches = cur.fetchone()[0]
-        cur.execute("SELECT COUNT(*) FROM promo_codes WHERE is_active=1")
-        promos = cur.fetchone()[0]
-        cur.execute("SELECT SUM(coins) FROM players WHERE is_bot=0")
-        total_coins = cur.fetchone()[0] or 0
-        cur.execute("SELECT season_number FROM seasons WHERE is_active=1 ORDER BY id DESC LIMIT 1")
-        row_s = cur.fetchone()
-        season_num = row_s[0] if row_s else 1
-        conn.close()
-        text = (
-            "📊 <b>СТАТИСТИКА БОТА</b>\n\n"
-            f"👥 Всего игроков: <b>{total_players}</b> (рег: {reg_players})\n"
-            f"👑 Premium: <b>{premium_count}</b>\n"
-            f"🛡️ Администраторов: <b>{admin_count}</b>\n"
-            f"✅ Верифицированных: <b>{verified_count}</b>\n"
-            f"⭐ Quals доступ: <b>{quals_count}</b>\n"
-            f"🚫 Забанено: <b>{banned_count}</b>\n"
-            f"⚔️ Матчей сыграно: <b>{total_matches}</b>\n"
-            f"🎫 Активных промокодов: <b>{promos}</b>\n"
-            f"💰 Монет в обороте: <b>{total_coins:,}</b>\n"
-            f"🏆 Текущий сезон: <b>#{season_num}</b>"
-        )
-    except Exception as e:
-        text = f"❌ Ошибка получения статистики: {e}"
-    kb = InlineKeyboardBuilder()
-    kb.button(text="🔙 Назад", callback_data="creator_panel")
-    try:
-        await callback.message.edit_text(text, reply_markup=kb.as_markup(), parse_mode="HTML")
-    except Exception:
-        await bot.send_message(callback.message.chat.id, text, reply_markup=kb.as_markup(), parse_mode="HTML")
-    await safe_answer(callback.id)
+def build_team_msg(match_id: int, draft: dict, chosen_map: str) -> str:
+    player_data = draft['player_data']
+    mode        = draft['mode']
+    cap1, cap2  = draft['captain1'], draft['captain2']
+    mode_icon   = MODES.get(mode, MODES['5v5'])['emoji']
+    ct_team     = draft.get('ct_team', 1)
 
+    def side_label(num):
+        if ct_team == num:
+            return f"{E_GREEN} Спецназы (CT)"
+        return f"{E_ORANGE} Террористы (T)"
 
-# ==================== CREATOR: РАССЫЛКА ====================
-@router.callback_query(F.data == "creator_broadcast")
-async def cb_creator_broadcast(callback: CallbackQuery):
-    uid = callback.from_user.id
-    if not is_creator(uid):
-        await safe_answer(callback.id, "❌ Нет доступа")
-        return
-    creator_flow[uid] = {"step": "broadcast"}
-    await safe_answer(callback.id)
-    kb = InlineKeyboardBuilder()
-    kb.button(text="❌ Отмена", callback_data="creator_panel")
-    await bot.send_message(
-        uid,
-        "📢 <b>Рассылка всем игрокам</b>\n\n"
-        "Введите текст сообщения. Поддерживается HTML-разметка.\n"
-        "Сообщение будет отправлено всем зарегистрированным игрокам.",
-        reply_markup=kb.as_markup(), parse_mode="HTML",
+    def team_block(uids, num):
+        team  = [player_data[uid] for uid in uids]
+        avg   = sum(p['elo'] for p in team) // len(team)
+        lines = ""
+        for uid_item in uids:
+            p        = player_data[uid_item]
+            lvl_icon = LEVEL_ICONS.get(elo_to_level(p['elo']), "")
+            off_val  = p.get('official_badge', 0)
+            off_b    = (f" {E_OFF1}" if off_val == 1 else f" {E_OFF2}" if off_val == 2 else f" {E_OFF3}" if off_val == 3 else "")
+            badge    = (f" {E_CHECK}" if p.get('is_creator') else "") + (f" {E_ADMIN}" if p.get('is_admin') else "") + off_b
+            cap_tag  = f" {E_CROWN}" if uid_item in (cap1, cap2) else ""
+            gid_str  = f"  <code>{p['game_id']}</code>" if uid_item in (cap1, cap2) and p.get('game_id') else ""
+            lines   += f"  <b>{_esc(p['name'])}</b>{badge}{cap_tag}{gid_str}  〔{lvl_icon}〕  <code>{p['elo']}</code> ELO\n"
+        return f"{side_label(num)} <b>Команда {num}</b>  ·  ср. ELO <code>{avg}</code>\n{lines}"
+
+    return (
+        f"{E_AIM} {mode_icon} <b>Матч #{match_id} [{mode}] готов!</b>\n\n"
+        f"<tg-emoji emoji-id='5377612479830453771'>🗺</tg-emoji>  <b>Карта: {chosen_map}</b>\n\n"
+        f"{team_block(draft['team1'], 1)}\n"
+        f"{team_block(draft['team2'], 2)}\n"
+        f"<tg-emoji emoji-id='5319247469165433798'>📸</tg-emoji> <b>После игры:</b>\n"
+        f"<i>1. Скиньте скриншот с результатом в этот чат с ботом.</i>\n"
+        f"<i>2. Победитель и статистика определяются автоматически — результат зачтётся "
+        f"сразу после проверки скриншота.</i>"
     )
 
 
-@router.callback_query(F.data.startswith("creator_broadcast_confirm_"))
-async def cb_creator_broadcast_confirm(callback: CallbackQuery):
-    uid = callback.from_user.id
-    if not is_creator(uid):
-        await safe_answer(callback.id, "❌ Нет доступа")
+async def finalize_draft(context, draft: dict):
+    match_id    = draft['match_id']
+    # Гасим таймер и освобождаем лок (idempotent — если уже сделано, ничего не происходит)
+    _cancel_pick_timer(context, match_id)
+    _release_draft_lock(match_id)
+    player_data = draft['player_data']
+    ct_team     = random.choice([1, 2])
+    draft['ct_team'] = ct_team
+    conn = sqlite3.connect('faceit_bot.db')
+    c = conn.cursor()
+    c.execute("UPDATE team_matches SET status='active', ct_team=? WHERE match_id=?", (ct_team, match_id))
+    for uid in draft['team1']:
+        c.execute('INSERT INTO match_players (match_id, user_id, team, elo_before) VALUES (?,?,?,?)',
+                  (match_id, uid, 1, player_data[uid]['elo']))
+    for uid in draft['team2']:
+        c.execute('INSERT INTO match_players (match_id, user_id, team, elo_before) VALUES (?,?,?,?)',
+                  (match_id, uid, 2, player_data[uid]['elo']))
+    conn.commit()
+    conn.close()
+    await start_map_vote(context, draft)
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  БАН КАРТ
+#  Порядок банов: Капитан 1 → Капитан 2 → Капитан 1  (итого 3 бана, 1 карта остаётся)
+# ══════════════════════════════════════════════════════════════════════════════
+
+# Порядок банов: какой капитан (1 или 2) банит на каждом шаге
+MAP_BAN_ORDER = [1, 2, 1]  # 3 бана → 1 карта остаётся из 4
+
+
+def map_ban_keyboard(match_id: int, remaining_indices: list) -> InlineKeyboardMarkup:
+    """Клавиатура с доступными для бана картами."""
+    rows = []
+    for i in remaining_indices:
+        name = MAPS[i]
+        eid  = MAPS_EMOJI.get(name)
+        if eid:
+            btn = _ebtn(f"Забанить {name}", eid, 2, f"mb_{match_id}_{i}")
+        else:
+            btn = InlineKeyboardButton(f"🚫 Забанить {name}", callback_data=f"mb_{match_id}_{i}")
+        rows.append([btn])
+    return InlineKeyboardMarkup(rows)
+
+
+def _map_ban_status_text(match_id: int, state: dict) -> str:
+    """Текстовое состояние процесса банов."""
+    mode      = state['mode']
+    mode_icon = MODES.get(mode, MODES['5v5'])['emoji']
+    ban_step  = state['ban_step']          # сколько банов уже сделано
+    draft     = state['draft']
+    cap1_name = _esc(draft['player_data'][draft['captain1']]['name'])
+    cap2_name = _esc(draft['player_data'][draft['captain2']]['name'])
+
+    lines = [f"<tg-emoji emoji-id='5377612479830453771'>🗺</tg-emoji> {mode_icon} <b>Матч #{match_id} [{mode}] — Бан карт</b>\n"]
+    lines.append(f"{E_CROWN} Капитан <tg-emoji emoji-id=\"5416081784641168838\">🟢</tg-emoji> <b>{cap1_name}</b>  |  Капитан <tg-emoji emoji-id=\"5411225014148014586\">🔴</tg-emoji> <b>{cap2_name}</b>\n")
+
+    # Показываем все карты: забаненные и доступные
+    for i, name in enumerate(MAPS):
+        eid = MAPS_EMOJI.get(name)
+        emoji_tag = f'<tg-emoji emoji-id="{eid}">🤩</tg-emoji>' if eid else "<tg-emoji emoji-id='5377612479830453771'>🗺</tg-emoji>"
+        if i in state['banned']:
+            banner_cap = state['banned'][i]
+            banner_name = _esc(draft['player_data'][banner_cap]['name'])
+            lines.append(f"  {E_BAN} <s>{name}</s> — <i>забанено ({banner_name})</i>")
+        else:
+            lines.append(f"  {emoji_tag} {name}")
+
+    if ban_step < len(MAP_BAN_ORDER):
+        current_cap_num = MAP_BAN_ORDER[ban_step]
+        current_cap_uid = draft['captain1'] if current_cap_num == 1 else draft['captain2']
+        current_cap_name = _esc(draft['player_data'][current_cap_uid]['name'])
+        color = '<tg-emoji emoji-id="5416081784641168838">🟢</tg-emoji>' if current_cap_num == 1 else '<tg-emoji emoji-id="5411225014148014586">🔴</tg-emoji>'
+        lines.append(f"\n{E_RIGHT} Банит: {color} <b>{current_cap_name}</b>  (бан {ban_step + 1} из {len(MAP_BAN_ORDER)})")
+    return "\n".join(lines)
+
+
+async def _finish_map_ban(context, match_id: int, state: dict, chosen_map: str):
+    """Общая логика завершения банов — выбор карты и уведомления."""
+    draft    = state['draft']
+    mode     = state['mode']
+    mode_icon = MODES.get(mode, MODES['5v5'])['emoji']
+
+    del map_vote_state[match_id]
+
+    # Строим итоговый список банов
+    ban_lines = []
+    for i, name in enumerate(MAPS):
+        if i in state['banned']:
+            banner_uid  = state['banned'][i]
+            banner_name = _esc(draft['player_data'][banner_uid]['name'])
+            ban_lines.append(f"  {E_BAN} {name} — <i>забанено ({banner_name})</i>")
+        else:
+            ban_lines.append(f"  {E_CHECK} <b>{name}</b> — выбрана!")
+
+    result_msg = (
+        f"<tg-emoji emoji-id='5377612479830453771'>🗺</tg-emoji> {mode_icon} <b>Карта выбрана: {chosen_map}!</b>\n\n"
+        + "\n".join(ban_lines)
+    )
+    for uid in draft['all_players']:
+        if is_bot(uid):
+            continue
+        try:
+            await context.bot.send_message(chat_id=uid, text=result_msg, parse_mode='HTML')
+        except Exception:
+            pass
+
+    final_msg = build_team_msg(match_id, draft, chosen_map)
+    for uid in draft['all_players']:
+        if is_bot(uid):
+            continue
+        try:
+            await context.bot.send_message(chat_id=uid, text=final_msg, parse_mode='HTML')
+        except Exception:
+            pass
+
+    # Случайно выбираем одного из двух капитанов для создания лобби
+    lobby_creator = random.choice([draft['captain1'], draft['captain2']])
+    creator_name  = draft['player_data'][lobby_creator]['name']
+    creator_gid   = draft['player_data'][lobby_creator].get('game_id', '')
+    gid_line      = f"\n{EP_GAME} ID в игре: <code>{creator_gid}</code>" if creator_gid else ""
+
+    creator_msg = (
+        f"{E_CROWN} <b>Ты выбран для создания лобби!</b>\n\n"
+        f"{EP_GAME} Матч #{match_id} [{mode}] · Карта: <b>{chosen_map}</b>\n\n"
+        f"Создай комнату в игре и пригласи всех участников матча.\n"
+        f"Остальные игроки уже знают, что лобби создаёшь <b>ты</b>."
+    )
+    if not is_bot(lobby_creator):
+        try:
+            await context.bot.send_message(chat_id=lobby_creator, text=creator_msg, parse_mode='HTML')
+        except Exception:
+            pass
+
+    others_msg = (
+        f"{E_PEOPLE} <b>Лобби создаёт: {_esc(creator_name)}</b>{gid_line}\n\n"
+        f"Ожидайте приглашения в игру от капитана <b>{_esc(creator_name)}</b>."
+    )
+    for uid in draft['all_players']:
+        if uid == lobby_creator or is_bot(uid):
+            continue
+        try:
+            await context.bot.send_message(chat_id=uid, text=others_msg, parse_mode='HTML')
+        except Exception:
+            pass
+
+
+async def start_map_vote(context, draft: dict):
+    """Точка входа из finalize_draft — запускает бан карт."""
+    await start_map_ban(context, draft)
+
+
+async def start_map_ban(context, draft: dict):
+    """Инициализирует процесс банов карт."""
+    match_id  = draft['match_id']
+    mode      = draft['mode']
+    remaining = list(range(len(MAPS)))  # индексы оставшихся карт
+
+    map_vote_state[match_id] = {
+        'draft':     draft,
+        'mode':      mode,
+        'banned':    {},            # {map_idx: captain_uid}
+        'remaining': remaining,
+        'ban_step':  0,             # текущий шаг в MAP_BAN_ORDER
+        'players':   set(draft['all_players']),
+    }
+    state = map_vote_state[match_id]
+
+    # Если капитан — бот, он банит автоматически прямо сейчас
+    await _process_bot_bans(context, match_id, state)
+    if match_id not in map_vote_state:
+        return  # все баны уже завершены ботами
+
+    await _send_ban_step(context, match_id, state)
+
+
+async def _process_bot_bans(context, match_id: int, state: dict):
+    """Автоматически выполняет баны за ботов."""
+    draft = state['draft']
+    while state['ban_step'] < len(MAP_BAN_ORDER) and match_id in map_vote_state:
+        cap_num = MAP_BAN_ORDER[state['ban_step']]
+        cap_uid = draft['captain1'] if cap_num == 1 else draft['captain2']
+        if not is_bot(cap_uid):
+            break  # живой капитан — останавливаемся
+        # Бот банит случайную карту
+        ban_idx = random.choice(state['remaining'])
+        state['remaining'].remove(ban_idx)
+        state['banned'][ban_idx] = cap_uid
+        state['ban_step'] += 1
+        # Проверяем финал
+        if state['ban_step'] >= len(MAP_BAN_ORDER):
+            if not state['remaining']:
+                # Нештатная ситуация — забанено больше карт, чем должно быть
+                del map_vote_state[match_id]
+                return
+            chosen_map = MAPS[state['remaining'][0]]
+            await _finish_map_ban(context, match_id, state, chosen_map)
+            return
+
+
+async def _send_ban_step(context, match_id: int, state: dict):
+    """Отправляет всем игрокам текущее состояние банов и клавиатуру капитану."""
+    if match_id not in map_vote_state:
         return
-    text_key = callback.data.replace("creator_broadcast_confirm_", "")
-    flow = creator_flow.get(uid, {})
-    broadcast_text = flow.get("broadcast_text", "")
-    if not broadcast_text:
-        await safe_answer(callback.id, "❌ Текст не найден")
+    draft     = state['draft']
+    ban_step  = state['ban_step']
+
+    # Текст состояния для всех
+    status_text = _map_ban_status_text(match_id, state)
+    _t, _e = _parse_msg(status_text)
+
+    cap_num = MAP_BAN_ORDER[ban_step]
+    cap_uid = draft['captain1'] if cap_num == 1 else draft['captain2']
+    keyboard = map_ban_keyboard(match_id, state['remaining'])
+
+    for uid in draft['all_players']:
+        if is_bot(uid):
+            continue
+        try:
+            if uid == cap_uid:
+                # Капитану — с клавиатурой бана
+                await context.bot.send_message(
+                    chat_id=uid, text=_t, entities=_e, reply_markup=keyboard
+                )
+            else:
+                # Остальным — без кнопок
+                await context.bot.send_message(chat_id=uid, text=_t, entities=_e)
+        except Exception:
+            pass
+
+
+async def map_ban_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Обработчик нажатия кнопки бана карты (callback_data = mb_{match_id}_{map_idx})."""
+    query    = update.callback_query
+    parts    = query.data.split("_")
+    match_id = int(parts[1])
+    map_idx  = int(parts[2])
+    voter_id = query.from_user.id
+
+    state = map_vote_state.get(match_id)
+    if not state:
+        await query.answer("Бан карт уже завершён.", show_alert=True)
         return
-    creator_flow.pop(uid, None)
-    await safe_answer(callback.id)
+
+    draft    = state['draft']
+    ban_step = state['ban_step']
+
+    if ban_step >= len(MAP_BAN_ORDER):
+        await query.answer("Все баны уже выполнены.", show_alert=True)
+        return
+
+    # Проверяем, что жмёт именно нужный капитан
+    cap_num = MAP_BAN_ORDER[ban_step]
+    cap_uid = draft['captain1'] if cap_num == 1 else draft['captain2']
+    if voter_id != cap_uid:
+        cap_name = draft['player_data'][cap_uid]['name']
+        await query.answer(f"Сейчас банит {cap_name}!", show_alert=True)
+        return
+
+    if map_idx not in state['remaining']:
+        await query.answer("Эта карта уже забанена.", show_alert=True)
+        return
+
+    # Выполняем бан
+    state['remaining'].remove(map_idx)
+    state['banned'][map_idx] = voter_id
+    state['ban_step'] += 1
+    banned_map_name = MAPS[map_idx]
+
+    await query.answer(f"🚫 Вы забанили «{banned_map_name}»!")
+
+    # Обновляем сообщение капитана
     try:
-        conn = _db()
-        cur  = conn.cursor()
-        cur.execute("SELECT user_id FROM players WHERE is_bot=0 AND registered=1")
-        player_ids = [row[0] for row in cur.fetchall()]
-        conn.close()
-    except Exception as e:
-        await bot.send_message(uid, f"❌ Ошибка БД: {e}")
+        await _edit_html(query, f"{E_BAN} Вы забанили карту <b>{banned_map_name}</b>.")
+    except Exception:
+        pass
+
+    # Если все баны выполнены — выбираем оставшуюся карту
+    if state['ban_step'] >= len(MAP_BAN_ORDER):
+        if not state['remaining']:
+            del map_vote_state[match_id]
+            return
+        chosen_map = MAPS[state['remaining'][0]]
+        await _finish_map_ban(context, match_id, state, chosen_map)
         return
+
+    # Обрабатываем возможные боты-капитаны на следующем шаге
+    await _process_bot_bans(context, match_id, state)
+    if match_id not in map_vote_state:
+        return
+
+    # Уведомляем всех о текущем состоянии (включая voter_id — он может банить снова)
+    update_text = _map_ban_status_text(match_id, state)
+    _t, _e = _parse_msg(update_text)
+
+    next_ban_step = state['ban_step']
+    next_cap_num  = MAP_BAN_ORDER[next_ban_step]
+    next_cap_uid  = draft['captain1'] if next_cap_num == 1 else draft['captain2']
+    next_keyboard = map_ban_keyboard(match_id, state['remaining'])
+
+    for uid in draft['all_players']:
+        if is_bot(uid):
+            continue
+        try:
+            if uid == next_cap_uid:
+                await context.bot.send_message(
+                    chat_id=uid, text=_t, entities=_e, reply_markup=next_keyboard
+                )
+            else:
+                await context.bot.send_message(chat_id=uid, text=_t, entities=_e)
+        except Exception:
+            pass
+
+
+# Обратная совместимость — старый callback (голосование) больше не используется
+async def map_vote_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await map_ban_callback(update, context)
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  ГОЛОСОВАНИЕ ЗА ПОБЕДИТЕЛЯ
+# ══════════════════════════════════════════════════════════════════════════════
+
+async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    data  = query.data
+
+    if data == "resetelo_confirm":
+        uid = query.from_user.id
+        conn = sqlite3.connect('faceit_bot.db')
+        c = conn.cursor()
+        c.execute('SELECT is_admin FROM users WHERE user_id=?', (uid,))
+        row = c.fetchone()
+        if not row or not row[0]:
+            await query.answer("Нет прав.", show_alert=True)
+            conn.close()
+            return
+        c.execute('UPDATE users SET elo=0, level=1, matches_played=0, wins=0')
+        conn.commit()
+        conn.close()
+        await _edit_html(query, f"{E_CONFIRM} <b>ELO сброшен. Новый сезон!</b>")
+        await query.answer("Сброс выполнен!")
+        return
+
+    if data == "resetelo_cancel":
+        await _edit_html(query, f"{E_CROSS} Сброс ELO отменён.")
+        await query.answer()
+        return
+
+    if data.startswith("newseason_confirm_"):
+        uid = query.from_user.id
+        conn = sqlite3.connect('faceit_bot.db')
+        c = conn.cursor()
+        c.execute('SELECT is_admin FROM users WHERE user_id=?', (uid,))
+        row = c.fetchone()
+        if not row or not row[0]:
+            await query.answer("Нет прав.", show_alert=True)
+            conn.close()
+            return
+        season_num = int(data.split("_")[2])
+        c.execute('''INSERT INTO season_archive
+                     (season_num, user_id, username, elo, wins, matches,
+                      elo_5v5, matches_5v5, wins_5v5,
+                      elo_3v3, matches_3v3, wins_3v3,
+                      elo_2v2, matches_2v2, wins_2v2)
+                     SELECT ?, user_id, COALESCE(first_name, username),
+                            elo, wins, matches_played,
+                            elo_5v5, matches_5v5, wins_5v5,
+                            elo_3v3, matches_3v3, wins_3v3,
+                            elo_2v2, matches_2v2, wins_2v2
+                     FROM users WHERE matches_played > 0''', (season_num - 1,))
+        c.execute('''UPDATE users SET
+                      elo=0, level=1, matches_played=0, wins=0,
+                      elo_5v5=0, matches_5v5=0, wins_5v5=0, level_5v5=1,
+                      elo_3v3=0, matches_3v3=0, wins_3v3=0, level_3v3=1,
+                      elo_2v2=0, matches_2v2=0, wins_2v2=0, level_2v2=1''')
+        conn.commit()
+        c.execute('SELECT user_id FROM users')
+        all_users = [r[0] for r in c.fetchall()]
+        conn.close()
+        await _edit_html(query, f"<tg-emoji emoji-id='5411520005386806155'>🏁</tg-emoji> <b>Сезон {season_num} начался!</b>\n\nELO всех игроков сброшен.")
+        await query.answer("Новый сезон запущен!")
+        for user_id in all_users:
+            try:
+                await _send_html(context.bot, user_id, f"<tg-emoji emoji-id='5411520005386806155'>🏁</tg-emoji> <b>Начался новый сезон {season_num}!</b>\n\nELO сброшен до 0. Удачи!")
+            except Exception:
+                pass
+        return
+
+    if data == "newseason_cancel":
+        await _edit_html(query, f"{E_CROSS} Новый сезон отменён.")
+        await query.answer()
+        return
+
+    if data.startswith("resetseason_confirm_"):
+        uid = query.from_user.id
+        conn = sqlite3.connect('faceit_bot.db')
+        c = conn.cursor()
+        c.execute('SELECT is_admin FROM users WHERE user_id=?', (uid,))
+        row = c.fetchone()
+        if not row or not row[0]:
+            await query.answer("Нет прав.", show_alert=True)
+            conn.close()
+            return
+        _, _, season_num_str, new_date = data.split("_", 3)
+        season_num = int(season_num_str)
+        c.execute('''INSERT INTO season_archive
+                     (season_num, user_id, username, elo, wins, matches,
+                      elo_5v5, matches_5v5, wins_5v5,
+                      elo_3v3, matches_3v3, wins_3v3,
+                      elo_2v2, matches_2v2, wins_2v2)
+                     SELECT ?, user_id, COALESCE(first_name, username),
+                            elo, wins, matches_played,
+                            elo_5v5, matches_5v5, wins_5v5,
+                            elo_3v3, matches_3v3, wins_3v3,
+                            elo_2v2, matches_2v2, wins_2v2
+                     FROM users WHERE matches_played > 0
+                        OR matches_5v5 > 0 OR matches_3v3 > 0 OR matches_2v2 > 0''', (season_num,))
+        c.execute('''UPDATE users SET
+                      elo=0, level=1, matches_played=0, wins=0,
+                      elo_5v5=0, matches_5v5=0, wins_5v5=0, level_5v5=1,
+                      elo_3v3=0, matches_3v3=0, wins_3v3=0, level_3v3=1,
+                      elo_2v2=0, matches_2v2=0, wins_2v2=0, level_2v2=1,
+                      kills=0, deaths=0''')
+        conn.commit()
+        c.execute('SELECT user_id FROM users')
+        all_users = [r[0] for r in c.fetchall()]
+        conn.close()
+        set_setting('season_end_date', new_date)
+        if get_setting('season_extended_once') != '1':
+            set_setting('season_extended_once', '1')
+        await _edit_html(
+            query,
+            f"{E_TROPHY} <b>Сезон сброшен!</b>\n\n"
+            f"Статистика всех игроков и таблицы лидеров обнулены.\n"
+            f"Прошлый сезон сохранён в архив (Сезон {season_num}).\n"
+            f"{E_CAL} Новая дата окончания сезона: <b>{new_date}</b>"
+        )
+        await query.answer("Сезон сброшен!")
+        for user_id in all_users:
+            try:
+                await _send_html(
+                    context.bot, user_id,
+                    f"{E_TROPHY} <b>Начался новый сезон!</b>\n\n"
+                    f"Статистика и ELO сброшены. Удачи в бою!\n"
+                    f"{E_CAL} Дата окончания: <b>{new_date}</b>"
+                )
+            except Exception:
+                pass
+        return
+
+    if data == "resetseason_cancel":
+        await _edit_html(query, f"{E_CROSS} Сброс сезона отменён.")
+        await query.answer()
+        return
+
+    # Голосование за победителя удалено — результат матча теперь определяется
+    # автоматически по OCR-распознаванию скриншота (см. screenshot_handler).
+    await query.answer()
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  СКРИНШОТ
+# ══════════════════════════════════════════════════════════════════════════════
+
+async def screenshot_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    sender_id = update.effective_user.id
+    conn = sqlite3.connect('faceit_bot.db')
+    c = conn.cursor()
+    c.execute('''SELECT mp.match_id FROM match_players mp
+                 JOIN team_matches tm ON mp.match_id = tm.match_id
+                 WHERE mp.user_id = ? AND tm.status = 'active'
+                 ORDER BY tm.timestamp DESC LIMIT 1''', (sender_id,))
+    row = c.fetchone()
+    if not row:
+        await update.message.reply_text("У вас нет активного матча.")
+        conn.close()
+        return
+    match_id = row[0]
+    c.execute('SELECT id FROM match_screenshots WHERE match_id=?', (match_id,))
+    if c.fetchone():
+        await _reply_html(update.message, f"{E_WAITING} Скриншот матча #{match_id} уже загружен и ожидает проверки.")
+        conn.close()
+        return
+    file_id = update.message.photo[-1].file_id
+    c.execute('INSERT INTO match_screenshots (match_id, user_id, file_id) VALUES (?,?,?)',
+              (match_id, sender_id, file_id))
+    conn.commit()
+    c.execute('SELECT COALESCE(first_name, username) FROM users WHERE user_id=?', (sender_id,))
+    name_row    = c.fetchone()
+    sender_name = name_row[0] if name_row else str(sender_id)
+    c.execute('SELECT user_id FROM match_players WHERE match_id=?', (match_id,))
+    players     = [r[0] for r in c.fetchall()]
+    c.execute('SELECT user_id FROM users WHERE is_admin=1')
+    admins      = [r[0] for r in c.fetchall()]
+    c.execute('SELECT mode FROM team_matches WHERE match_id=?', (match_id,))
+    mode_row = c.fetchone()
+    mode     = (mode_row[0] or '5v5') if mode_row else '5v5'
+    c.execute('SELECT ct_team FROM team_matches WHERE match_id=?', (match_id,))
+    ct_row = c.fetchone()
+    ct_team = (ct_row[0] or 1) if ct_row else 1
+    conn.close()
+
+    # Автоматически считываем К/Д каждого игрока прямо со скриншота (без ИИ,
+    # локальный OCR) — ручной ввод статистики больше не нужен.
+    kd_status_line = ""
+    try:
+        file_obj = await context.bot.get_file(file_id)
+        buf = io.BytesIO()
+        await file_obj.download_to_memory(buf)
+        ocr_result = _ocr_extract_scoreboard(buf.getvalue())
+    except Exception:
+        logging.exception("Не удалось загрузить скриншот для OCR (матч #%s).", match_id)
+        ocr_result = None
+
+    ct_label  = f"{E_GREEN} Спецназы" if ct_team == 1 else f"{E_ORANGE} Террористы"
+    t_label   = f"{E_ORANGE} Террористы" if ct_team == 1 else f"{E_GREEN} Спецназы"
+
+    # Определяем победившую команду автоматически по слову "ПОБЕДА" на скриншоте
+    # (сторона left/right сопоставляется с командой через ct_team матча).
+    ocr_winner_team = None
+    if ocr_result:
+        all_matched, unmatched_uids = _apply_ocr_stats_to_match(match_id, ocr_result)
+        if all_matched:
+            kd_status_line = f"\n{E_CHECK} К/Д всех игроков распознано автоматически."
+        elif unmatched_uids:
+            kd_status_line = f"\n⚠️ Не удалось распознать К/Д для {len(unmatched_uids)} игрок(ов) — им засчитан нейтральный результат."
+        winner_side = ocr_result.get('winner_side')
+        if winner_side:
+            t_team_num = 2 if ct_team == 1 else 1
+            ocr_winner_team = ct_team if winner_side == 'left' else t_team_num
+    else:
+        kd_status_line = "\n⚠️ Не удалось распознать таблицу результатов на скриншоте — К/Д не будет учтён при начислении ELO."
+
+    if ocr_winner_team:
+        winner_label = ct_label if ocr_winner_team == ct_team else t_label
+        winner_status_line = f"\n{E_CHECK} Победитель распознан автоматически: {winner_label}"
+    else:
+        winner_status_line = "\n⚠️ Не удалось автоматически определить победителя — будет засчитана команда загрузившего скриншот."
+
+    conn3 = sqlite3.connect('faceit_bot.db')
+    conn3.execute('UPDATE team_matches SET ocr_winner_team=? WHERE match_id=?', (ocr_winner_team, match_id))
+    conn3.commit()
+    conn3.close()
+
+    admin_keyboard = InlineKeyboardMarkup([[
+        InlineKeyboardButton("✅ Одобрить", callback_data=f"ss_approve_{match_id}"),
+        InlineKeyboardButton("❌ Отклонить", callback_data=f"ss_reject_{match_id}"),
+    ]])
+    admin_caption = (
+        f"<tg-emoji emoji-id='5231012545799666522'>🔎</tg-emoji> <b>Проверка скриншота — Матч #{match_id} [{mode}]</b>\n"
+        f"Загрузил: <b>{sender_name}</b>\n"
+        f"Команда 1 = {ct_label} · Команда 2 = {t_label}"
+        f"{winner_status_line}"
+        f"{kd_status_line}"
+    )
+
+    if not admins:
+        # Нет администраторов — результат зачитывается сразу автоматически,
+        # без ручного подтверждения.
+        conn2 = sqlite3.connect('faceit_bot.db')
+        c2 = conn2.cursor()
+        c2.execute('UPDATE team_matches SET screenshot_submitted=1 WHERE match_id=?', (match_id,))
+        conn2.commit()
+        conn2.close()
+
+        caption = (
+            f"<tg-emoji emoji-id='5319247469165433798'>📸</tg-emoji> <b>Скриншот матча #{match_id} [{mode}]</b>\n"
+            f"Загрузил: <b>{sender_name}</b>"
+            f"{winner_status_line}"
+            f"{kd_status_line}"
+        )
+        for uid in players:
+            try:
+                _ct, _ce = _parse_msg(caption)
+                await context.bot.send_photo(chat_id=uid, photo=file_id, caption=_ct, caption_entities=_ce)
+            except Exception:
+                pass
+
+        winning_team = ocr_winner_team or ct_team
+        calib_games  = MODES.get(mode, MODES['5v5'])['calib_games']
+        gain, winners, losers, per_uid = finalize_match(match_id, winning_team, mode)
+        winner_label = ct_label if winning_team == ct_team else t_label
+        await _reply_html(
+            update.message,
+            f"{E_CHECK} Матч #{match_id} [{mode}] завершён!\n"
+            f"Победила {winner_label} {E_TROPHY}\n\n"
+            f"ELO начислен автоматически по статистике каждого игрока.\n"
+            f"(базовое изменение: ±{gain} ELO)"
+        )
+        all_uids = [uid for uid, _ in winners + losers]
+        for uid in all_uids:
+            await _send_match_notification(context.bot, uid, match_id, per_uid.get(uid, {}), calib_games)
+        mvp_info = _check_and_award_mvp(match_id)
+        if mvp_info:
+            await _announce_mvp(context.bot, match_id, mvp_info)
+        return
+
+    for admin_id in admins:
+        try:
+            _act, _ace = _parse_msg(admin_caption)
+            await context.bot.send_photo(
+                chat_id=admin_id, photo=file_id,
+                caption=_act, caption_entities=_ace, reply_markup=admin_keyboard
+            )
+        except Exception:
+            pass
+    for uid in players:
+        try:
+            await _send_html(context.bot, uid,
+                f"<tg-emoji emoji-id='5319247469165433798'>📸</tg-emoji> Скриншот матча #{match_id} отправлен на проверку администратору."
+            )
+        except Exception:
+            pass
+    await _reply_html(update.message, f"{E_WAITING} Скриншот отправлен администратору.")
+
+
+async def admin_screenshot_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query    = update.callback_query
+    data     = query.data
+    admin_id = query.from_user.id
+    conn = sqlite3.connect('faceit_bot.db')
+    c = conn.cursor()
+    c.execute('SELECT is_admin FROM users WHERE user_id=?', (admin_id,))
+    row = c.fetchone()
+    if not row or not row[0]:
+        await query.answer("Нет прав.", show_alert=True)
+        conn.close()
+        return
+    parts    = data.split("_")
+    action   = parts[1]
+    match_id = int(parts[2])
+    c.execute('SELECT user_id FROM match_players WHERE match_id=?', (match_id,))
+    players  = [r[0] for r in c.fetchall()]
+    c.execute('SELECT mode FROM team_matches WHERE match_id=?', (match_id,))
+    mode_row = c.fetchone()
+    mode     = (mode_row[0] or '5v5') if mode_row else '5v5'
+    conn.close()
+
+    if action == "approve":
+        conn2 = sqlite3.connect('faceit_bot.db')
+        try:
+            c2 = conn2.cursor()
+            c2.execute('SELECT ocr_winner_team FROM team_matches WHERE match_id=?', (match_id,))
+            ocr_row = c2.fetchone()
+            winning_team = ocr_row[0] if ocr_row and ocr_row[0] else None
+            if not winning_team:
+                # OCR не распознал победителя — засчитываем команду загрузившего скриншот.
+                c2.execute('SELECT user_id FROM match_screenshots WHERE match_id=? ORDER BY id DESC LIMIT 1', (match_id,))
+                uploader_row = c2.fetchone()
+                uploader_id  = uploader_row[0] if uploader_row else None
+                c2.execute('SELECT team FROM match_players WHERE match_id=? AND user_id=?', (match_id, uploader_id))
+                team_row     = c2.fetchone()
+                winning_team = team_row[0] if team_row else 1
+        finally:
+            conn2.close()
+
+        calib_games = MODES.get(mode, MODES['5v5'])['calib_games']
+        gain, winners, losers, per_uid = finalize_match(match_id, winning_team, mode)
+
+        conn_ct2 = sqlite3.connect('faceit_bot.db')
+        try:
+            c_ct2 = conn_ct2.cursor()
+            c_ct2.execute('SELECT ct_team FROM team_matches WHERE match_id=?', (match_id,))
+            ct_row2 = c_ct2.fetchone()
+        finally:
+            conn_ct2.close()
+        ct_team2 = (ct_row2[0] or 1) if ct_row2 else 1
+        winner_side = f"{E_GREEN} Спецназы (CT)" if ct_team2 == winning_team else f"{E_ORANGE} Террористы (T)"
+        _cpt = (
+            f"{E_CHECK} Скриншот матча #{match_id} <b>одобрен</b>.\n"
+            f"Победила {winner_side} — "
+            f"ELO начислен автоматически (база: ±{gain})"
+        )
+        _ct, _ce = _parse_msg(_cpt)
+        await query.edit_message_caption(_ct, caption_entities=_ce)
+        await query.answer("Одобрено!")
+
+        all_uids = [uid for uid, _ in winners + losers]
+        for uid in all_uids:
+            await _send_match_notification(context.bot, uid, match_id, per_uid.get(uid, {}), calib_games)
+
+        mvp_info = _check_and_award_mvp(match_id)
+        if mvp_info:
+            await _announce_mvp(context.bot, match_id, mvp_info)
+    elif action == "reject":
+        _reset_match_kd(match_id)
+        conn2 = sqlite3.connect('faceit_bot.db')
+        try:
+            c2 = conn2.cursor()
+            c2.execute('DELETE FROM match_screenshots WHERE match_id=?', (match_id,))
+            conn2.commit()
+        finally:
+            conn2.close()
+        _ct, _ce = _parse_msg(f"{E_CROSS} Скриншот матча #{match_id} <b>отклонён</b>.")
+        await query.edit_message_caption(_ct, caption_entities=_ce)
+        await query.answer("Отклонено.")
+        for uid in players:
+            try:
+                await _send_html(context.bot, uid, f"{E_CROSS} Скриншот матча #{match_id} отклонён. Загрузите новый.")
+            except Exception:
+                pass
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  РОУТЕР + СТАТИСТИКА K/D
+# ══════════════════════════════════════════════════════════════════════════════
+
+BUTTON_ROUTES = {
+    "👤 Профиль":          action_profile,
+    "🔍 Найти матч":       action_find_match,
+    "👥 Очередь":          action_queue_status,
+    "🚪 Выйти из очереди": action_leave_queue,
+    "<tg-emoji emoji-id='5282843764451195532'>📋</tg-emoji> История":          action_history,
+    "<tg-emoji emoji-id='5280769763398671636'>🏆</tg-emoji> Таблица лидеров":  action_leaderboard,
+    "📄 Правила":          action_rules,
+    "💰 Донат":            action_donate,
+    "Репорт <tg-emoji emoji-id='5395695537687123235'>🚨</tg-emoji>":           action_report,
+}
+
+
+async def keyboard_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    text = update.message.text
+    if text == "Меню":
+        # Сбрасываем любой активный шаг при явном возврате в меню
+        context.user_data.pop('reg_step', None)
+        await action_show_menu(update, context)
+        return
+    handler = BUTTON_ROUTES.get(text)
+    if handler:
+        await handler(update, context)
+
+
+async def cmd_mystats(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """K/D теперь считывается автоматически со скриншота результата матча —
+    ручной ввод отключён, чтобы исключить ошибки и накрутку статистики."""
+    uid = update.effective_user.id
+    if not get_user(uid):
+        await update.message.reply_text("Сначала нажмите /start.")
+        return
+
+    match_id = None
+    if context.args:
+        try:
+            match_id = int(context.args[0])
+        except ValueError:
+            match_id = None
+
+    kd_str = None
+    if match_id is not None:
+        conn = sqlite3.connect('faceit_bot.db')
+        c = conn.cursor()
+        c.execute('SELECT kills, deaths, kd_entered FROM match_players WHERE match_id=? AND user_id=?',
+                  (match_id, uid))
+        row = c.fetchone()
+        conn.close()
+        if row:
+            kills, deaths, kd_entered = row
+            if kd_entered:
+                kd_str = f"\n\n<tg-emoji emoji-id='5222486447306602688'>🔫</tg-emoji> Матч #{match_id}: убийства <b>{kills}</b>, смерти <b>{deaths}</b>."
+            else:
+                kd_str = f"\n\n<i>К/Д матча #{match_id} ещё не распознано — дождитесь проверки скриншота.</i>"
+
+    await _reply_html(
+        update.message,
+        f"{E_ZAP} К/Д считывается автоматически со скриншота результата матча — "
+        f"ручной ввод статистики больше не требуется."
+        f"{kd_str or ''}"
+    )
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  ADMIN КОМАНДЫ
+# ══════════════════════════════════════════════════════════════════════════════
+
+async def _require_admin(update: Update) -> bool:
+    uid = update.effective_user.id
+    conn = sqlite3.connect('faceit_bot.db')
+    c = conn.cursor()
+    c.execute('SELECT is_admin FROM users WHERE user_id=?', (uid,))
+    row = c.fetchone()
+    conn.close()
+    if not row or not row[0]:
+        await _reply_html(update.message, f"{E_CROSS} Только для администраторов.")
+        return False
+    return True
+
+
+async def _require_mod_or_admin(update: Update) -> bool:
+    """Доступ к варнам/банам — для админов и для модераторов (лёгкая роль,
+    выдаваемая через /moder, без остальных прав администратора)."""
+    uid = update.effective_user.id
+    conn = sqlite3.connect('faceit_bot.db')
+    c = conn.cursor()
+    c.execute('SELECT is_admin, is_moderator FROM users WHERE user_id=?', (uid,))
+    row = c.fetchone()
+    conn.close()
+    if not row or not (row[0] or row[1]):
+        await _reply_html(update.message, f"{E_CROSS} Только для администраторов и модераторов.")
+        return False
+    return True
+
+
+async def cmd_admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    ADMIN_PASSWORD = os.environ.get('ADMIN_PASSWORD', '111qqq111!')
+    if not context.args or context.args[0] != ADMIN_PASSWORD:
+        await _reply_html(update.message, f"{E_CROSS} Неверный пароль.")
+        return
+    keyboard = InlineKeyboardMarkup([[
+        InlineKeyboardButton("Значок 1", callback_data="admin_self_badge_1",
+                             api_kwargs={'icon_custom_emoji_id': '5314334546269872179'}),
+        InlineKeyboardButton("Значок 2", callback_data="admin_self_badge_2",
+                             api_kwargs={'icon_custom_emoji_id': '5314666276658912691'}),
+        InlineKeyboardButton("Значок 3", callback_data="admin_self_badge_3",
+                             api_kwargs={'icon_custom_emoji_id': '5314302200871164289'}),
+    ]])
+    await _reply_html(update.message, f"{E_SPARK} Пароль верный! Выберите значок администратора:", reply_markup=keyboard)
+
+
+async def cmd_renderstatus(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Диагностика рендера карточек. Только для администраторов."""
+    uid = update.effective_user.id
+    ADMIN_PASSWORD = os.environ.get('ADMIN_PASSWORD', '111qqq111!')
+    creator_ids = get_creator_ids()
+    admin_ids   = get_admin_ids()
+    # Разрешено только создателям/администраторам (или по паролю)
+    is_privileged = uid in creator_ids or uid in admin_ids
+    if not is_privileged:
+        if not context.args or context.args[0] != ADMIN_PASSWORD:
+            await _reply_html(update.message, f"{E_CROSS} Нет доступа.")
+            return
+
+    lines = [f"{E_ZAP} <b>Статус рендера карточек</b>\n"]
+
+    # 1. Playwright
+    try:
+        import playwright  # noqa: F401
+        import importlib.metadata as _imeta
+        pw_ver = _imeta.version("playwright")
+        lines.append(f"{E_CHECK} <b>Playwright</b> установлен — v{pw_ver}")
+    except Exception:
+        lines.append(
+            f"{E_CROSS} <b>Playwright</b> НЕ установлен\n"
+            f"   Запустите: <code>pip install playwright</code>"
+        )
+
+    # 2. Chromium / Chrome
+    try:
+        from card_renderer import _find_chromium
+        chrome_path = _find_chromium()
+        if chrome_path:
+            lines.append(f"{E_CHECK} <b>Chromium</b> найден:\n   <code>{chrome_path}</code>")
+        else:
+            lines.append(
+                f"{E_CROSS} <b>Chromium</b> НЕ найден\n"
+                f"   Запустите: <code>playwright install chromium</code>\n"
+                f"   Или укажите путь в переменной CHROMIUM_PATH"
+            )
+    except Exception as e:
+        lines.append(f"{EP_WARN} <b>Chromium</b>: ошибка проверки — <code>{e}</code>")
+
+    # 3. Тестовый рендер (быстрый)
+    lines.append(f"\n{E_WAITING} Тестовый рендер…")
+    await _reply_html(update.message, "\n".join(lines))
+
+    try:
+        from card_renderer import render_card_bytes
+        _test_html = (
+            '<html><body style="width:200px;height:100px;background:#1a1a2e;">'
+            '<div class="card" style="width:200px;height:100px;background:#16213e;'
+            'border-radius:8px;display:flex;align-items:center;justify-content:center;'
+            'color:#fff;font-size:14px;">OK</div></body></html>'
+        )
+        import asyncio as _aio
+        png = await _aio.wait_for(render_card_bytes(_test_html), timeout=25)
+        _ok_t, _ok_e = _parse_msg(f"{E_CHECK} Рендер работает — {len(png)} байт")
+        await update.message.reply_photo(png, caption=_ok_t, caption_entities=_ok_e)
+    except Exception as err:
+        await _reply_html(
+            update.message,
+            f"{E_CROSS} <b>Тестовый рендер провалился:</b>\n<code>{err}</code>\n\n"
+            f"Карточки будут отправляться в текстовом виде."
+        )
+
+
+async def cmd_setadmin(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    ADMIN_PASSWORD = os.environ.get('ADMIN_PASSWORD', '111qqq111!')
+    if len(context.args) < 2:
+        await _reply_html(update.message,
+            f"{E_CROSS} Использование: /setadmin \"пароль\" \"юзернейм\"\n"
+            "Пример: /setadmin 111qqq111! username"
+        )
+        return
+    password = context.args[0]
+    if password != ADMIN_PASSWORD:
+        await _reply_html(update.message, f"{E_CROSS} Неверный пароль.")
+        return
+    target_name = context.args[1].lstrip('@')
+    target = find_user_by_name(target_name)
+    if not target:
+        await _reply_html(update.message, f"{E_CROSS} Игрок «{target_name}» не найден в базе.")
+        return
+    target_id, display_name = target
+    conn = sqlite3.connect('faceit_bot.db')
+    c = conn.cursor()
+    c.execute('SELECT is_admin FROM users WHERE user_id=?', (target_id,))
+    row = c.fetchone()
+    conn.close()
+    if row and row[0]:
+        conn2 = sqlite3.connect('faceit_bot.db')
+        conn2.execute('UPDATE users SET is_admin=0 WHERE user_id=?', (target_id,))
+        conn2.commit()
+        conn2.close()
+        await _reply_html(update.message, f"{E_OFF1} Статус администратора снят с <b>{display_name}</b>.")
+    else:
+        keyboard = InlineKeyboardMarkup([[
+            InlineKeyboardButton("Значок 1", callback_data=f"setadmin_badge_1_{target_id}",
+                                 api_kwargs={'icon_custom_emoji_id': '5314334546269872179'}),
+            InlineKeyboardButton("Значок 2", callback_data=f"setadmin_badge_2_{target_id}",
+                                 api_kwargs={'icon_custom_emoji_id': '5314666276658912691'}),
+            InlineKeyboardButton("Значок 3", callback_data=f"setadmin_badge_3_{target_id}",
+                                 api_kwargs={'icon_custom_emoji_id': '5314302200871164289'}),
+        ]])
+        await _reply_html(update.message,
+            f"{E_SPARK} Выберите значок администратора для <b>{display_name}</b>:",
+            reply_markup=keyboard)
+
+
+async def admin_self_badge_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    uid = query.from_user.id
+    badge_id = int(query.data.split('_')[-1])
+    conn = sqlite3.connect('faceit_bot.db')
+    conn.execute('UPDATE users SET is_admin=1, admin_badge_id=? WHERE user_id=?', (badge_id, uid))
+    conn.commit()
+    conn.close()
+    badge_icons = {1: E_OFF1, 2: E_OFF2, 3: E_OFF3}
+    icon = badge_icons.get(badge_id, E_OFF1)
+    await _edit_html(query, f"{icon} Вы назначены администратором! Значок добавлен в профиль и лобби.")
+
+
+async def setadmin_badge_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    parts = query.data.split('_')
+    badge_id  = int(parts[2])
+    target_id = int(parts[3])
+    conn = sqlite3.connect('faceit_bot.db')
+    c = conn.cursor()
+    c.execute('SELECT COALESCE(first_name, username) FROM users WHERE user_id=?', (target_id,))
+    row = c.fetchone()
+    display_name = row[0] if row else str(target_id)
+    c.execute('UPDATE users SET is_admin=1, admin_badge_id=? WHERE user_id=?', (badge_id, target_id))
+    conn.commit()
+    conn.close()
+    badge_icons = {1: E_OFF1, 2: E_OFF2, 3: E_OFF3}
+    icon = badge_icons.get(badge_id, E_OFF1)
+    await _edit_html(query, f"{icon} <b>{display_name}</b> теперь администратор!")
+    try:
+        await _send_html(context.bot, target_id,
+            f"{icon} <b>Вам выдан статус администратора!</b>\n"
+            f"Значок отображается в профиле, лобби и матчах.")
+    except Exception:
+        pass
+
+
+async def cmd_moder(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Выдаёт/снимает статус модератора (пароль администратора).
+    Модератор может только выдавать/снимать варны и баны — /warn, /unwarn,
+    /ban, /unban, /tempban. Остальные админ-команды ему недоступны."""
+    ADMIN_PASSWORD = os.environ.get('ADMIN_PASSWORD', '111qqq111!')
+    if len(context.args) < 2:
+        await _reply_html(update.message,
+            f"{E_CROSS} Использование: /moder \"пароль\" \"юзернейм\"\n"
+            "Пример: /moder 111qqq111! username"
+        )
+        return
+    password = context.args[0]
+    if password != ADMIN_PASSWORD:
+        await _reply_html(update.message, f"{E_CROSS} Неверный пароль.")
+        return
+    target_name = context.args[1].lstrip('@')
+    target = find_user_by_name(target_name)
+    if not target:
+        await _reply_html(update.message, f"{E_CROSS} Игрок «{target_name}» не найден в базе.")
+        return
+    target_id, display_name = target
+    conn = sqlite3.connect('faceit_bot.db')
+    c = conn.cursor()
+    c.execute('SELECT is_moderator FROM users WHERE user_id=?', (target_id,))
+    row = c.fetchone()
+    if row and row[0]:
+        c.execute('UPDATE users SET is_moderator=0 WHERE user_id=?', (target_id,))
+        conn.commit()
+        conn.close()
+        await _reply_html(update.message, f"{E_OFF1} Статус модератора снят с <b>{display_name}</b>.")
+        try:
+            await _send_html(context.bot, target_id, f"{E_OFF1} Вы больше не модератор.")
+        except Exception:
+            pass
+    else:
+        c.execute('UPDATE users SET is_moderator=1 WHERE user_id=?', (target_id,))
+        conn.commit()
+        conn.close()
+        await _reply_html(update.message, f"{E_SPARK} <b>{display_name}</b> назначен модератором (варны/баны).")
+        try:
+            await _send_html(context.bot, target_id,
+                f"{E_SPARK} <b>Вам выдан статус модератора!</b>\n"
+                f"Доступны команды: /warn, /unwarn, /ban, /unban, /tempban.")
+        except Exception:
+            pass
+
+
+async def cmd_ban(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await _require_mod_or_admin(update):
+        return
+    if not context.args:
+        await update.message.reply_text("Использование: /ban <имя> [причина]")
+        return
+    target = find_user_by_name(context.args[0])
+    if not target:
+        await _reply_html(update.message, f"{E_CROSS} Игрок «{context.args[0]}» не найден.")
+        return
+    target_id, display_name = target
+    reason = " ".join(context.args[1:]) if len(context.args) > 1 else "нарушение правил"
+    conn = sqlite3.connect('faceit_bot.db')
+    c = conn.cursor()
+    c.execute('UPDATE users SET is_banned=1, ban_reason=? WHERE user_id=?', (reason, target_id))
+    conn.commit()
+    conn.close()
+    for m in MODES:
+        for q in lobby_queues[m].values():
+            if target_id in q:
+                q.remove(target_id)
+                break
+    await _reply_html(update.message, f"{E_BAN} <b>{display_name}</b> заблокирован. Причина: {reason}")
+    try:
+        await _send_html(context.bot, target_id, f"{E_BAN} Вы заблокированы.\nПричина: {reason}")
+    except Exception:
+        pass
+
+
+async def cmd_unban(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await _require_mod_or_admin(update):
+        return
+    if not context.args:
+        await update.message.reply_text("Использование: /unban <имя>")
+        return
+    target = find_user_by_name(context.args[0])
+    if not target:
+        await _reply_html(update.message, f"{E_CROSS} Игрок «{context.args[0]}» не найден.")
+        return
+    target_id, display_name = target
+    conn = sqlite3.connect('faceit_bot.db')
+    c = conn.cursor()
+    c.execute('UPDATE users SET is_banned=0, ban_reason=NULL, ban_until=NULL WHERE user_id=?', (target_id,))
+    conn.commit()
+    conn.close()
+    await _reply_html(update.message, f"{E_CHECK} <b>{display_name}</b> разблокирован.")
+    try:
+        await _send_html(context.bot, target_id, f"{E_CHECK} Ваш бан снят!")
+    except Exception:
+        pass
+
+
+async def cmd_kick(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await _require_admin(update):
+        return
+    if not context.args:
+        await update.message.reply_text("Использование: /kick <юзернейм>")
+        return
+    target = find_user_by_name(context.args[0])
+    if not target:
+        await _reply_html(update.message, f"{E_CROSS} Игрок «{context.args[0]}» не найден.")
+        return
+    target_id, display_name = target
+    kicked = False
+    for m in MODES:
+        for q in lobby_queues[m].values():
+            if target_id in q:
+                q.remove(target_id)
+                kicked = True
+    _cleanup_uid(target_id)
+    if kicked:
+        await _reply_html(update.message, f"🦵 <b>{display_name}</b> выкинут из очереди.")
+        try:
+            await _send_html(context.bot, target_id, f"Вы были кикнуты из очереди {E_BAN}. Зайдите в лобби снова {E_SPARK}")
+        except Exception:
+            pass
+    else:
+        await _reply_html(update.message, f"{E_SEARCH} <b>{display_name}</b> не находился ни в одной очереди.")
+
+
+async def cmd_tempban(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await _require_mod_or_admin(update):
+        return
+    if len(context.args) < 2:
+        await update.message.reply_text("Использование: /tempban <имя> <дней> [причина]")
+        return
+    target = find_user_by_name(context.args[0])
+    if not target:
+        await _reply_html(update.message, f"{E_CROSS} Игрок «{context.args[0]}» не найден.")
+        return
+    target_id, display_name = target
+    try:
+        days = int(context.args[1])
+    except ValueError:
+        await _reply_html(update.message, f"{E_CROSS} Укажи количество дней числом.")
+        return
+    reason    = " ".join(context.args[2:]) if len(context.args) > 2 else "нарушение правил"
+    ban_until = (datetime.datetime.utcnow() + datetime.timedelta(days=days)).isoformat()
+    conn = sqlite3.connect('faceit_bot.db')
+    c = conn.cursor()
+    c.execute('UPDATE users SET is_banned=1, ban_reason=?, ban_until=? WHERE user_id=?',
+              (reason, ban_until, target_id))
+    conn.commit()
+    conn.close()
+    for m in MODES:
+        for q in lobby_queues[m].values():
+            if target_id in q:
+                q.remove(target_id)
+                break
+    await _reply_html(update.message, f"{E_WAITING} <b>{display_name}</b> забанен на <b>{days}</b> дн.\nПричина: {reason}")
+    try:
+        await _send_html(context.bot, target_id,
+            f"{E_WAITING} Вы заблокированы на {days} дн.\nПричина: {reason}"
+        )
+    except Exception:
+        pass
+
+
+async def cmd_warn(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await _require_mod_or_admin(update):
+        return
+    if not context.args:
+        await update.message.reply_text("Использование: /warn <имя> [причина]")
+        return
+    target = find_user_by_name(context.args[0])
+    if not target:
+        await _reply_html(update.message, f"{E_CROSS} Игрок «{context.args[0]}» не найден.")
+        return
+    target_id, display_name = target
+    reason = " ".join(context.args[1:]) if len(context.args) > 1 else "нарушение правил"
+    conn = sqlite3.connect('faceit_bot.db')
+    c = conn.cursor()
+    c.execute('UPDATE users SET warns=COALESCE(warns,0)+1 WHERE user_id=?', (target_id,))
+    conn.commit()
+    c.execute('SELECT warns FROM users WHERE user_id=?', (target_id,))
+    warns_count = c.fetchone()[0]
+    if warns_count >= 3:
+        c.execute('UPDATE users SET is_banned=1, ban_reason=? WHERE user_id=?',
+                  ("3 варна", target_id))
+        conn.commit()
+    conn.close()
+    msg = f"<tg-emoji emoji-id='5447644880824181073'>⚠️</tg-emoji> <b>{display_name}</b> получил варн ({warns_count}/3). Причина: {reason}"
+    if warns_count >= 3:
+        msg += f"\n\n{E_BAN} <b>3 варна — игрок автоматически заблокирован!</b>"
+    await _reply_html(update.message, msg)
+    try:
+        warn_text = (f"<tg-emoji emoji-id='5447644880824181073'>⚠️</tg-emoji> Вы получили варн ({warns_count}/3).\nПричина: {reason}"
+                     + (f"\n\n{E_BAN} Вы автоматически заблокированы (3 варна)." if warns_count >= 3 else ""))
+        await _send_html(context.bot, target_id, warn_text)
+    except Exception:
+        pass
+
+
+async def cmd_unwarn(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await _require_mod_or_admin(update):
+        return
+    if not context.args:
+        await update.message.reply_text("Использование: /unwarn <имя>")
+        return
+    target = find_user_by_name(context.args[0])
+    if not target:
+        await _reply_html(update.message, f"{E_CROSS} Игрок «{context.args[0]}» не найден.")
+        return
+    target_id, display_name = target
+    conn = sqlite3.connect('faceit_bot.db')
+    c = conn.cursor()
+    c.execute('UPDATE users SET warns=MAX(0, COALESCE(warns,0)-1) WHERE user_id=?', (target_id,))
+    conn.commit()
+    c.execute('SELECT warns FROM users WHERE user_id=?', (target_id,))
+    warns_count = c.fetchone()[0]
+    conn.close()
+    await _reply_html(update.message, f"{E_CHECK} Варн снят. <b>{display_name}</b>: {warns_count}/3")
+
+
+async def cmd_setelo(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await _require_admin(update):
+        return
+    if len(context.args) < 2:
+        await update.message.reply_text("Использование: /setelo <имя> <elo>")
+        return
+    target = find_user_by_name(context.args[0])
+    if not target:
+        await _reply_html(update.message, f"{E_CROSS} Игрок «{context.args[0]}» не найден.")
+        return
+    try:
+        new_elo = int(context.args[1])
+    except ValueError:
+        await _reply_html(update.message, f"{E_CROSS} ELO должен быть числом.")
+        return
+    target_id, display_name = target
+    new_level = elo_to_level(new_elo)
+    conn = sqlite3.connect('faceit_bot.db')
+    c = conn.cursor()
+    c.execute('UPDATE users SET elo=?, level=? WHERE user_id=?', (new_elo, new_level, target_id))
+    conn.commit()
+    conn.close()
+    await _reply_html(update.message, f"{E_CHECK} ELO игрока <b>{display_name}</b> установлен: <code>{new_elo}</code>")
+
+
+async def cmd_addelo(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await _require_admin(update):
+        return
+    if len(context.args) < 2:
+        await update.message.reply_text("Использование: /addelo <имя> <+/-кол-во>")
+        return
+    target = find_user_by_name(context.args[0])
+    if not target:
+        await _reply_html(update.message, f"{E_CROSS} Игрок «{context.args[0]}» не найден.")
+        return
+    try:
+        delta = int(context.args[1])
+    except ValueError:
+        await _reply_html(update.message, f"{E_CROSS} Укажи число.")
+        return
+    target_id, display_name = target
+    conn = sqlite3.connect('faceit_bot.db')
+    c = conn.cursor()
+    c.execute('SELECT elo FROM users WHERE user_id=?', (target_id,))
+    old = c.fetchone()[0]
+    new_elo   = max(0, old + delta)
+    new_level = elo_to_level(new_elo)
+    c.execute('UPDATE users SET elo=?, level=? WHERE user_id=?', (new_elo, new_level, target_id))
+    conn.commit()
+    conn.close()
+    sign = "+" if delta >= 0 else ""
+    await _reply_html(update.message, f"{E_CHECK} <b>{display_name}</b>: ELO {old} → <code>{new_elo}</code> ({sign}{delta})")
+
+
+async def cmd_addcoins(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await _require_admin(update):
+        return
+    if len(context.args) < 2:
+        await update.message.reply_text("Использование: /addcoins <юзернейм> <количество>")
+        return
+    target = find_user_by_name(context.args[0])
+    if not target:
+        await _reply_html(update.message, f"{E_CROSS} Игрок «{context.args[0]}» не найден.")
+        return
+    try:
+        delta = int(context.args[1])
+    except ValueError:
+        await _reply_html(update.message, f"{E_CROSS} Укажи число.")
+        return
+    target_id, display_name = target
+    conn = sqlite3.connect('faceit_bot.db')
+    c = conn.cursor()
+    c.execute('SELECT moon_coins FROM users WHERE user_id=?', (target_id,))
+    row = c.fetchone()
+    old = (row[0] or 0) if row else 0
+    new_coins = max(0, old + delta)
+    c.execute('UPDATE users SET moon_coins=? WHERE user_id=?', (new_coins, target_id))
+    conn.commit()
+    conn.close()
+    sign = "+" if delta >= 0 else ""
+    await _reply_html(update.message, f"{E_PRICE} <b>{display_name}</b>: Moon Coins {old} → <code>{new_coins}</code> ({sign}{delta})")
+    try:
+        await _send_html(context.bot, target_id, f"{E_PRICE} Вам начислено <b>{sign}{delta}</b> Moon Coins!\n"
+                 f"Баланс: <b>{new_coins}</b>")
+    except Exception:
+        pass
+
+
+async def cmd_setwins(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await _require_admin(update):
+        return
+    if len(context.args) < 2:
+        await update.message.reply_text("Использование: /setwins <имя> <победы>")
+        return
+    target = find_user_by_name(context.args[0])
+    if not target:
+        await _reply_html(update.message, f"{E_CROSS} Игрок «{context.args[0]}» не найден.")
+        return
+    try:
+        wins = int(context.args[1])
+    except ValueError:
+        await _reply_html(update.message, f"{E_CROSS} Укажи число.")
+        return
+    target_id, display_name = target
+    conn = sqlite3.connect('faceit_bot.db')
+    c = conn.cursor()
+    c.execute('UPDATE users SET wins=? WHERE user_id=?', (wins, target_id))
+    conn.commit()
+    conn.close()
+    await _reply_html(update.message, f"{E_CHECK} Победы <b>{display_name}</b>: <b>{wins}</b>")
+
+
+async def cmd_setmatches(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await _require_admin(update):
+        return
+    if len(context.args) < 2:
+        await update.message.reply_text("Использование: /setmatches <имя> <матчи>")
+        return
+    target = find_user_by_name(context.args[0])
+    if not target:
+        await _reply_html(update.message, f"{E_CROSS} Игрок «{context.args[0]}» не найден.")
+        return
+    try:
+        matches = int(context.args[1])
+    except ValueError:
+        await _reply_html(update.message, f"{E_CROSS} Укажи число.")
+        return
+    target_id, display_name = target
+    conn = sqlite3.connect('faceit_bot.db')
+    c = conn.cursor()
+    c.execute('UPDATE users SET matches_played=? WHERE user_id=?', (matches, target_id))
+    conn.commit()
+    conn.close()
+    await _reply_html(update.message, f"{E_CHECK} Матчи <b>{display_name}</b>: <b>{matches}</b>")
+
+
+async def cmd_setkd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await _require_admin(update):
+        return
+    if len(context.args) < 3:
+        await update.message.reply_text("Использование: /setkd <имя> <убийства> <смерти>")
+        return
+    target = find_user_by_name(context.args[0])
+    if not target:
+        await _reply_html(update.message, f"{E_CROSS} Игрок «{context.args[0]}» не найден.")
+        return
+    try:
+        kills  = int(context.args[1])
+        deaths = int(context.args[2])
+    except ValueError:
+        await _reply_html(update.message, f"{E_CROSS} Укажи числа.")
+        return
+    target_id, display_name = target
+    conn = sqlite3.connect('faceit_bot.db')
+    c = conn.cursor()
+    c.execute('UPDATE users SET kills=?, deaths=? WHERE user_id=?', (kills, deaths, target_id))
+    conn.commit()
+    conn.close()
+    await _reply_html(update.message, f"{E_CHECK} К/Д <b>{display_name}</b>: {kills}/{deaths}")
+
+
+async def cmd_setnick(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await _require_admin(update):
+        return
+    if len(context.args) < 2:
+        await update.message.reply_text("Использование: /setnick <старый_ник> <новый_ник>")
+        return
+    target = find_user_by_name(context.args[0])
+    if not target:
+        await _reply_html(update.message, f"{E_CROSS} Игрок «{context.args[0]}» не найден.")
+        return
+    target_id, _ = target
+    new_nick = context.args[1]
+    conn = sqlite3.connect('faceit_bot.db')
+    c = conn.cursor()
+    c.execute('UPDATE users SET first_name=? WHERE user_id=?', (new_nick, target_id))
+    conn.commit()
+    conn.close()
+    await _reply_html(update.message, f"{E_CHECK} Никнейм изменён на <b>{new_nick}</b>")
+
+
+async def cmd_setgameid(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await _require_admin(update):
+        return
+    if len(context.args) < 2:
+        await update.message.reply_text("Использование: /setgameid <имя> <game_id>")
+        return
+    target = find_user_by_name(context.args[0])
+    if not target:
+        await _reply_html(update.message, f"{E_CROSS} Игрок «{context.args[0]}» не найден.")
+        return
+    target_id, display_name = target
+    game_id = context.args[1]
+    conn = sqlite3.connect('faceit_bot.db')
+    c = conn.cursor()
+    c.execute('UPDATE users SET game_id=? WHERE user_id=?', (game_id, target_id))
+    conn.commit()
+    conn.close()
+    await _reply_html(update.message, f"{E_CHECK} Game ID <b>{display_name}</b> → <code>{game_id}</code>")
+
+
+async def cmd_addpromo(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Создаёт/обновляет промокод. Использование: /addpromo КОД НАГРАДА АКТИВАЦИИ"""
+    if not await _require_admin(update):
+        return
+    if len(context.args) < 3:
+        await update.message.reply_text("Использование: /addpromo <код> <награда_moon_coins> <кол-во_активаций>")
+        return
+    code = context.args[0].strip().upper()
+    try:
+        reward      = int(context.args[1])
+        activations = int(context.args[2])
+    except ValueError:
+        await update.message.reply_text("Награда и количество активаций должны быть числами.")
+        return
+    if reward <= 0 or activations <= 0:
+        await update.message.reply_text("Награда и количество активаций должны быть положительными числами.")
+        return
+    conn = sqlite3.connect('faceit_bot.db')
+    c = conn.cursor()
+    c.execute(
+        'INSERT INTO promo_codes (code, reward, activations_left) VALUES (?, ?, ?) '
+        'ON CONFLICT(code) DO UPDATE SET reward=excluded.reward, activations_left=excluded.activations_left',
+        (code, reward, activations)
+    )
+    conn.commit()
+    conn.close()
+    await _reply_html(
+        update.message,
+        f"{E_CHECK} Промокод <b>{_esc(code)}</b>: {E_PRICE} <b>{reward}</b> Moon Coins, активаций — <b>{activations}</b>."
+    )
+
+
+async def cmd_setcreator(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await _require_admin(update):
+        return
+    if not context.args:
+        await update.message.reply_text("Использование: /setcreator <имя>")
+        return
+    target = find_user_by_name(context.args[0])
+    if not target:
+        await _reply_html(update.message, f"{E_CROSS} Игрок «{context.args[0]}» не найден.")
+        return
+    target_id, display_name = target
+    conn = sqlite3.connect('faceit_bot.db')
+    c = conn.cursor()
+    c.execute('SELECT is_creator FROM users WHERE user_id=?', (target_id,))
+    row = c.fetchone()
+    new_val = 0 if (row and row[0]) else 1
+    c.execute('UPDATE users SET is_creator=? WHERE user_id=?', (new_val, target_id))
+    conn.commit()
+    conn.close()
+    status = "выдан" if new_val else "снят"
+    await _reply_html(update.message, f"{E_CHECK} Значок создателя {status} — <b>{display_name}</b>")
+
+
+async def cmd_addoff(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await _require_admin(update):
+        return
+    if not context.args:
+        await _reply_html(update.message, "Использование: /addoff <юзернейм>")
+        return
+    target = find_user_by_name(context.args[0])
+    if not target:
+        await _reply_html(update.message, f"{E_CROSS} Игрок «{context.args[0]}» не найден.")
+        return
+    target_id, display_name = target
+    keyboard = InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton("Значок 1", callback_data=f"addoff_1_{target_id}", api_kwargs={'icon_custom_emoji_id': '5314334546269872179'}),
+            InlineKeyboardButton("Значок 2", callback_data=f"addoff_2_{target_id}", api_kwargs={'icon_custom_emoji_id': '5314666276658912691'}),
+            InlineKeyboardButton("Значок 3", callback_data=f"addoff_3_{target_id}", api_kwargs={'icon_custom_emoji_id': '5314302200871164289'}),
+        ],
+        [
+            InlineKeyboardButton("❌ Убрать значок", callback_data=f"addoff_0_{target_id}"),
+        ],
+    ])
+    await _reply_html(update.message, f"{EP_USER} <b>{display_name}</b> — выберите значок:", reply_markup=keyboard)
+
+
+async def addoff_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    uid = update.effective_user.id
+    conn_a = sqlite3.connect('faceit_bot.db')
+    c_a = conn_a.cursor()
+    c_a.execute('SELECT is_admin FROM users WHERE user_id=?', (uid,))
+    row_a = c_a.fetchone()
+    conn_a.close()
+    if not (row_a and row_a[0]):
+        await query.answer("Только для администраторов.", show_alert=True)
+        return
+    parts = query.data.split('_')
+    badge_val  = int(parts[1])
+    target_id  = int(parts[2])
+    conn = sqlite3.connect('faceit_bot.db')
+    c = conn.cursor()
+    c.execute('SELECT COALESCE(first_name, username) FROM users WHERE user_id=?', (target_id,))
+    row = c.fetchone()
+    display_name = row[0] if row else str(target_id)
+    c.execute('UPDATE users SET official_badge=? WHERE user_id=?', (badge_val, target_id))
+    conn.commit()
+    conn.close()
+    BADGE_LABELS = {0: "убран", 1: f"выдан {E_OFF1}", 2: f"выдан {E_OFF2}", 3: f"выдан {E_OFF3}"}
+    label = BADGE_LABELS.get(badge_val, "изменён")
+    await _edit_html(query, f"{EP_USER} <b>{display_name}</b> — значок {label}")
+    try:
+        if badge_val > 0:
+            badge_icon = E_OFF1 if badge_val == 1 else E_OFF2 if badge_val == 2 else E_OFF3
+            await _send_html(context.bot, target_id, f"Вам выдан официальный значок {badge_icon}")
+        else:
+            await _send_html(context.bot, target_id, f"Ваш официальный значок был убран {E_CROSS}")
+    except Exception:
+        pass
+
+
+async def cmd_resetelo(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await _require_admin(update):
+        return
+    await _reply_html(update.message, "<tg-emoji emoji-id='5447644880824181073'>⚠️</tg-emoji> <b>Сбросить ELO всем игрокам?</b>\n\nЭто действие необратимо!", reply_markup=InlineKeyboardMarkup([[
+            InlineKeyboardButton("✅ Да, сбросить", callback_data="resetelo_confirm"),
+            InlineKeyboardButton("❌ Отмена",        callback_data="resetelo_cancel"),
+        ]]))
+
+
+async def cmd_newseason(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await _require_admin(update):
+        return
+    conn = sqlite3.connect('faceit_bot.db')
+    c = conn.cursor()
+    c.execute('SELECT MAX(season_num) FROM season_archive')
+    row = c.fetchone()
+    conn.close()
+    current_season = (row[0] or 0) + 1
+    new_season     = current_season + 1
+    await _reply_html(update.message, f"<tg-emoji emoji-id='5411520005386806155'>🏁</tg-emoji> <b>Начать новый сезон {new_season}?</b>\n\n"
+        f"Текущий (Сезон {current_season}) будет сохранён в архив, ELO сброшен.", reply_markup=InlineKeyboardMarkup([[
+            InlineKeyboardButton(f"✅ Начать сезон {new_season}", callback_data=f"newseason_confirm_{new_season}"),
+            InlineKeyboardButton("❌ Отмена", callback_data="newseason_cancel"),
+        ]]))
+
+
+async def cmd_resetseason(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await _require_admin(update):
+        return
+    conn = sqlite3.connect('faceit_bot.db')
+    c = conn.cursor()
+    c.execute('SELECT MAX(season_num) FROM season_archive')
+    row = c.fetchone()
+    conn.close()
+    season_num = (row[0] or 0) + 1
+
+    old_date = get_setting('season_end_date', '01.09.2026')
+    if context.args:
+        new_date_raw = context.args[0]
+        try:
+            datetime.datetime.strptime(new_date_raw, '%d.%m.%Y')
+            new_date = new_date_raw
+        except ValueError:
+            await _reply_html(
+                update.message,
+                f"{E_CROSS} Неверный формат даты. Используйте: <code>/resetseason 31.12.2026</code>"
+            )
+            return
+    else:
+        # Первое продление — 4 месяца (до конца года), далее шаг всегда 3 месяца
+        months_step = 4 if get_setting('season_extended_once') != '1' else 3
+        try:
+            new_date = _add_months(old_date, months_step)
+        except ValueError:
+            new_date = _add_months(datetime.date.today().strftime('%d.%m.%Y'), months_step)
+
+    await _reply_html(
+        update.message,
+        f"{E_TROPHY} <b>Сбросить сезон?</b>\n\n"
+        f"{E_CROSS} Будет сброшена статистика ВСЕХ игроков (ELO, матчи, победы, K/D по всем режимам) "
+        f"и таблицы лидеров.\n"
+        f"Текущий сезон сохранится в архив как Сезон {season_num}.\n\n"
+        f"{E_CAL} Дата окончания сезона: <b>{old_date}</b> → <b>{new_date}</b>\n\n"
+        f"Это действие необратимо!",
+        reply_markup=InlineKeyboardMarkup([[
+            InlineKeyboardButton("✅ Да, сбросить сезон", callback_data=f"resetseason_confirm_{season_num}_{new_date}"),
+            InlineKeyboardButton("❌ Отмена", callback_data="resetseason_cancel"),
+        ]])
+    )
+
+
+async def cmd_addbot(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await _require_admin(update):
+        return
+    args = context.args
+    mode     = args[0] if args and args[0] in MODES else '5v5'
+    lobby_id = int(args[1]) if len(args) > 1 and args[1].isdigit() else 1
+    if lobby_id not in range(1, 6):
+        lobby_id = 1
+
+    global _bot_counter
+    _bot_counter -= 1
+    bot_uid = _bot_counter
+
+    conn = sqlite3.connect('faceit_bot.db')
+    c = conn.cursor()
+    c.execute('INSERT OR IGNORE INTO users (user_id, username, elo, level) VALUES (?,?,800,1)',
+              (bot_uid, f"bot_{abs(bot_uid)}"))
+    c.execute('UPDATE users SET first_name=? WHERE user_id=?',
+              (f"🤖 Бот {abs(bot_uid)}", bot_uid))
+    conn.commit()
+    conn.close()
+
+    lobby      = lobby_queues[mode][lobby_id]
+    match_size = MODES[mode]['match_size']
+    lobby.append(bot_uid)
+    _queue_join_time[bot_uid] = datetime.datetime.utcnow()
+
+    await _reply_html(
+        update.message,
+        f"<tg-emoji emoji-id='5372981976804366741'>🤖</tg-emoji> Бот добавлен в лобби {lobby_id} [{mode}]  ({len(lobby)}/{match_size})"
+    )
+    if len(lobby) >= match_size:
+        players_ids = list(lobby[:match_size])
+        lobby_queues[mode][lobby_id].clear()
+        for u in players_ids:
+            _cleanup_uid(u)
+        await start_confirmation(context, players_ids, mode)
+
+
+async def cmd_addbot9(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    /addbot9 [mode] [lobby_id]
+    Добавляет 9 ботов в одно лобби одним махом (для быстрого тестирования драфта).
+    Если лобби заполняется раньше — прекращает добавление и запускает подтверждение матча.
+    """
+    if not await _require_admin(update):
+        return
+    args = context.args
+    mode     = args[0] if args and args[0] in MODES else '5v5'
+    lobby_id = int(args[1]) if len(args) > 1 and args[1].isdigit() else 1
+    if lobby_id not in range(1, 6):
+        lobby_id = 1
+
+    global _bot_counter
+    match_size = MODES[mode]['match_size']
+    lobby      = lobby_queues[mode][lobby_id]
+
+    conn = sqlite3.connect('faceit_bot.db')
+    c = conn.cursor()
+
+    added = 0
+    filled = False
+    for _ in range(9):
+        if len(lobby) >= match_size:
+            filled = True
+            break
+        _bot_counter -= 1
+        bot_uid = _bot_counter
+        c.execute('INSERT OR IGNORE INTO users (user_id, username, elo, level) VALUES (?,?,800,1)',
+                  (bot_uid, f"bot_{abs(bot_uid)}"))
+        c.execute('UPDATE users SET first_name=? WHERE user_id=?',
+                  (f"🤖 Бот {abs(bot_uid)}", bot_uid))
+        lobby.append(bot_uid)
+        _queue_join_time[bot_uid] = datetime.datetime.utcnow()
+        added += 1
+        if len(lobby) >= match_size:
+            filled = True
+            break
+
+    conn.commit()
+    conn.close()
+
+    await _reply_html(
+        update.message,
+        f"<tg-emoji emoji-id='5372981976804366741'>🤖</tg-emoji> Добавлено ботов: {added} в лобби {lobby_id} [{mode}]  ({len(lobby)}/{match_size})"
+        + ("\n<tg-emoji emoji-id='5447644880824181073'>⚠️</tg-emoji> Лобби заполнено — оставшиеся боты не добавлены." if filled and added < 9 else "")
+    )
+
+    if len(lobby) >= match_size:
+        players_ids = list(lobby[:match_size])
+        lobby_queues[mode][lobby_id].clear()
+        for u in players_ids:
+            _cleanup_uid(u)
+        await start_confirmation(context, players_ids, mode)
+
+
+async def cmd_deletebot(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await _require_admin(update):
+        return
+    removed = 0
+    for mode in MODES:
+        for lid in range(1, 6):
+            bots = [uid for uid in lobby_queues[mode][lid] if is_bot(uid)]
+            for b in bots:
+                lobby_queues[mode][lid].remove(b)
+                _cleanup_uid(b)
+                removed += 1
+    await _reply_html(update.message, f"<tg-emoji emoji-id='5445267414562389170'>🗑</tg-emoji> Удалено ботов: {removed}")
+
+
+async def cmd_resetbotreg(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Сбрасывает регистрацию всех ботов: удаляет их из БД, лобби, очередей
+    и отменяет все активные сессии (подтверждение/драфт/голосование), в которых
+    есть боты."""
+    if not await _require_admin(update):
+        return
+
+    global _bot_counter
+
+    # 1. Убираем ботов из всех лобби и очередей
+    removed_queue = 0
+    for mode in MODES:
+        for lid in range(1, 6):
+            bots = [uid for uid in lobby_queues[mode][lid] if is_bot(uid)]
+            for b in bots:
+                lobby_queues[mode][lid].remove(b)
+                _cleanup_uid(b)
+                removed_queue += 1
+
+    # 2. Отменяем сессии подтверждения, в которых участвуют боты
+    cancelled_confirm = 0
+    for sid in list(confirm_state.keys()):
+        state = confirm_state[sid]
+        if any(is_bot(uid) for uid in state.get('players', [])):
+            # Уведомляем реальных игроков об отмене
+            for uid in state.get('real_players', []):
+                try:
+                    await _send_html(context.bot, uid,
+                        f"{E_CROSS} <b>Матч отменён</b>\n\nАдминистратор сбросил регистрацию ботов.")
+                except Exception:
+                    pass
+            del confirm_state[sid]
+            _confirm_msg_info.pop(sid, None)
+            cancelled_confirm += 1
+
+    # 3. Отменяем активные драфты и голосования за карту, где есть боты
+    cancelled_draft = 0
+    for mid in list(draft_state.keys()):
+        draft = draft_state[mid]
+        if any(is_bot(uid) for uid in draft.get('all_players', [])):
+            del draft_state[mid]
+            cancelled_draft += 1
+    for mid in list(map_vote_state.keys()):
+        mvs = map_vote_state[mid]
+        if any(is_bot(uid) for uid in mvs.get('players', [])):
+            del map_vote_state[mid]
+
+    # 4. Удаляем все записи ботов из БД (user_id < 0)
+    conn = sqlite3.connect('faceit_bot.db')
+    c = conn.cursor()
+    c.execute('SELECT COUNT(*) FROM users WHERE user_id < 0')
+    db_count = c.fetchone()[0] or 0
+    c.execute('DELETE FROM users WHERE user_id < 0')
+    conn.commit()
+    conn.close()
+
+    # 5. Сбрасываем счётчик ботов
+    _bot_counter = 0
+
+    parts = [f"<tg-emoji emoji-id='5445267414562389170'>🗑</tg-emoji> Удалено из лобби: <b>{removed_queue}</b>",
+             f"<tg-emoji emoji-id='5445267414562389170'>🗑</tg-emoji> Удалено из БД: <b>{db_count}</b>",
+             f"<tg-emoji emoji-id='5346321684574003384'>🔄</tg-emoji> Счётчик ботов сброшен до 0"]
+    if cancelled_confirm:
+        parts.append(f"<tg-emoji emoji-id='5447644880824181073'>⚠️</tg-emoji> Отменено подтверждений: <b>{cancelled_confirm}</b>")
+    if cancelled_draft:
+        parts.append(f"<tg-emoji emoji-id='5447644880824181073'>⚠️</tg-emoji> Отменено драфтов: <b>{cancelled_draft}</b>")
+
+    await _reply_html(
+        update.message,
+        f"{E_CROSS} <b>Регистрация ботов сброшена</b>\n\n" + "\n".join(parts)
+    )
+
+
+async def cmd_players(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await _require_admin(update):
+        return
+    conn = sqlite3.connect('faceit_bot.db')
+    c = conn.cursor()
+    c.execute('''SELECT user_id, COALESCE(first_name, username), elo, matches_played, is_banned
+                 FROM users ORDER BY elo DESC LIMIT 30''')
+    rows = c.fetchall()
+    conn.close()
+    if not rows:
+        await update.message.reply_text("Игроков нет.")
+        return
+    msg = f"{E_PEOPLE} <b>Игроки (топ-30 по ELO):</b>\n\n"
+    for uid, name, elo, mp, banned in rows:
+        ban_tag = f" {E_BAN}" if banned else ""
+        msg += f"  <code>{uid}</code> — <b>{name}</b>{ban_tag}  ELO:{elo}  М:{mp}\n"
+    await _reply_html(update.message, msg)
+
+
+async def cmd_matchinfo(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await _require_admin(update):
+        return
+    if not context.args:
+        await update.message.reply_text("Использование: /matchinfo <match_id>")
+        return
+    try:
+        match_id = int(context.args[0])
+    except ValueError:
+        await _reply_html(update.message, f"{E_CROSS} Укажи числовой ID матча.")
+        return
+    conn = sqlite3.connect('faceit_bot.db')
+    c = conn.cursor()
+    c.execute('SELECT match_id, status, winner, timestamp, mode FROM team_matches WHERE match_id=?', (match_id,))
+    m = c.fetchone()
+    if not m:
+        await update.message.reply_text(f"Матч #{match_id} не найден.")
+        conn.close()
+        return
+    c.execute('''SELECT mp.user_id, u.display_name, mp.team, mp.elo_before, mp.elo_change
+                 FROM match_players mp
+                 JOIN (SELECT user_id, COALESCE(first_name, username) AS display_name FROM users) u
+                   ON mp.user_id = u.user_id
+                 WHERE mp.match_id=?''', (match_id,))
+    players = c.fetchall()
+    conn.close()
+    status  = m[1]
+    winner  = m[2]
+    ts      = m[3]
+    mode    = m[4] or "5v5"
+    msg = (
+        f"<tg-emoji emoji-id='5231012545799666522'>🔎</tg-emoji> <b>Матч #{match_id} [{mode}]</b>\n"
+        f"Статус: {status}  |  Победитель: {f'Команда {winner}' if winner else '—'}\n"
+        f"Дата: {ts}\n\n"
+    )
+    for uid, name, team, elo_b, elo_c in players:
+        elo_b = elo_b or 0
+        elo_c = elo_c or 0
+        sign = "+" if elo_c >= 0 else ""
+        msg += f"  T{team} — <b>{name}</b>: ELO {elo_b} ({sign}{elo_c})\n"
+    await _reply_html(update.message, msg)
+
+
+async def cmd_cancelmatch(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    /cancelmatch <match_id>
+    Отменяет матч (драфт или голосование за карту) и возвращает игроков в лобби.
+    """
+    if not await _require_admin(update):
+        return
+    if not context.args or not context.args[0].isdigit():
+        await _reply_html(update.message,
+            f"{E_CROSS} Использование: /cancelmatch &lt;match_id&gt;")
+        return
+
+    match_id = int(context.args[0])
+
+    # ── 1. Определяем статус и режим матча ──────────────────────────────────
+    conn = sqlite3.connect('faceit_bot.db')
+    c    = conn.cursor()
+    c.execute('SELECT status, mode FROM team_matches WHERE match_id=?', (match_id,))
+    row = c.fetchone()
+    conn.close()
+
+    if not row:
+        await _reply_html(update.message, f"{E_CROSS} Матч #{match_id} не найден.")
+        return
+
+    status, mode = row[0], (row[1] or '5v5')
+
+    if status == 'finished':
+        await _reply_html(update.message,
+            f"{E_CROSS} Матч #{match_id} уже завершён — отменить нельзя.")
+        return
+
+    if status == 'cancelled':
+        await _reply_html(update.message,
+            f"{E_CROSS} Матч #{match_id} уже отменён.")
+        return
+
+    # ── 2. Собираем игроков ────────────────────────────────────────────────
+    players: list[int] = []
+
+    # Из драфта (статус 'draft')
+    draft = draft_state.get(match_id)
+    if draft:
+        players = [uid for uid in draft.get('all_players', []) if not is_bot(uid)]
+
+    # Из голосования за карту (статус 'active' на этапе карты)
+    mvs = map_vote_state.get(match_id)
+    if mvs and not players:
+        players = [uid for uid in mvs.get('players', []) if not is_bot(uid)]
+
+    # Если ни в одном из словарей — берём из match_players в БД
+    if not players:
+        conn2 = sqlite3.connect('faceit_bot.db')
+        c2    = conn2.cursor()
+        c2.execute('SELECT user_id FROM match_players WHERE match_id=?', (match_id,))
+        players = [r[0] for r in c2.fetchall() if not is_bot(r[0])]
+        conn2.close()
+
+    # ── 3. Чистим состояние памяти ────────────────────────────────────────
+    if match_id in draft_state:
+        del draft_state[match_id]
+    if match_id in map_vote_state:
+        del map_vote_state[match_id]
+
+    # ── 4. Помечаем матч как отменённый в БД ─────────────────────────────
+    conn3 = sqlite3.connect('faceit_bot.db')
+    c3    = conn3.cursor()
+    c3.execute("UPDATE team_matches SET status='cancelled' WHERE match_id=?", (match_id,))
+    conn3.commit()
+    conn3.close()
+
+    # ── 5. Возвращаем игроков в лобби ─────────────────────────────────────
+    returned: list[str] = []
+    for uid in players:
+        # Находим наименее заполненное лобби для данного режима
+        target_lobby = min(range(1, 6), key=lambda i: len(lobby_queues[mode][i]))
+        lobby_queues[mode][target_lobby].append(uid)
+        _queue_join_time[uid] = datetime.datetime.utcnow()
+
+        # Уведомляем игрока
+        try:
+            await _send_html(
+                context.bot, uid,
+                f"{E_RELOAD} <b>Матч #{match_id} [{mode}] отменён администратором.</b>\n\n"
+                f"Вы автоматически возвращены в лобби {target_lobby} [{mode}]. "
+                f"Ожидайте нового матча!"
+            )
+        except Exception:
+            pass
+
+        # Собираем ники для отчёта
+        conn4 = sqlite3.connect('faceit_bot.db')
+        c4    = conn4.cursor()
+        c4.execute('SELECT COALESCE(first_name, username) FROM users WHERE user_id=?', (uid,))
+        nr = c4.fetchone()
+        conn4.close()
+        name = nr[0] if nr and nr[0] else str(uid)
+        returned.append(f"  • {name} → лобби {target_lobby}")
+
+    # ── 6. Обновляем сообщения лобби у всех в них ─────────────────────────
+    seen_lobbies: set[tuple[str, int]] = set()
+    for uid in players:
+        for lid in range(1, 6):
+            if uid in lobby_queues[mode].get(lid, []):
+                seen_lobbies.add((mode, lid))
+    for (m, lid) in seen_lobbies:
+        try:
+            await _refresh_lobby_messages(context, lid, m)
+        except Exception:
+            pass
+
+    # ── 7. Ответ администратору ────────────────────────────────────────────
+    players_block = "\n".join(returned) if returned else "  (нет игроков)"
+    await _reply_html(
+        update.message,
+        f"{E_CHECK} <b>Матч #{match_id} [{mode}] отменён.</b>\n\n"
+        f"{E_RELOAD} Игроки возвращены в очередь:\n{players_block}"
+    )
+
+
+async def cmd_cancelmatched(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    /cancelmatched [match_id]
+    Отменяет матч, находящийся в стадии драфта.
+    Без аргументов — ищет первый активный драфт.
+    """
+    if not await _require_admin(update):
+        return
+
+    # ── 1. Определяем match_id (первичный выбор, без гарантий на гонку) ────
+    if context.args and context.args[0].isdigit():
+        match_id = int(context.args[0])
+        if match_id not in draft_state:
+            await _reply_html(update.message,
+                f"{E_CROSS} Матч #{match_id} не находится в стадии драфта.")
+            return
+    else:
+        if not draft_state:
+            await _reply_html(update.message,
+                f"{E_CROSS} Нет активных драфтов.")
+            return
+        match_id = next(iter(draft_state))
+
+    # ── 2. Лок первым делом: перечитываем состояние ВНУТРИ лока, чтобы не
+    #      наступить на гонку с одновременным пиком/таймаутом/финализацией.
+    #      Никаких await внутри `async with`, пока лок не отпущен штатно —
+    #      иначе конкурентный хендлер может создать новый лок и проскочить. ──
+    already_gone = False
+    async with _get_draft_lock(match_id):
+        draft = draft_state.get(match_id)
+        if not draft or draft.get('finalized'):
+            already_gone = True
+        else:
+            mode = draft.get('mode', '5v5')
+            all_players = [uid for uid in draft.get('all_players', []) if not is_bot(uid)]
+            draft['finalized'] = True
+            draft_state.pop(match_id, None)
+            _cancel_pick_timer(context, match_id)
+    _release_draft_lock(match_id)
+
+    if already_gone:
+        await _reply_html(update.message,
+            f"{E_CROSS} Матч #{match_id} уже не в стадии драфта (завершён/отменён/финализирован).")
+        return
+
+    # ── 3. Обновляем статус в БД ───────────────────────────────────────────
+    conn = sqlite3.connect('faceit_bot.db')
+    c    = conn.cursor()
+    c.execute("UPDATE team_matches SET status='cancelled' WHERE match_id=?", (match_id,))
+    conn.commit()
+    conn.close()
+
+    # ── 4. Уведомляем игроков и возвращаем в лобби ─────────────────────────
+    returned: list[str] = []
+    for uid in all_players:
+        target_lobby = min(range(1, 6), key=lambda i: len(lobby_queues[mode][i]))
+        lobby_queues[mode][target_lobby].append(uid)
+        _queue_join_time[uid] = datetime.datetime.utcnow()
+        try:
+            await context.bot.send_message(
+                chat_id=uid,
+                text=(
+                    f"{E_RELOAD} <b>Матч #{match_id} [{mode}] — Драфт отменён администратором.</b>\n\n"
+                    f"Вы возвращены в лобби {target_lobby} [{mode}]. Ожидайте нового матча!"
+                ),
+                parse_mode='HTML',
+            )
+        except Exception:
+            pass
+        conn2 = sqlite3.connect('faceit_bot.db')
+        c2 = conn2.cursor()
+        c2.execute('SELECT COALESCE(first_name, username) FROM users WHERE user_id=?', (uid,))
+        nr = c2.fetchone()
+        conn2.close()
+        name = nr[0] if nr and nr[0] else str(uid)
+        returned.append(f"  • {_esc(name)} → лобби {target_lobby}")
+
+    # ── 5. Обновляем сообщения лобби ──────────────────────────────────────
+    seen: set[tuple[str, int]] = set()
+    for uid in all_players:
+        for lid in range(1, 6):
+            if uid in lobby_queues[mode].get(lid, []):
+                seen.add((mode, lid))
+    for (m, lid) in seen:
+        try:
+            await _refresh_lobby_messages(context, lid, m)
+        except Exception:
+            pass
+
+    # ── 6. Ответ администратору ────────────────────────────────────────────
+    block = "\n".join(returned) if returned else "  (нет игроков)"
+    await _reply_html(
+        update.message,
+        f"{E_CHECK} <b>Драфт матча #{match_id} [{mode}] отменён.</b>\n\n"
+        f"{E_RELOAD} Игроки возвращены в очередь:\n{block}",
+    )
+
+
+async def cmd_forcefinish(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await _require_admin(update):
+        return
+    if len(context.args) < 2:
+        await update.message.reply_text("Использование: /forcefinish <match_id> <1|2>")
+        return
+    try:
+        match_id     = int(context.args[0])
+        winning_team = int(context.args[1])
+    except ValueError:
+        await _reply_html(update.message, f"{E_CROSS} Укажи числа.")
+        return
+    if winning_team not in (1, 2):
+        await _reply_html(update.message, f"{E_CROSS} Команда должна быть 1 или 2.")
+        return
+    conn = sqlite3.connect('faceit_bot.db')
+    c = conn.cursor()
+    c.execute('SELECT status FROM team_matches WHERE match_id=?', (match_id,))
+    row = c.fetchone()
+    conn.close()
+    if not row:
+        await update.message.reply_text(f"Матч #{match_id} не найден.")
+        return
+    if row[0] == 'finished':
+        await update.message.reply_text("Матч уже завершён.")
+        return
+    conn2 = sqlite3.connect('faceit_bot.db')
+    c2 = conn2.cursor()
+    c2.execute('UPDATE team_matches SET screenshot_submitted=1 WHERE match_id=?', (match_id,))
+    conn2.commit()
+    conn2.close()
+    conn_m = sqlite3.connect('faceit_bot.db')
+    c_m    = conn_m.cursor()
+    c_m.execute('SELECT mode FROM team_matches WHERE match_id=?', (match_id,))
+    mode_row_f = c_m.fetchone()
+    conn_m.close()
+    mode_f      = (mode_row_f[0] or '5v5') if mode_row_f else '5v5'
+    calib_games = MODES.get(mode_f, MODES['5v5'])['calib_games']
+    gain, winners, losers, per_uid = finalize_match(match_id, winning_team, mode_f)
+    result_msg = (
+        f"{E_ZAP} Матч #{match_id} принудительно завершён!\n"
+        f"Победила Команда {winning_team} {E_TROPHY}\n\n"
+        f"ELO начислен автоматически (база: ±{gain} ELO)"
+    )
+    await _reply_html(update.message, result_msg)
+    all_uids = [uid for uid, _ in winners + losers]
+    for uid in all_uids:
+        await _send_match_notification(context.bot, uid, match_id, per_uid.get(uid, {}), calib_games)
+
+
+async def cmd_history(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await action_history(update, context)
+
+
+async def cmd_rules(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await action_rules(update, context)
+
+
+async def cmd_donate(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await action_donate(update, context)
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  АНТИ-АФК + НАПОМИНАНИЯ
+# ══════════════════════════════════════════════════════════════════════════════
+
+async def _job_anti_afk(context: ContextTypes.DEFAULT_TYPE):
+    now     = datetime.datetime.utcnow()
+    timeout = datetime.timedelta(minutes=AFK_TIMEOUT_MIN)
+    kicked  = []
+    for mode in MODES:
+        for lid in range(1, 6):
+            queue = lobby_queues[mode][lid]
+            for uid in list(queue):
+                joined = _queue_join_time.get(uid)
+                if joined and (now - joined) > timeout:
+                    queue.remove(uid)
+                    kicked.append((uid, lid, mode))
+                    _cleanup_uid(uid)
+    for uid, lid, mode in kicked:
+        try:
+            await _send_html(context.bot, uid,
+                f"<tg-emoji emoji-id='5413704112220949842'>⏰</tg-emoji> Вы были удалены из лобби {lid} [{mode}] за неактивность ({AFK_TIMEOUT_MIN} мин)."
+            )
+        except Exception:
+            pass
+    for uid, lid, mode in kicked:
+        await _refresh_lobby_messages(context, lid, mode)
+
+
+async def _job_inactivity_reminder(context: ContextTypes.DEFAULT_TYPE):
+    now        = datetime.datetime.utcnow()
+    warn_delta = datetime.timedelta(minutes=AFK_TIMEOUT_MIN - 10)
+    for mode in MODES:
+        for lid in range(1, 6):
+            for uid in list(lobby_queues[mode][lid]):
+                joined = _queue_join_time.get(uid)
+                if joined and (now - joined) >= warn_delta:
+                    try:
+                        await _send_html(
+                            context.bot, uid,
+                            f"<tg-emoji emoji-id='5447644880824181073'>⚠️</tg-emoji> Вы в очереди [{mode}] уже 20 мин. "
+                            f"Ещё 10 мин — автовыход."
+                        )
+                    except Exception:
+                        pass
+
+
+async def cmd_online(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Показывает количество зарегистрированных игроков и количество играющих."""
+    if not await _require_admin(update):
+        return
+    conn = sqlite3.connect('faceit_bot.db')
+    c    = conn.cursor()
+    # Всего зарегистрированных (game_id — признак полностью завершённой
+    # регистрации; first_name теперь сохраняется раньше game_id, поэтому
+    # на него как на признак завершения полагаться нельзя)
+    c.execute('SELECT COUNT(*) FROM users WHERE game_id IS NOT NULL')
+    total_reg = c.fetchone()[0] or 0
+    # Игроков в активных матчах (статус active или draft)
+    c.execute('''SELECT COUNT(DISTINCT mp.user_id) FROM match_players mp
+                 JOIN team_matches tm ON mp.match_id = tm.match_id
+                 WHERE tm.status IN ('active', 'draft')''')
+    in_match = c.fetchone()[0] or 0
+    # В очереди прямо сейчас (in-memory)
+    in_queue_real = sum(
+        sum(1 for uid in q if not is_bot(uid))
+        for m in MODES for q in lobby_queues[m].values()
+    )
+    conn.close()
+    await _reply_html(update.message,
+        f"{E_PEOPLE} <b>Онлайн Moon Faceit</b>\n\n"
+        f"{EP_USER}  Зарегистрировано: <b>{total_reg}</b>\n"
+        f"{E_AIM}  В очереди сейчас: <b>{in_queue_real}</b>\n"
+        f"{EP_GAME}  В активных матчах: <b>{in_match}</b>\n"
+        f"{E_SWORD}  Всего активных: <b>{in_queue_real + in_match}</b>"
+    )
+
+
+async def cmd_news(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await _require_admin(update):
+        return
+    if not context.args:
+        await _reply_html(update.message, "Использование: /news <сообщение>")
+        return
+    text = '<tg-emoji emoji-id="5399967660052081305">📢</tg-emoji> <b>Новость от администрации:</b>\n\n' + " ".join(context.args)
+    conn = sqlite3.connect('faceit_bot.db')
+    c    = conn.cursor()
+    c.execute('SELECT user_id FROM users')
+    all_uids = [r[0] for r in c.fetchall()]
+    conn.close()
     sent = 0
     failed = 0
-    for pid in player_ids:
+    for uid in all_uids:
         try:
-            await bot.send_message(pid, f"📢 <b>Сообщение от администрации:</b>\n\n{broadcast_text}",
-                             parse_mode="HTML")
+            await _send_html(context.bot, uid, text)
             sent += 1
         except Exception:
             failed += 1
-        await asyncio.sleep(0.05)  # converted from time.sleep
-    log_admin_action(uid, "broadcast", details=f"Отправлено: {sent}, ошибок: {failed}")
-    kb = InlineKeyboardBuilder()
-    kb.button(text="🔙 В панель", callback_data="creator_panel")
-    await bot.send_message(uid,
-        f"✅ <b>Рассылка завершена</b>\n\nОтправлено: <b>{sent}</b>\nОшибок: <b>{failed}</b>",
-        reply_markup=kb.as_markup(), parse_mode="HTML")
+    await _reply_html(update.message, f"{E_CHECK} Новость отправлена: <b>{sent}</b> игрок(ов).\n"
+        f"Не доставлено: <b>{failed}</b> (заблокировали бота).")
 
 
-# ==================== CREATOR: ВЫДАТЬ PREMIUM ====================
-@router.callback_query(F.data == "creator_give_premium")
-async def cb_creator_give_premium(callback: CallbackQuery):
-    uid = callback.from_user.id
-    if not is_creator(uid):
-        await safe_answer(callback.id, "❌ Нет доступа")
-        return
-    creator_flow[uid] = {"step": "give_premium_id"}
-    await safe_answer(callback.id)
-    kb = InlineKeyboardBuilder()
-    kb.button(text="❌ Отмена", callback_data="creator_panel")
-    await bot.send_message(uid, "🎁 Введите Telegram ID или ник игрока для выдачи Premium:",
-                     reply_markup=kb.as_markup())
+# ══════════════════════════════════════════════════════════════════════════════
+#  MAIN
+# ══════════════════════════════════════════════════════════════════════════════
 
-
-@router.callback_query(F.data.startswith("creator_premium_exec_"))
-async def cb_creator_premium_exec(callback: CallbackQuery):
-    uid = callback.from_user.id
-    if not is_creator(uid):
-        await safe_answer(callback.id, "❌ Нет доступа")
-        return
-    parts = callback.data.replace("creator_premium_exec_", "").split("_")
-    if len(parts) < 2:
-        await safe_answer(callback.id, "❌ Ошибка")
-        return
-    try:
-        t_uid = int(parts[0])
-        days  = int(parts[1])
-    except ValueError:
-        await safe_answer(callback.id, "❌ Ошибка")
-        return
-    target_p = get_player(t_uid)
-    t_name = target_p[1] if target_p else str(t_uid)
-    try:
-        conn = _db()
-        cur  = conn.cursor()
-        cur.execute("SELECT premium_until FROM players WHERE user_id=%s", (t_uid,))
-        row = cur.fetchone()
-        now = int(time.time())
-        current_until = row[0] if (row and row[0] and row[0] > now) else now
-        new_until = current_until + days * 86400
-        cur.execute("UPDATE players SET premium_until=%s WHERE user_id=%s", (new_until, t_uid))
-        conn.commit()
-        conn.close()
-        log_admin_action(uid, "give_premium", target_id=t_uid,
-                         details=f"{t_name} +{days}д")
-        await safe_answer(callback.id, f"✅ Premium выдан {t_name} на {days} дней!", show_alert=True)
-        kb = InlineKeyboardBuilder()
-        kb.button(text="🔙 В панель", callback_data="creator_panel")
-        await bot.edit_message_text(
-            f"✅ <b>Premium выдан игроку {t_name}</b> на <b>{days} дней</b>.",
-            chat_id=callback.message.chat.id, message_id=callback.message.message_id, reply_markup=kb.as_markup(), parse_mode="HTML")
+async def _error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Глобальный обработчик ошибок — выводит в консоль для отладки."""
+    import traceback
+    err = context.error
+    tb = ''.join(traceback.format_exception(type(err), err, err.__traceback__))
+    print(f"[ERROR] Update={update}\n{tb}")
+    # Пытаемся уведомить пользователя
+    if update and hasattr(update, 'effective_message') and update.effective_message:
         try:
-            await bot.send_message(t_uid,
-                f"🎉 Вам выдан <b>Premium статус</b> на <b>{days} дней</b>!\n"
-                "Наслаждайтесь привилегиями 👑", parse_mode="HTML")
-        except Exception:
-            pass
-    except Exception as e:
-        await safe_answer(callback.id, f"❌ Ошибка: {e}", show_alert=True)
-
-
-# ==================== CREATOR: ВЕРИФИКАЦИЯ ====================
-@router.callback_query(F.data == "creator_verify_player")
-async def cb_creator_verify_player(callback: CallbackQuery):
-    uid = callback.from_user.id
-    if not is_creator(uid):
-        await safe_answer(callback.id, "❌ Нет доступа")
-        return
-    creator_flow[uid] = {"step": "verify_player"}
-    await safe_answer(callback.id)
-    kb = InlineKeyboardBuilder()
-    kb.button(text="❌ Отмена", callback_data="creator_panel")
-    await bot.send_message(uid,
-        "✅ <b>Верификация игрока</b>\n\nВведите Telegram ID или ник игрока:",
-        reply_markup=kb.as_markup(), parse_mode="HTML")
-
-
-@router.callback_query(F.data.startswith("creator_verify_exec_"))
-async def cb_creator_verify_exec(callback: CallbackQuery):
-    uid = callback.from_user.id
-    if not is_creator(uid):
-        await safe_answer(callback.id, "❌ Нет доступа")
-        return
-    parts = callback.data.replace("creator_verify_exec_", "").split("_")
-    if len(parts) < 2:
-        await safe_answer(callback.id, "❌ Ошибка")
-        return
-    try:
-        t_uid  = int(parts[0])
-        action = parts[1]
-    except ValueError:
-        await safe_answer(callback.id, "❌ Ошибка")
-        return
-    target_p = get_player(t_uid)
-    t_name = target_p[1] if target_p else str(t_uid)
-    new_val = 1 if action == "add" else 0
-    try:
-        conn = _db()
-        cur  = conn.cursor()
-        cur.execute("UPDATE players SET is_verified=%s WHERE user_id=%s", (new_val, t_uid))
-        conn.commit()
-        conn.close()
-        label = "выдана ✅" if new_val else "снята ❌"
-        log_admin_action(uid, "toggle_verify", target_id=t_uid, details=f"{t_name} -> {label}")
-        await safe_answer(callback.id, f"Верификация {label} для {t_name}", show_alert=True)
-        kb = InlineKeyboardBuilder()
-        kb.button(text="🔙 В панель", callback_data="creator_panel")
-        await bot.edit_message_text(
-            f"✅ Верификация <b>{label}</b> игроку <b>{t_name}</b>.",
-            chat_id=callback.message.chat.id, message_id=callback.message.message_id, reply_markup=kb.as_markup(), parse_mode="HTML")
-        if new_val:
-            try:
-                await bot.send_message(t_uid,
-                    "✅ Вам выдана <b>синяя галочка верификации</b>!\n"
-                    "Теперь она отображается рядом с вашим ником.", parse_mode="HTML")
-            except Exception:
-                pass
-    except Exception as e:
-        await safe_answer(callback.id, f"❌ Ошибка: {e}", show_alert=True)
-
-
-# ==================== CREATOR: УПРАВЛЕНИЕ АДМИНАМИ ====================
-@router.callback_query(F.data == "creator_manage_admins")
-async def cb_creator_manage_admins(callback: CallbackQuery):
-    uid = callback.from_user.id
-    if not is_creator(uid):
-        await safe_answer(callback.id, "❌ Нет доступа")
-        return
-    admins = _get_admin_list()
-    non_creator_admins = [(a_uid, a_name) for a_uid, a_name in admins if a_uid != CREATOR_ID]
-    text = "🛡️ <b>Управление администраторами</b>\n\n"
-    if non_creator_admins:
-        text += "Текущие администраторы:\n"
-        for a_uid, a_name in non_creator_admins:
-            text += f"  - {a_name or a_uid} (<code>{a_uid}</code>)\n"
-    else:
-        text += "Администраторов нет.\n"
-    text += "\nДействия:"
-    kb = InlineKeyboardBuilder()
-    for a_uid, a_name in non_creator_admins:
-        kb.button(
-            f"❌ Снять {a_name or a_uid}",
-            callback_data=f"creator_demote_{a_uid}",
-        )
-    kb.button(text="➕ Назначить нового админа", callback_data="creator_promote")
-    kb.button(text="🔙 Назад", callback_data="creator_panel")
-    try:
-        await callback.message.edit_text(text, reply_markup=kb.as_markup(), parse_mode="HTML")
-    except Exception:
-        await bot.send_message(callback.message.chat.id, text, reply_markup=kb.as_markup(), parse_mode="HTML")
-    await safe_answer(callback.id)
-
-
-@router.callback_query(F.data == "creator_promote")
-async def cb_creator_promote(callback: CallbackQuery):
-    uid = callback.from_user.id
-    if not is_creator(uid):
-        await safe_answer(callback.id, "❌ Нет доступа")
-        return
-    creator_flow[uid] = {"step": "promote_admin"}
-    await safe_answer(callback.id)
-    kb = InlineKeyboardBuilder()
-    kb.button(text="❌ Отмена", callback_data="creator_manage_admins")
-    await bot.send_message(uid, "🛡️ Введите Telegram ID игрока для назначения администратором:",
-                     reply_markup=kb.as_markup())
-
-
-@router.callback_query(F.data.startswith("creator_demote_"))
-async def cb_creator_demote(callback: CallbackQuery):
-    uid = callback.from_user.id
-    if not is_creator(uid):
-        await safe_answer(callback.id, "❌ Нет доступа")
-        return
-    try:
-        t_uid = int(callback.data.replace("creator_demote_", ""))
-    except ValueError:
-        await safe_answer(callback.id, "❌ Ошибка")
-        return
-    target_p = get_player(t_uid)
-    t_name = target_p[1] if target_p else str(t_uid)
-    try:
-        conn = _db()
-        cur  = conn.cursor()
-        cur.execute("UPDATE players SET is_admin=0 WHERE user_id=%s", (t_uid,))
-        conn.commit()
-        conn.close()
-        if t_uid in ADMIN_IDS_LIST:
-            ADMIN_IDS_LIST.remove(t_uid)
-        log_admin_action(uid, "demote_admin", target_id=t_uid, details=t_name)
-        await safe_answer(callback.id, f"✅ {t_name} снят с должности администратора", show_alert=True)
-    except Exception as e:
-        await safe_answer(callback.id, f"❌ Ошибка: {e}", show_alert=True)
-        return
-    cb_creator_manage_admins(c)
-
-
-# ==================== CREATOR: МОНЕТЫ ИГРОКУ ====================
-@router.callback_query(F.data == "creator_give_coins")
-async def cb_creator_give_coins(callback: CallbackQuery):
-    uid = callback.from_user.id
-    if not is_creator(uid):
-        await safe_answer(callback.id, "❌ Нет доступа")
-        return
-    creator_flow[uid] = {"step": "give_coins_id"}
-    await safe_answer(callback.id)
-    kb = InlineKeyboardBuilder()
-    kb.button(text="❌ Отмена", callback_data="creator_panel")
-    await bot.send_message(uid,
-        "💰 <b>Изменение монет игрока</b>\n\nВведите Telegram ID или ник игрока:",
-        reply_markup=kb.as_markup(), parse_mode="HTML")
-
-
-def _creator_shop_prices_kb():
-    kb = InlineKeyboardBuilder()
-    conn = _db(); cur = conn.cursor()
-    cur.execute("SELECT id, name FROM shop_items WHERE is_active=1 ORDER BY category, id")
-    rows = cur.fetchall()
-    conn.close()
-    for item_id, name in rows:
-        kb.button(text=name, callback_data=f"creator_price_item_{item_id}")
-    kb.button(text="🔙 Назад", callback_data="creator_panel")
-    return kb
-
-
-@router.callback_query(F.data == "creator_shop_prices")
-async def cb_creator_shop_prices(callback: CallbackQuery):
-    uid = callback.from_user.id
-    if not is_creator(uid):
-        await safe_answer(callback.id, "❌ Нет доступа")
-        return
-    text = "💱 <b>ЦЕНЫ ТОВАРОВ</b>\n\nВыберите товар, чтобы изменить его цену в каждой валюте:"
-    try:
-        await callback.message.edit_text(text, reply_markup=_creator_shop_prices_kb(), parse_mode="HTML")
-    except Exception:
-        await bot.send_message(callback.message.chat.id, text, reply_markup=_creator_shop_prices_kb(), parse_mode="HTML")
-    await safe_answer(callback.id)
-
-
-@router.callback_query(F.data.startswith("creator_price_item_"))
-async def cb_creator_price_item(callback: CallbackQuery):
-    uid = callback.from_user.id
-    if not is_creator(uid):
-        await safe_answer(callback.id, "❌ Нет доступа")
-        return
-    item_id = int(callback.data.split("creator_price_item_")[1])
-    item = get_shop_item_full(item_id)
-    if not item:
-        await safe_answer(callback.id, "❌ Товар не найден")
-        return
-    _, name, _deAC, _category, price, _item_type, price_rub, price_stars, price_crypto = item
-    text = (
-        f"💱 <b>{name}</b>\n\n"
-        f"💰 Actual Coin: <b>{price} AC</b>\n"
-        f"💵 Рубли: <b>{price_rub} ₽</b>\n"
-        f"⭐ Telegram Stars: <b>{price_stars}</b>\n"
-        f"💎 Крипта: <b>${price_crypto:g}</b>\n\n"
-        "Выберите валюту, чтобы изменить цену:"
-    )
-    kb = InlineKeyboardBuilder()
-    kb.add(
-        types.InlineKeyboardButton(text="💰 Изменить цену в Actual Coin", callback_data=f"creator_price_edit_{item_id}_coins"),
-        types.InlineKeyboardButton(text="💵 Изменить цену в Рублях",      callback_data=f"creator_price_edit_{item_id}_rub"),
-        types.InlineKeyboardButton(text="⭐ Изменить цену в Stars",       callback_data=f"creator_price_edit_{item_id}_stars"),
-        types.InlineKeyboardButton(text="💎 Изменить цену в Крипте",      callback_data=f"creator_price_edit_{item_id}_crypto"),
-    )
-    kb.button(text="🔙 Назад", callback_data="creator_shop_prices")
-    try:
-        await callback.message.edit_text(text, reply_markup=kb.as_markup(), parse_mode="HTML")
-    except Exception:
-        await bot.send_message(callback.message.chat.id, text, reply_markup=kb.as_markup(), parse_mode="HTML")
-    await safe_answer(callback.id)
-
-
-@router.callback_query(F.data.startswith("creator_price_edit_"))
-async def cb_creator_price_edit(callback: CallbackQuery):
-    uid = callback.from_user.id
-    if not is_creator(uid):
-        await safe_answer(callback.id, "❌ Нет доступа")
-        return
-    try:
-        _, _, _, item_id_str, currency = callback.data.split("_", 4)
-    except ValueError:
-        await safe_answer(callback.id, "❌ Ошибка")
-        return
-    item_id = int(item_id_str)
-    item = get_shop_item_full(item_id)
-    if not item or currency not in SHOP_CURRENCY_LABELS:
-        await safe_answer(callback.id, "❌ Товар не найден")
-        return
-    name = item[1]
-    creator_flow[uid] = {"step": "shop_price_value", "item_id": item_id, "currency": currency}
-    await safe_answer(callback.id)
-    hint = "целое число" if currency in ("coins", "rub", "stars") else "число, например 1.5"
-    kb = InlineKeyboardBuilder()
-    kb.button(text="❌ Отмена", callback_data=f"creator_price_item_{item_id}")
-    await bot.send_message(
-        uid,
-        f"💱 <b>{name}</b>\nВалюта: {SHOP_CURRENCY_LABELS[currency]}\n\n"
-        f"Введите новую цену ({hint}). 0 - скрыть оплату в этой валюте:",
-        reply_markup=kb.as_markup(), parse_mode="HTML",
-    )
-
-
-@router.callback_query(F.data == "creator_add_coinpack")
-async def cb_creator_add_coinpack(callback: CallbackQuery):
-    uid = callback.from_user.id
-    if not is_creator(uid):
-        await safe_answer(callback.id, "❌ Нет доступа")
-        return
-    creator_flow[uid] = {"step": "add_coinpack_name"}
-    await safe_answer(callback.id)
-    kb = InlineKeyboardBuilder()
-    kb.button(text="❌ Отмена", callback_data="creator_panel")
-    await bot.send_message(uid,
-        "📦 <b>Новый пакет монет</b>\n\nВведите название пакета:",
-        reply_markup=kb.as_markup(), parse_mode="HTML")
-
-
-@router.callback_query(F.data.startswith("creator_coins_exec_"))
-async def cb_creator_coins_exec(callback: CallbackQuery):
-    uid = callback.from_user.id
-    if not is_creator(uid):
-        await safe_answer(callback.id, "❌ Нет доступа")
-        return
-    parts = callback.data.replace("creator_coins_exec_", "").split("_")
-    if len(parts) < 2:
-        await safe_answer(callback.id, "❌ Ошибка")
-        return
-    try:
-        t_uid  = int(parts[0])
-        amount = int(parts[1])
-    except ValueError:
-        await safe_answer(callback.id, "❌ Ошибка")
-        return
-    target_p = get_player(t_uid)
-    t_name = target_p[1] if target_p else str(t_uid)
-    try:
-        conn = _db()
-        cur  = conn.cursor()
-        cur.execute("UPDATE players SET coins = GREATEST(0, coins + %s) WHERE user_id=%s", (amount, t_uid))
-        cur.execute("SELECT coins FROM players WHERE user_id=%s", (t_uid,))
-        new_bal = cur.fetchone()[0]
-        conn.commit()
-        conn.close()
-        sign = "+" if amount >= 0 else ""
-        log_admin_action(uid, "give_coins", target_id=t_uid,
-                         details=f"{t_name} {sign}{amount} AC")
-        await safe_answer(callback.id,
-            f"✅ {t_name}: {sign}{amount} AC. Баланс: {new_bal} AC", show_alert=True)
-        kb = InlineKeyboardBuilder()
-        kb.button(text="🔙 В панель", callback_data="creator_panel")
-        await bot.edit_message_text(
-            f"✅ Игроку <b>{t_name}</b>: <b>{sign}{amount} AC</b>\nНовый баланс: <b>{new_bal} AC</b>",
-            chat_id=callback.message.chat.id, message_id=callback.message.message_id, reply_markup=kb.as_markup(), parse_mode="HTML")
-        try:
-            action_word = "начислено" if amount >= 0 else "списано"
-            await bot.send_message(t_uid,
-                f"💰 Вам {action_word} <b>{abs(amount)} AC</b> администратором.\n"
-                f"Ваш баланс: <b>{new_bal} AC</b>", parse_mode="HTML")
-        except Exception:
-            pass
-    except Exception as e:
-        await safe_answer(callback.id, f"❌ Ошибка: {e}", show_alert=True)
-
-
-# ==================== CREATOR: НОВЫЙ СЕЗОН ====================
-@router.callback_query(F.data == "creator_new_season")
-async def cb_creator_new_season(callback: CallbackQuery):
-    uid = callback.from_user.id
-    if not is_creator(uid):
-        await safe_answer(callback.id, "❌ Нет доступа")
-        return
-    try:
-        conn = _db()
-        cur  = conn.cursor()
-        cur.execute("SELECT season_number FROM seasons WHERE is_active=1 ORDER BY id DESC LIMIT 1")
-        row = cur.fetchone()
-        conn.close()
-        current_season = row[0] if row else 1
-    except Exception:
-        current_season = 1
-    kb = InlineKeyboardBuilder()
-    kb.add(
-        types.InlineKeyboardButton(
-            text=f"✅ Да, начать сезон #{current_season + 1}",
-            callback_data=f"creator_new_season_exec_{current_season + 1}",
-        ),
-        types.InlineKeyboardButton(text="❌ Отмена", callback_data="creator_panel"),
-    )
-    await bot.edit_message_text(
-        f"🏆 <b>Новый сезон</b>\n\n"
-        f"Текущий сезон: <b>#{current_season}</b>\n\n"
-        "⚠️ При запуске нового сезона:\n"
-        "- Текущая статистика всех игроков будет сохранена в архив\n"
-        "- ELO сброситься к 1000, вся матч-стата обнулится\n"
-        "- Это действие необратимо!\n\n"
-        f"Запустить сезон <b>#{current_season + 1}</b>?",
-        chat_id=callback.message.chat.id, message_id=callback.message.message_id,
-        reply_markup=kb.as_markup(), parse_mode="HTML",
-    )
-    await safe_answer(callback.id)
-
-
-@router.callback_query(F.data.startswith("creator_new_season_exec_"))
-async def cb_creator_new_season_exec(callback: CallbackQuery):
-    uid = callback.from_user.id
-    if not is_creator(uid):
-        await safe_answer(callback.id, "❌ Нет доступа")
-        return
-    try:
-        new_season_num = int(callback.data.replace("creator_new_season_exec_", ""))
-    except ValueError:
-        await safe_answer(callback.id, "❌ Ошибка")
-        return
-    try:
-        conn = _db()
-        cur  = conn.cursor()
-        cur.execute("SELECT id FROM seasons WHERE is_active=1 ORDER BY id DESC LIMIT 1")
-        row = cur.fetchone()
-        if row:
-            season_id = row[0]
-            cur.execute("SELECT user_id, username, elo, wins, losses, kills, deaths, assists, "
-                        "quals_wins, quals_losses, quals_kills, quals_deaths, quals_assists, "
-                        "quals_elo, mvp_count FROM players WHERE is_bot=0")
-            players_snap = cur.fetchall()
-            for ps in players_snap:
-                cur.execute("""
-                    INSERT INTO season_player_history
-                    (season_id, season_number, user_id, username, elo, wins, losses, kills,
-                     deaths, assists, quals_wins, quals_losses, quals_kills, quals_deaths,
-                     quals_assists, quals_elo, mvp_count)
-                    VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
-                """, (season_id, new_season_num - 1, *ps))
-            cur.execute("UPDATE seasons SET is_active=0, ended_at=%s, reset_by=%s WHERE id=%s",
-                        (int(time.time()), uid, season_id))
-        cur.execute(
-            "INSERT INTO seasons (season_number, name, is_active) VALUES (%s, %s, 1)",
-            (new_season_num, f"Сезон {new_season_num}"),
-        )
-        _reset_all_stats("players")
-        conn.commit()
-        conn.close()
-        log_admin_action(uid, "new_season", details=f"Сезон #{new_season_num} начат")
-        await safe_answer(callback.id,
-            f"✅ Сезон #{new_season_num} начат! Статистика сохранена.", show_alert=True)
-        kb = InlineKeyboardBuilder()
-        kb.button(text="🔙 В панель", callback_data="creator_panel")
-        await bot.edit_message_text(
-            f"🏆 <b>Сезон #{new_season_num} успешно начат!</b>\n\n"
-            "Статистика предыдущего сезона сохранена в архиве.\n"
-            "Все игроки начинают с ELO 1000.",
-            chat_id=callback.message.chat.id, message_id=callback.message.message_id, reply_markup=kb.as_markup(), parse_mode="HTML")
-    except Exception as e:
-        await safe_answer(callback.id, f"❌ Ошибка: {e}", show_alert=True)
-
-
-# ==================== CREATOR FLOW: расширенный обработчик текста ====================
-async def _handle_creator_flow_extended(message, uid, flow, step):
-    """Возвращает True если шаг обработан, иначе False."""
-    inp = message.text.strip()
-
-    async def _find_player_by_inp(inp):
-        if inp.isdigit():
-            return get_player(int(inp))
-        try:
-            conn2 = _db()
-            cur2  = conn2.cursor()
-            cur2.execute("SELECT * FROM players WHERE LOWER(username)=LOWER(%s) AND is_bot=0", (inp,))
-            p = cur2.fetchone()
-            conn2.close()
-            return p
-        except Exception:
-            return None
-
-    if step == "broadcast":
-        creator_flow[uid] = {"step": "broadcast_confirm", "broadcast_text": inp}
-        kb = InlineKeyboardBuilder()
-        kb.add(
-            types.InlineKeyboardButton(text="✅ Отправить", callback_data=f"creator_broadcast_confirm_ok"),
-            types.InlineKeyboardButton(text="❌ Отмена",    callback_data="creator_panel"),
-        )
-        await bot.send_message(uid,
-            f"📢 <b>Предпросмотр рассылки:</b>\n\n{inp}\n\n"
-            "Отправить это сообщение всем игрокам?",
-            reply_markup=kb.as_markup(), parse_mode="HTML")
-        return True
-
-    if step == "broadcast_confirm":
-        return True
-
-    if step == "give_premium_id":
-        target_p = _find_player_by_inp(inp)
-        if not target_p:
-            await bot.send_message(uid, "❌ Игрок не найден. Попробуйте ещё раз.")
-            return True
-        t_uid  = target_p[0]
-        t_name = target_p[1] or str(t_uid)
-        creator_flow[uid] = {"step": "give_premium_days", "target_id": t_uid, "target_name": t_name}
-        await bot.send_message(uid,
-            f"🎁 Игрок: <b>{t_name}</b>\n\nНа сколько дней выдать Premium? (введите число):",
-            parse_mode="HTML")
-        return True
-
-    if step == "give_premium_days":
-        if not inp.lstrip("-").isdigit():
-            await bot.send_message(uid, "❌ Введите число дней.")
-            return True
-        days = int(inp)
-        if days <= 0:
-            await bot.send_message(uid, "❌ Количество дней должно быть больше 0.")
-            return True
-        t_uid  = flow.get("target_id")
-        t_name = flow.get("target_name", str(t_uid))
-        creator_flow.pop(uid, None)
-        kb = InlineKeyboardBuilder()
-        kb.add(
-            types.InlineKeyboardButton(text="✅ Выдать",  callback_data=f"creator_premium_exec_{t_uid}_{days}"),
-            types.InlineKeyboardButton(text="❌ Отмена",  callback_data="creator_panel"),
-        )
-        await bot.send_message(uid,
-            f"🎁 Выдать <b>{days} дней</b> Premium игроку <b>{t_name}</b>?",
-            reply_markup=kb.as_markup(), parse_mode="HTML")
-        return True
-
-    if step == "verify_player":
-        target_p = _find_player_by_inp(inp)
-        if not target_p:
-            await bot.send_message(uid, "❌ Игрок не найден.")
-            return True
-        t_uid    = target_p[0]
-        t_name   = target_p[1] or str(t_uid)
-        is_vf    = bool(target_p[27]) if len(target_p) > 27 else False
-        creator_flow.pop(uid, None)
-        kb = InlineKeyboardBuilder()
-        if is_vf:
-            kb.add(
-                types.InlineKeyboardButton(text="❌ Снять верификацию", callback_data=f"creator_verify_exec_{t_uid}_remove"),
-                types.InlineKeyboardButton(text="🔙 Отмена",            callback_data="creator_panel"),
+            await _reply_html(
+                update.effective_message,
+                "<tg-emoji emoji-id='5447644880824181073'>⚠️</tg-emoji> Произошла внутренняя ошибка. Администратор уведомлён."
             )
-            status_text = "✅ уже верифицирован"
-        else:
-            kb.add(
-                types.InlineKeyboardButton(text="✅ Выдать верификацию", callback_data=f"creator_verify_exec_{t_uid}_add"),
-                types.InlineKeyboardButton(text="🔙 Отмена",             callback_data="creator_panel"),
-            )
-            status_text = "❌ не верифицирован"
-        await bot.send_message(uid,
-            f"✅ Игрок: <b>{t_name}</b>\nСтатус: {status_text}",
-            reply_markup=kb.as_markup(), parse_mode="HTML")
-        return True
-
-    if step == "promote_admin":
-        target_p = _find_player_by_inp(inp)
-        if not target_p:
-            await bot.send_message(uid, "❌ Игрок не найден.")
-            return True
-        t_uid  = target_p[0]
-        t_name = target_p[1] or str(t_uid)
-        creator_flow.pop(uid, None)
-        try:
-            conn = _db()
-            cur  = conn.cursor()
-            cur.execute("UPDATE players SET is_admin=1 WHERE user_id=%s", (t_uid,))
-            conn.commit()
-            conn.close()
-            if t_uid not in ADMIN_IDS_LIST:
-                ADMIN_IDS_LIST.append(t_uid)
-            log_admin_action(uid, "promote_admin", target_id=t_uid, details=t_name)
-            kb = InlineKeyboardBuilder()
-            kb.button(text="🔙 В панель", callback_data="creator_panel")
-            await bot.send_message(uid,
-                f"✅ <b>{t_name}</b> назначен администратором!",
-                reply_markup=kb.as_markup(), parse_mode="HTML")
-            try:
-                await bot.send_message(t_uid, "🛡️ Вы были назначены <b>администратором</b>!", parse_mode="HTML")
-            except Exception:
-                pass
-        except Exception as e:
-            await bot.send_message(uid, f"❌ Ошибка: {e}")
-        return True
-
-    if step == "give_coins_id":
-        target_p = _find_player_by_inp(inp)
-        if not target_p:
-            await bot.send_message(uid, "❌ Игрок не найден.")
-            return True
-        t_uid  = target_p[0]
-        t_name = target_p[1] or str(t_uid)
-        creator_flow[uid] = {"step": "give_coins_amount", "target_id": t_uid, "target_name": t_name}
-        await bot.send_message(uid,
-            f"💰 Игрок: <b>{t_name}</b>\n\n"
-            "Введите количество монет (положительное - начислить, отрицательное - списать):",
-            parse_mode="HTML")
-        return True
-
-    if step == "give_coins_amount":
-        if not inp.lstrip("-").isdigit():
-            await bot.send_message(uid, "❌ Введите число.")
-            return True
-        amount = int(inp)
-        t_uid  = flow.get("target_id")
-        t_name = flow.get("target_name", str(t_uid))
-        creator_flow.pop(uid, None)
-        sign = "+" if amount >= 0 else ""
-        kb = InlineKeyboardBuilder()
-        kb.add(
-            types.InlineKeyboardButton(text="✅ Подтвердить", callback_data=f"creator_coins_exec_{t_uid}_{amount}"),
-            types.InlineKeyboardButton(text="❌ Отмена",      callback_data="creator_panel"),
-        )
-        await bot.send_message(uid,
-            f"💰 Игроку <b>{t_name}</b>: <b>{sign}{amount} AC</b>\nПодтвердить?",
-            reply_markup=kb.as_markup(), parse_mode="HTML")
-        return True
-
-    if step == "add_coinpack_name":
-        if not inp:
-            await bot.send_message(uid, "❌ Название не может быть пустым. Введите ещё раз:")
-            return True
-        creator_flow[uid] = {"step": "add_coinpack_coins", "name": inp}
-        await bot.send_message(uid, f"📦 Название: <b>{inp}</b>\n\nВведите количество Actual Coin в пакете (число):", parse_mode="HTML")
-        return True
-
-    if step == "add_coinpack_coins":
-        if not inp.isdigit() or int(inp) <= 0:
-            await bot.send_message(uid, "❌ Введите положительное целое число.")
-            return True
-        flow["coins"] = int(inp)
-        flow["step"] = "add_coinpack_stars"
-        creator_flow[uid] = flow
-        await bot.send_message(uid, f"⭐ Введите цену пакета в Telegram Stars (целое число):")
-        return True
-
-    if step == "add_coinpack_stars":
-        if not inp.isdigit() or int(inp) <= 0:
-            await bot.send_message(uid, "❌ Введите положительное целое число.")
-            return True
-        flow["stars"] = int(inp)
-        flow["step"] = "add_coinpack_crypto"
-        creator_flow[uid] = flow
-        await bot.send_message(uid, f"💎 Введите цену пакета в USD для оплаты криптой (например 1.5):")
-        return True
-
-    if step == "add_coinpack_crypto":
-        try:
-            usd = round(float(inp.replace(",", ".")), 2)
-            if usd <= 0:
-                raise ValueError
-        except ValueError:
-            await bot.send_message(uid, "❌ Введите корректную цену, например 1.5.")
-            return True
-        flow["crypto_usd"] = usd
-        flow["step"] = "add_coinpack_target"
-        creator_flow[uid] = flow
-        kb = InlineKeyboardBuilder()
-        kb.button(text="🌍 Всем игрокам", callback_data="creator_coinpack_target_all")
-        await bot.send_message(uid,
-            "🎯 Кому показывать пакет?\n\nНажмите кнопку ниже для показа всем, "
-            "или введите Telegram ID/ник конкретного игрока:",
-            reply_markup=kb.as_markup())
-        return True
-
-    if step == "shop_price_value":
-        item_id = flow.get("item_id")
-        currency = flow.get("currency")
-        item = get_shop_item_full(item_id) if item_id else None
-        if not item or currency not in SHOP_CURRENCY_LABELS:
-            creator_flow.pop(uid, None)
-            await bot.send_message(uid, "❌ Товар не найден.")
-            return True
-        name = item[1]
-        raw = inp.replace(",", ".")
-        try:
-            if currency == "crypto":
-                value = round(float(raw), 2)
-            else:
-                value = int(float(raw))
-            if value < 0:
-                raise ValueError
-        except ValueError:
-            await bot.send_message(uid, f"❌ Введите корректное число (0 или больше). Попробуйте ещё раз:")
-            return True
-        creator_flow.pop(uid, None)
-        set_shop_item_price(item_id, currency, value)
-        log_admin_action(uid, "shop_price_update", details=f"{name} [{currency}] -> {value}")
-        kb = InlineKeyboardBuilder()
-        kb.button(text="🔙 К товару", callback_data=f"creator_price_item_{item_id}")
-        kb.button(text="💱 Все товары", callback_data="creator_shop_prices")
-        await bot.send_message(
-            uid,
-            f"✅ Цена товара <b>{name}</b> в {SHOP_CURRENCY_LABELS[currency]} обновлена: <b>{value}</b>",
-            reply_markup=kb.as_markup(), parse_mode="HTML",
-        )
-        return True
-
-    if step == "add_coinpack_target":
-        target_p = _find_player_by_inp(inp)
-        if not target_p:
-            await bot.send_message(uid, "❌ Игрок не найден. Введите ID/ник ещё раз, либо нажмите \"Всем игрокам\" выше.")
-            return True
-        _finalize_coinpack(uid, flow, target_uid=target_p[0], target_name=target_p[1] or str(target_p[0]))
-        return True
-
-    return False
-
-
-async def _finalize_coinpack(uid, flow, target_uid=None, target_name=None):
-    name = flow.get("name")
-    coins = flow.get("coins")
-    stars = flow.get("stars")
-    crypto_usd = flow.get("crypto_usd")
-    creator_flow.pop(uid, None)
-    try:
-        conn = _db()
-        cur = conn.cursor()
-        cur.execute(
-            "INSERT INTO custom_coin_packages (name, coins_amount, stars_price, crypto_usd, target_user_id, created_by, created_at) "
-            "VALUES (%s,%s,%s,%s,%s,%s,%s)",
-            (name, coins, stars, crypto_usd, target_uid, uid, int(time.time())),
-        )
-        conn.commit()
-        conn.close()
-    except Exception as e:
-        await bot.send_message(uid, f"❌ Ошибка сохранения пакета: {e}")
-        return
-    target_desc = f"игроку <b>{target_name}</b>" if target_uid else "<b>всем игрокам</b>"
-    await bot.send_message(uid,
-        f"✅ <b>Пакет создан!</b>\n\n"
-        f"📦 {name}: {coins} AC\n"
-        f"⭐ {stars} Stars / 💎 ${crypto_usd}\n"
-        f"🎯 Виден: {target_desc}",
-        parse_mode="HTML")
-    if target_uid:
-        try:
-            await bot.send_message(target_uid,
-                f"🎁 <b>Для вас доступен специальный пакет монет!</b>\n\n"
-                f"📦 {name}: {coins} AC\nОткройте магазин, чтобы купить.",
-                parse_mode="HTML")
         except Exception:
             pass
 
 
-@router.callback_query(F.data == "creator_coinpack_target_all")
-async def cb_creator_coinpack_target_all(callback: CallbackQuery):
-    uid = callback.from_user.id
-    if not is_creator(uid):
-        await safe_answer(callback.id, "❌ Нет доступа")
-        return
-    flow = creator_flow.get(uid, {})
-    if flow.get("step") != "add_coinpack_target":
-        await safe_answer(callback.id, "❌ Сессия истекла, начните заново")
-        return
-    await safe_answer(callback.id)
-    _finalize_coinpack(uid, flow, target_uid=None, target_name=None)
-
-
-# ==================== ЗАПУСК ====================
-async def run_web():
-    """Health-check HTTP сервер на aiohttp (заменяет Flask)."""
-    import os
-    port = int(os.environ.get("PORT", 8099))
-
-    async def health(request):
-        return _aio_web.Response(text="OK")
-
-    app = _aio_web.Application()
-    app.router.add_get("/", health)
-    app.router.add_get("/health", health)
-
-    runner = _aio_web.AppRunner(app)
-    await runner.setup()
-    site = _aio_web.TCPSite(runner, "0.0.0.0", port)
-    await site.start()
-    print(f"🌐 Health-check сервер запущен на порту {port}")
-
-async def main():
-    await run_web()
-    print("🚀 Инициализация БД...")
+def main():
     init_db()
-    print("⚙️ Загрузка настроек...")
-    load_dynamic_settings()
-    print("🏠 Загрузка приваток...")
-    load_user_privates()
-    print("♻️ Восстановление матчей...")
-    await restore_active_matches()
-    print("⏰ Запуск авто-разбана...")
-    asyncio.create_task(auto_unban_loop())
-    print("🗑️ Запуск авто-удаления...")
-    asyncio.create_task(_auto_delete_loop())
-    if CRYPTO_PAY_API_TOKEN:
-        print("💎 Запуск проверки крипто-платежей...")
-        asyncio.create_task(_crypto_pay_poll_loop())
-    print(f"✅ Бот запущен! ADMIN_CHAT_ID={ADMIN_CHAT_ID} | ADMIN_IDS={ADMIN_IDS_LIST}")
-    await dp.start_polling(bot, allowed_updates=dp.resolve_used_update_types())
+    # ВАЖНО: токен читается ТОЛЬКО из переменных окружения. Раньше здесь был
+    # захардкожен реальный токен как fallback по умолчанию — это утечка секрета
+    # (токен получает доступ к боту, читая просто исходный код). Он удалён;
+    # если ты им пользовался — обязательно отзови его через @BotFather (/revoke)
+    # и выпусти новый, затем задай BOT_TOKEN в окружении.
+    TOKEN = os.environ.get('BOT_TOKEN') or os.environ.get('TOKEN')
+    if not TOKEN:
+        raise RuntimeError("Не задан BOT_TOKEN в переменных окружения!")
+
+    # pella.app: задай переменную окружения WEBHOOK_HOST=myapp.pella.app
+    WEBHOOK_HOST = os.environ.get('WEBHOOK_HOST', '')
+    PORT = int(os.environ.get('PORT', 8080))
+
+    app = (
+        Application.builder()
+        .token(TOKEN)
+        .build()
+    )
+
+    # Команды
+    app.add_handler(CommandHandler("start",        start))
+    app.add_handler(CommandHandler("profile",      action_profile))
+    app.add_handler(CommandHandler("find",         action_find_match))
+    app.add_handler(CommandHandler("queue",        action_queue_status))
+    app.add_handler(CommandHandler("leave",        action_leave_queue))
+    app.add_handler(CommandHandler("history",      cmd_history))
+    app.add_handler(CommandHandler("rules",        cmd_rules))
+    app.add_handler(CommandHandler("donate",       cmd_donate))
+    app.add_handler(CommandHandler("mystats",      cmd_mystats))
+    app.add_handler(CommandHandler("renderstatus", cmd_renderstatus))
+    app.add_handler(CommandHandler("admin",        cmd_admin))
+    app.add_handler(CommandHandler("setadmin",     cmd_setadmin))
+    app.add_handler(CommandHandler("moder",        cmd_moder))
+    app.add_handler(CommandHandler("kick",         cmd_kick))
+    app.add_handler(CommandHandler("ban",          cmd_ban))
+    app.add_handler(CommandHandler("unban",        cmd_unban))
+    app.add_handler(CommandHandler("tempban",      cmd_tempban))
+    app.add_handler(CommandHandler("warn",         cmd_warn))
+    app.add_handler(CommandHandler("unwarn",       cmd_unwarn))
+    app.add_handler(CommandHandler("setelo",       cmd_setelo))
+    app.add_handler(CommandHandler("addelo",       cmd_addelo))
+    app.add_handler(CommandHandler("addcoins",     cmd_addcoins))
+    app.add_handler(CommandHandler("setwins",      cmd_setwins))
+    app.add_handler(CommandHandler("setmatches",   cmd_setmatches))
+    app.add_handler(CommandHandler("setkd",        cmd_setkd))
+    app.add_handler(CommandHandler("setnick",      cmd_setnick))
+    app.add_handler(CommandHandler("setgameid",    cmd_setgameid))
+    app.add_handler(CommandHandler("setcreator",   cmd_setcreator))
+    app.add_handler(CommandHandler("addpromo",     cmd_addpromo))
+    app.add_handler(CommandHandler("addoff",       cmd_addoff))
+    app.add_handler(CommandHandler("resetelo",     cmd_resetelo))
+    app.add_handler(CommandHandler("newseason",    cmd_newseason))
+    app.add_handler(CommandHandler("resetseason",  cmd_resetseason))
+    app.add_handler(CommandHandler("addbot",       cmd_addbot))
+    app.add_handler(CommandHandler("addbot9",      cmd_addbot9))
+    app.add_handler(CommandHandler("deletebot",    cmd_deletebot))
+    app.add_handler(CommandHandler("resetbotreg",  cmd_resetbotreg))
+    app.add_handler(CommandHandler("players",      cmd_players))
+    app.add_handler(CommandHandler("matchinfo",    cmd_matchinfo))
+    app.add_handler(CommandHandler("cancelmatch",   cmd_cancelmatch))
+    app.add_handler(CommandHandler("cancelmatched", cmd_cancelmatched))
+    app.add_handler(CommandHandler("forcefinish",  cmd_forcefinish))
+    app.add_handler(CommandHandler("online",       cmd_online))
+    app.add_handler(CommandHandler("news",         cmd_news))
+    app.add_handler(CommandHandler("search",       action_search_player))
+    app.add_handler(CommandHandler("tasks",        action_tasks))
+
+    # Callback-кнопки
+    app.add_handler(CallbackQueryHandler(tasks_callback,            pattern=r"^(task_claim_|tasks_refresh)"))
+    app.add_handler(CallbackQueryHandler(search_result_callback,    pattern=r"^search_"))
+    app.add_handler(CallbackQueryHandler(menu_callback,             pattern=r"^menu_"))
+    app.add_handler(CallbackQueryHandler(mode_select_callback,      pattern=r"^mode_"))
+    app.add_handler(CallbackQueryHandler(lobby_join_callback,       pattern=r"^lobby_join_"))
+    app.add_handler(CallbackQueryHandler(lobby_leave_inline_callback, pattern=r"^lobby_leave$"))
+    app.add_handler(CallbackQueryHandler(confirm_callback,          pattern=r"^confirm_"))
+    app.add_handler(CallbackQueryHandler(pick_callback,             pattern=r"^pick_"))
+    app.add_handler(CallbackQueryHandler(map_ban_callback,          pattern=r"^mb_"))
+    app.add_handler(CallbackQueryHandler(leaderboard_callback,      pattern=r"^lb_"))
+    app.add_handler(CallbackQueryHandler(admin_screenshot_callback, pattern=r"^ss_"))
+    app.add_handler(CallbackQueryHandler(addoff_callback,           pattern=r"^addoff_"))
+    app.add_handler(CallbackQueryHandler(admin_self_badge_callback, pattern=r"^admin_self_badge_"))
+    app.add_handler(CallbackQueryHandler(setadmin_badge_callback,   pattern=r"^setadmin_badge_"))
+    app.add_handler(CallbackQueryHandler(button_handler,            pattern=r"^(resetelo_|newseason_|resetseason_)"))
+    app.add_handler(CallbackQueryHandler(profile_action_callback,   pattern=r"^profile_"))
+    app.add_handler(CallbackQueryHandler(shop_category_callback,    pattern=r"^shop_"))
+    app.add_handler(CallbackQueryHandler(party_callback,            pattern=r"^party_"))
+    app.add_handler(CallbackQueryHandler(check_sub_callback,        pattern=r"^check_sub$"))
+
+    # Регистрация и кнопки меню
+    app.add_handler(MessageHandler(
+        filters.TEXT & ~filters.COMMAND, registration_step_handler
+    ), group=0)
+    app.add_handler(MessageHandler(
+        filters.TEXT & ~filters.COMMAND, keyboard_router
+    ), group=1)
+
+    # Скриншоты
+    app.add_handler(MessageHandler(filters.PHOTO, screenshot_handler))
+    app.add_error_handler(_error_handler)
+
+    # Jobs
+    jq = app.job_queue
+    if jq:
+        jq.run_repeating(_job_anti_afk,           interval=60, first=60,  name="anti_afk")
+        jq.run_repeating(_job_inactivity_reminder, interval=60, first=120, name="inactivity_reminder")
+
+    print("🚀 Moon Faceit Bot запущен!")
+
+    if WEBHOOK_HOST:
+        webhook_url = f'https://{WEBHOOK_HOST}/{TOKEN}'
+        print(f"🌐 Webhook режим: {webhook_url}")
+        app.run_webhook(
+            listen='0.0.0.0',
+            port=PORT,
+            url_path=f'/{TOKEN}',
+            webhook_url=webhook_url,
+            drop_pending_updates=True,
+        )
+    else:
+        print("📡 Polling режим (для локального запуска)")
+        app.run_polling(drop_pending_updates=True)
+
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    main()
